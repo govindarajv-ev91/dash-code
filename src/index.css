@@ -40,10 +40,82 @@ body {
   border-radius: 1rem;
 }
 
+/* Sidebar Layout */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 280px;
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  padding: 2rem 1rem;
+  position: fixed;
+  height: 100vh;
+  z-index: 100;
+}
+
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 1rem;
+  margin-bottom: 3rem;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #fff;
+}
+
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  color: var(--text-dim);
+  text-decoration: none;
+  border-radius: 0.75rem;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.nav-item.active {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.3);
+}
+
+.main-content {
+  flex: 1;
+  margin-left: 280px;
+  min-height: 100vh;
+}
+
 .dashboard-container {
   max-width: 1400px;
-  margin: 2rem auto;
-  padding: 0 1.5rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
 }
 
 .header {
@@ -214,4 +286,106 @@ tr:hover {
   padding: 10px;
   border-radius: 8px;
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+}
+
+/* Tabs */
+.tabs-container {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.5rem;
+}
+
+.tab {
+  padding: 0.75rem 1.5rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 0.5rem;
+  transition: all 0.2s;
+  font-weight: 600;
+}
+
+.tab:hover {
+  color: #fff;
+}
+
+.tab.active {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--primary);
+}
+
+/* Filters */
+.filters-container {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.filter-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+select {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  color: #fff;
+  padding: 0.6rem 1rem;
+  border-radius: 0.5rem;
+  outline: none;
+  min-width: 180px;
+  cursor: pointer;
+}
+
+select option {
+  background-color: var(--bg-dark);
+  color: #fff;
+}
+
+/* Attendance Table */
+.attendance-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.pivot-table-container {
+  overflow-x: auto;
+  padding: 1rem;
+}
+
+.pivot-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pivot-table th {
+  background: rgba(255,255,255,0.05);
+}
+
+.pivot-table td, .pivot-table th {
+  padding: 0.75rem 1rem;
+  text-align: center;
+  border: 1px solid var(--border-color);
+}
+
+.pivot-table th:first-child, .pivot-table td:first-child {
+  text-align: left;
+  background: rgba(255,255,255,0.02);
+  width: 200px;
+}
+
+.grand-total {
+  font-weight: 700;
+  background: rgba(255,255,255,0.1) !important;
 }

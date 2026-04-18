@@ -156,3 +156,4 @@ rider_gender
 rider_location
 order_range
 created_at
+updated_at

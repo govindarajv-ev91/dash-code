@@ -2,7 +2,10 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from './lib/supabaseClient'
 import Dashboard from './Dashboard'
 import RiderAttendance from './RiderAttendance'
-import { Layout, Users, BarChart3, ClipboardList } from 'lucide-react'
+import VehicleTracking from './VehicleTracking'
+import OnboardingAnalytics from './OnboardingAnalytics'
+import ErrorFinder from './ErrorFinder'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -53,6 +56,8 @@ function App() {
   const [riderData, setRiderData] = useState([])
   const [fleetData, setFleetData] = useState([])
   const [weeklyData, setWeeklyData] = useState([])
+  const [kycData, setKycData] = useState([])
+  const [onboardingData, setOnboardingData] = useState([])
 
   useEffect(() => {
     fetchData()
@@ -99,31 +104,41 @@ function App() {
     const cachedRiders = await getCachedData('rider_metrics');
     const cachedFleet = await getCachedData('fleet_data');
     const cachedWeekly = await getCachedData('weekly_performance');
+    const cachedKyc = await getCachedData('rider_kyc');
+    const cachedOnboarding = await getCachedData('rider_onboarding');
 
     if (cachedRiders) setRiderData(cachedRiders);
     if (cachedFleet) setFleetData(cachedFleet);
     if (cachedWeekly) setWeeklyData(cachedWeekly);
+    if (cachedKyc) setKycData(cachedKyc);
+    if (cachedOnboarding) setOnboardingData(cachedOnboarding);
     
     if (cachedRiders && cachedFleet) setLoading(false);
 
     try {
-      const riderCols = 'delivered,date_record,worker_code,hub_name,city,client,cumulative_order,source,week,month,state';
+      const riderCols = 'delivered,date_record,worker_code,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2';
       const fleetCols = 'id,vehicle_number,rider_name,rider_id,vehicle_status,date_record,city_locations,bike_deployed_date_sd_refund_request,bike_return_date_sd_refund_request,created_at';
       const weeklyCols = 'inactive_days,date_record';
 
-      const [riderRes, fleetRes, weeklyRes] = await Promise.all([
-        fetchAllData('rider_metrics', riderCols),
+      const [riderRes, fleetRes, weeklyRes, kycRes, onboardingRes] = await Promise.all([
+        fetchAllData('rider_metrics', '*'),
         fetchAllData('fleet_data', fleetCols),
-        fetchAllData('weekly_performance', weeklyCols)
+        fetchAllData('weekly_performance', weeklyCols),
+        fetchAllData('rider_kyc', '*'),
+        fetchAllData('rider_onboarding', '*')
       ]);
       
       setRiderData(riderRes.data || []);
       setFleetData(fleetRes.data || []);
       setWeeklyData(weeklyRes.data || []);
+      setKycData(kycRes.data || []);
+      setOnboardingData(onboardingRes.data || []);
       
       cacheData('rider_metrics', riderRes.data || []);
       cacheData('fleet_data', fleetRes.data || []);
       cacheData('weekly_performance', weeklyRes.data || []);
+      cacheData('rider_kyc', kycRes.data || []);
+      cacheData('rider_onboarding', onboardingRes.data || []);
     } catch (error) {
       console.error('Fetch error:', error);
     } finally {
@@ -153,6 +168,27 @@ function App() {
             <ClipboardList size={20} />
             Rider Attendance
           </button>
+          <button 
+            className={`nav-item ${activePage === 'tracking' ? 'active' : ''}`}
+            onClick={() => setActivePage('tracking')}
+          >
+            <Truck size={20} />
+            Vehicle Tracking
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'onboarding' ? 'active' : ''}`}
+            onClick={() => setActivePage('onboarding')}
+          >
+            <UserPlus size={20} />
+            Onboarding Analytics
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'errorfinder' ? 'active' : ''}`}
+            onClick={() => setActivePage('errorfinder')}
+          >
+            <AlertTriangle size={20} />
+            Error Finder
+          </button>
         </nav>
       </aside>
 
@@ -165,10 +201,28 @@ function App() {
             loading={loading}
             refreshData={fetchData}
           />
-        ) : (
+        ) : activePage === 'attendance' ? (
           <RiderAttendance 
             riderData={riderData} 
             loading={loading} 
+          />
+        ) : activePage === 'tracking' ? (
+          <VehicleTracking 
+            fleetData={fleetData}
+            riderData={riderData}
+            loading={loading}
+          />
+        ) : activePage === 'onboarding' ? (
+          <OnboardingAnalytics
+            kycData={kycData}
+            onboardingData={onboardingData}
+            loading={loading}
+          />
+        ) : (
+          <ErrorFinder
+            fleetData={fleetData}
+            riderData={riderData}
+            loading={loading}
           />
         )}
       </main>

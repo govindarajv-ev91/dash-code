@@ -8,7 +8,7 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
     const [isOpen, setIsOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
 
-    const filteredOptions = options.filter(opt => 
+    const filteredOptions = options.filter(opt =>
         opt.toLowerCase().includes(searchTerm.toLowerCase()) && opt !== 'All'
     );
 
@@ -23,13 +23,13 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
     return (
         <div className="filter-group" style={{ position: 'relative' }}>
             <label className="filter-label">{label}</label>
-            <div 
-                className="select-trigger glass" 
+            <div
+                className="select-trigger glass"
                 onClick={() => setIsOpen(!isOpen)}
-                style={{ 
-                    padding: '0.6rem 1rem', 
-                    borderRadius: '0.5rem', 
-                    cursor: 'pointer', 
+                style={{
+                    padding: '0.6rem 1rem',
+                    borderRadius: '0.5rem',
+                    cursor: 'pointer',
                     minWidth: '200px',
                     display: 'flex',
                     justifyContent: 'space-between',
@@ -40,9 +40,9 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
                 }}
             >
                 <span style={{ fontSize: '0.9rem', color: selectedValues.length ? '#fff' : 'var(--text-dim)' }}>
-                    {selectedValues.length === 0 ? placeholder : 
-                     selectedValues.length === options.length - 1 ? `All ${label}s` :
-                     `${selectedValues.length} Selected`}
+                    {selectedValues.length === 0 ? placeholder :
+                        selectedValues.length === options.length - 1 ? `All ${label}s` :
+                            `${selectedValues.length} Selected`}
                 </span>
                 <Filter size={14} />
             </div>
@@ -50,18 +50,18 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
             <AnimatePresence>
                 {isOpen && (
                     <>
-                        <div 
-                            style={{ position: 'fixed', inset: 0, zIndex: 998 }} 
-                            onClick={() => setIsOpen(false)} 
+                        <div
+                            style={{ position: 'fixed', inset: 0, zIndex: 998 }}
+                            onClick={() => setIsOpen(false)}
                         />
-                        <motion.div 
+                        <motion.div
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: 10 }}
-                            style={{ 
-                                position: 'absolute', 
-                                top: '100%', 
-                                left: 0, 
+                            style={{
+                                position: 'absolute',
+                                top: '100%',
+                                left: 0,
                                 marginTop: '0.5rem',
                                 width: '250px',
                                 maxHeight: '300px',
@@ -76,8 +76,8 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
                         >
                             <div style={{ position: 'relative', marginBottom: '0.5rem' }}>
                                 <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
-                                <input 
-                                    type="text" 
+                                <input
+                                    type="text"
                                     placeholder={`Search ${label}...`}
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
@@ -94,23 +94,23 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
                                 />
                             </div>
                             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                                <button 
+                                <button
                                     onClick={(e) => { e.stopPropagation(); onChange(options.filter(o => o !== 'All')); }}
                                     style={{ fontSize: '0.7rem', background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', padding: '2px 6px', borderRadius: '4px', cursor: 'pointer' }}
                                 >Select All</button>
-                                <button 
+                                <button
                                     onClick={(e) => { e.stopPropagation(); onChange([]); }}
                                     style={{ fontSize: '0.7rem', background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', padding: '2px 6px', borderRadius: '4px', cursor: 'pointer' }}
                                 >Clear</button>
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                 {filteredOptions.map(opt => (
-                                    <div 
+                                    <div
                                         key={opt}
                                         onClick={(e) => { e.stopPropagation(); toggleOption(opt); }}
-                                        style={{ 
-                                            padding: '0.5rem', 
-                                            borderRadius: '6px', 
+                                        style={{
+                                            padding: '0.5rem',
+                                            borderRadius: '6px',
                                             cursor: 'pointer',
                                             display: 'flex',
                                             alignItems: 'center',
@@ -119,10 +119,10 @@ const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) 
                                             transition: 'background 0.2s'
                                         }}
                                     >
-                                        <div style={{ 
-                                            width: '16px', 
-                                            height: '16px', 
-                                            border: '1px solid var(--border-color)', 
+                                        <div style={{
+                                            width: '16px',
+                                            height: '16px',
+                                            border: '1px solid var(--border-color)',
                                             borderRadius: '4px',
                                             display: 'flex',
                                             alignItems: 'center',
@@ -175,7 +175,7 @@ const RiderAttendance = ({ riderData, loading }) => {
         if (loading) return [];
 
         const now = new Date();
-        now.setHours(0,0,0,0);
+        now.setHours(0, 0, 0, 0);
         const riderMap = new Map();
 
         // Filter by week, states, and month
@@ -191,11 +191,11 @@ const RiderAttendance = ({ riderData, loading }) => {
             const delivered = parseInt(r.delivered || 0, 10);
             if (delivered <= 0) return;
 
-            const current = riderMap.get(r.worker_code) || { 
-                latestDate: new Date(0), 
-                state: r.state, 
-                client: r.client, 
-                source: r.source 
+            const current = riderMap.get(r.worker_code) || {
+                latestDate: new Date(0),
+                state: r.state,
+                client: r.client,
+                source: r.source
             };
 
             let d;
@@ -312,7 +312,7 @@ const RiderAttendance = ({ riderData, loading }) => {
                                 {weeks.map(w => <option key={w} value={w}>{w}</option>)}
                             </select>
                         </div>
-                        <MultiSelect 
+                        <MultiSelect
                             label="State"
                             placeholder="Select States"
                             options={states}
@@ -344,8 +344,8 @@ const RiderAttendance = ({ riderData, loading }) => {
                                                         const val = pivotData.statePivot[status]?.[s] || 0;
                                                         rowTotal += val;
                                                         return (
-                                                            <td 
-                                                                key={s} 
+                                                            <td
+                                                                key={s}
                                                                 onClick={() => val > 0 && handleCellClick('state', status, s)}
                                                                 style={{ cursor: val > 0 ? 'pointer' : 'default', color: val > 0 ? 'var(--primary)' : 'inherit' }}
                                                             >
@@ -384,7 +384,7 @@ const RiderAttendance = ({ riderData, loading }) => {
                                                         const val = pivotData.clientPivot[status]?.[c] || 0;
                                                         rowTotal += val;
                                                         return (
-                                                            <td 
+                                                            <td
                                                                 key={c}
                                                                 onClick={() => val > 0 && handleCellClick('client', status, c)}
                                                                 style={{ cursor: val > 0 ? 'pointer' : 'default', color: val > 0 ? 'var(--primary)' : 'inherit' }}
@@ -424,7 +424,7 @@ const RiderAttendance = ({ riderData, loading }) => {
                                                         const val = pivotData.sourcePivot[source]?.[s] || 0;
                                                         rowTotal += val;
                                                         return (
-                                                            <td 
+                                                            <td
                                                                 key={s}
                                                                 onClick={() => val > 0 && handleCellClick('source', source, s)}
                                                                 style={{ cursor: val > 0 ? 'pointer' : 'default', color: val > 0 ? 'var(--primary)' : 'inherit' }}
@@ -453,15 +453,15 @@ const RiderAttendance = ({ riderData, loading }) => {
                             {detailFilter && (
                                 <p style={{ fontSize: '0.85rem', color: 'var(--text-dim)' }}>
                                     Filtering by: <span style={{ color: 'var(--primary)', fontWeight: 600 }}>
-                                        {detailFilter.type === 'source' 
-                                            ? `${detailFilter.rowKey} → ${detailFilter.colKey}` 
+                                        {detailFilter.type === 'source'
+                                            ? `${detailFilter.rowKey} → ${detailFilter.colKey}`
                                             : `${detailFilter.colKey} → ${detailFilter.rowKey}`}
                                     </span>
                                 </p>
                             )}
                         </div>
-                        <button 
-                            className="glass" 
+                        <button
+                            className="glass"
                             style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer', fontSize: '0.9rem' }}
                             onClick={() => setDetailFilter(null)}
                         >

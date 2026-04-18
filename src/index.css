@@ -253,6 +253,24 @@ tr:hover {
   border: 1px solid rgba(251, 113, 133, 0.3);
 }
 
+.status-badge.ev {
+  background: rgba(74, 222, 128, 0.2);
+  color: var(--accent-green);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+}
+
+.status-badge.non-ev {
+  background: rgba(168, 85, 247, 0.2);
+  color: var(--accent-purple);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.status-badge.unknown {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-dim);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
 .loading-container {
   display: flex;
   justify-content: center;

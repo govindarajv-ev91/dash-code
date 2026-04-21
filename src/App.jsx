@@ -5,7 +5,9 @@ import RiderAttendance from './RiderAttendance'
 import VehicleTracking from './VehicleTracking'
 import OnboardingAnalytics from './OnboardingAnalytics'
 import ErrorFinder from './ErrorFinder'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle } from 'lucide-react'
+import TempSourceActive from './TempSourceActive'
+import RiderDetails from './RiderDetails'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -189,6 +191,27 @@ function App() {
             <AlertTriangle size={20} />
             Error Finder
           </button>
+          <button 
+            className={`nav-item ${activePage === 'dailymailer' ? 'active' : ''}`}
+            onClick={() => setActivePage('dailymailer')}
+          >
+            <Mail size={20} />
+            Daily Mailer
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'tempparser' ? 'active' : ''}`}
+            onClick={() => setActivePage('tempparser')}
+          >
+            <FileBarChart2 size={20} />
+            Temp Parser
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'riderdetails' ? 'active' : ''}`}
+            onClick={() => setActivePage('riderdetails')}
+          >
+            <Users size={20} />
+            Rider Details
+          </button>
         </nav>
       </aside>
 
@@ -218,9 +241,28 @@ function App() {
             onboardingData={onboardingData}
             loading={loading}
           />
-        ) : (
+        ) : activePage === 'errorfinder' ? (
           <ErrorFinder
             fleetData={fleetData}
+            riderData={riderData}
+            loading={loading}
+          />
+        ) : activePage === 'dailymailer' ? (
+          <DailyMailer
+            riderData={riderData}
+            loading={loading}
+          />
+        ) : activePage === 'tempparser' ? (
+          <TempSourceActive
+            riderData={riderData}
+            fleetData={fleetData}
+            loading={loading}
+          />
+        ) : (
+          <RiderDetails
+            fleetData={fleetData}
+            kycData={kycData}
+            onboardingData={onboardingData}
             riderData={riderData}
             loading={loading}
           />

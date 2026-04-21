@@ -77,13 +77,18 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
                 totalOrders: 0,
                 lastOrderDate: null,
                 fleetCategory: r.type1 || 'Unknown',
+                orderRecords: [],
                 history: []
             };
 
-            existing.totalOrders += parseInt(r.delivered || 0, 10);
+            const deliveredCount = parseInt(r.delivered || 0, 10);
+            existing.totalOrders += deliveredCount;
             const d = getParsedDate(r.date_record);
             if (d && (!existing.lastOrderDate || d > existing.lastOrderDate)) {
                 existing.lastOrderDate = d;
+            }
+            if (d) {
+                existing.orderRecords.push({ date: d, delivered: deliveredCount });
             }
             if (r.client && r.client !== 'N/A') existing.client = r.client;
             if (r.source && r.source !== 'N/A') existing.sourceName = r.source;
@@ -151,7 +156,21 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
                 status: 'Deployed'
             }));
 
-            const combinedHistory = [...ongoingAssignments, ...finalHistory].sort((a, b) => b.deployeeDate - a.deployeeDate);
+            const combinedHistory = [...ongoingAssignments, ...finalHistory]
+                .map(asgn => {
+                    const fromDate = asgn.deployeeDate;
+                    const toDate = asgn.returnDate || today;
+                    const periodOrders = (rider.orderRecords || []).reduce((sum, rec) => {
+                        if (rec.date >= fromDate && rec.date <= toDate) return sum + (rec.delivered || 0);
+                        return sum;
+                    }, 0);
+
+                    return {
+                        ...asgn,
+                        periodOrders
+                    };
+                })
+                .sort((a, b) => b.deployeeDate - a.deployeeDate);
             
             const currentAssignment = ongoingAssignments[0] || null;
             const totalOnRoadDays = combinedHistory.reduce((sum, h) => sum + h.daysOnRoad, 0);
@@ -371,6 +390,19 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
         return lines.join('\n');
     };
 
+    const getPerformanceTooltip = (item) => {
+        if (!item.assignments || item.assignments.length === 0) {
+            return 'No assignment history available';
+        }
+
+        const lines = item.assignments.map(asgn => {
+            const rangeText = `${format(asgn.deployeeDate, 'dd MMM yyyy')} - ${asgn.returnDate ? format(asgn.returnDate, 'dd MMM yyyy') : 'Till Date'}`;
+            return `${asgn.vehicleNumber}: ${asgn.periodOrders || 0} orders | ${rangeText}`;
+        });
+
+        return lines.join('\n');
+    };
+
     if (loading) return (
         <div className="loading-container"><span className="loader"></span></div>
     );
@@ -541,12 +573,15 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
                                             </div>
                                         </td>
                                         <td>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                            <div
+                                                style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'help' }}
+                                                title={getPerformanceTooltip(item)}
+                                            >
                                                 <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                     <Package size={14} className="text-primary" />
                                                     {item.totalOrders}
                                                 </div>
-                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>TOTAL DELIVERED</div>
+                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>TOTAL DELIVERED (HOVER FOR RANGE-ORDER)</div>
                                             </div>
                                         </td>
                                         <td>

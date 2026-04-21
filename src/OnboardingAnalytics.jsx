@@ -1,10 +1,92 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, isWithinInterval, startOfDay, endOfDay, parse } from 'date-fns';
+import * as XLSX from 'xlsx';
 import {
     Users, UserPlus, LogIn, TrendingUp, Filter, Calendar, MapPin,
-    Briefcase, ChevronDown, ChevronUp, Search, Activity
+    Briefcase, ChevronDown, ChevronUp, Search, Activity, Download
 } from 'lucide-react';
+
+// Helper functions outside component to avoid hoisting issues and redundant declarations
+const normalize = (str) => {
+    try {
+        const s = (str || 'Unknown').toString().trim().toUpperCase();
+        if (s === 'BANGALORE') return 'BENGALURU';
+        return s;
+    } catch (e) { return 'UNKNOWN'; }
+};
+
+const toDisplay = (str) => {
+    try {
+        const s = (str || 'Unknown').toString().toLowerCase();
+        return s.charAt(0).toUpperCase() + s.slice(1);
+    } catch (e) { return 'Unknown'; }
+};
+
+const getAllIds = (item) => {
+    const potentialFields = [
+        'rider_id', 'rider_id_details', 'rider_mobile_number', 
+        'pan_number', 'aadhar_number', 'worker_code', 'worker_id'
+    ];
+    const found = new Set();
+    potentialFields.forEach(f => {
+        const v = item[f];
+        if (v === null || v === undefined) return;
+        const s = v.toString().trim().toLowerCase();
+        if (s && s.length > 2 && s !== 'null' && s !== 'nan' && s !== 'n/a' && s !== 'undefined') {
+            found.add(s);
+        }
+    });
+    return Array.from(found);
+};
+
+const parseDateFlexible = (d, itemMonth) => {
+    if (!d) {
+        const m = (itemMonth || '').toLowerCase();
+        if (m.includes('apr')) return new Date(2026, 3, 15);
+        if (m.includes('mar')) return new Date(2026, 2, 15);
+        return null;
+    }
+
+    const s = d.toString().trim();
+    if (!s || s === 'null' || s === 'N/A') return null;
+
+    if (/^\d{5}$/.test(s) || (typeof d === 'number' && d > 40000)) {
+        const serial = parseFloat(s);
+        const date = new Date((serial - 25569) * 86400 * 1000);
+        if (!isNaN(date.getTime())) return date;
+    }
+
+    if (/^\d{4}[-\/]\d{2}[-\/]\d{2}/.test(s)) {
+        const date = new Date(s);
+        if (!isNaN(date.getTime())) return date;
+    }
+
+    try {
+        const parts = s.split(/[/\-.]/);
+        if (parts.length >= 3) {
+            let p1 = parseInt(parts[0], 10);
+            let p2 = parseInt(parts[1], 10);
+            let p3 = parseInt(parts[2].split(' ')[0], 10);
+            if (p1 <= 31 && p2 <= 12) {
+                const year = p3 < 100 ? 2000 + p3 : p3;
+                const date = new Date(year, p2 - 1, p1);
+                if (!isNaN(date.getTime())) return date;
+            }
+        }
+    } catch (e) { }
+
+    const fallback = new Date(s);
+    return isNaN(fallback.getTime()) ? null : fallback;
+};
+
+const isDateInRange = (item, start, end) => {
+    const date = parseDateFlexible(
+        item.deployment_date || item.date_record || item.created_at || item.timestamp,
+        item.month
+    );
+    return date && date >= start && date <= end;
+};
 
 const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
     const [dateRange, setDateRange] = useState({
@@ -14,110 +96,82 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
     const [searchTerm, setSearchTerm] = useState('');
 
     const processedData = useMemo(() => {
-        if (!kycData || !onboardingData) return { cityStats: [], clientStats: [], totals: {} };
-
-        const parseDateFlexible = (d, itemMonth) => {
-            if (!d) {
-                if (itemMonth && itemMonth.toLowerCase().includes('apr')) return new Date(2026, 3, 15);
-                if (itemMonth && itemMonth.toLowerCase().includes('mar')) return new Date(2026, 2, 15);
-                return null;
-            }
-
-            const s = d.toString().trim();
-            if (!s || s === 'null' || s === 'N/A') return null;
-
-            // 0. Handle Excel Serial Dates (e.g., "46113")
-            if (/^\d{5}$/.test(s) || (typeof d === 'number' && d > 40000)) {
-                const serial = parseFloat(s);
-                // Excel base date is Dec 30, 1899
-                const date = new Date((serial - 25569) * 86400 * 1000);
-                if (!isNaN(date.getTime())) return date;
-            }
-
-            // 1. Try ISO (yyyy-mm-dd)
-            if (/^\d{4}[-\/]\d{2}[-\/]\d{2}/.test(s)) {
-                const date = new Date(s);
-                if (!isNaN(date.getTime())) return date;
-            }
-
-            // 2. Try dd/mm/yyyy
-            try {
-                const parts = s.split(/[/\-.]/);
-                if (parts.length >= 3) {
-                    let p1 = parseInt(parts[0], 10);
-                    let p2 = parseInt(parts[1], 10);
-                    let p3 = parseInt(parts[2].split(' ')[0], 10);
-                    if (p1 <= 31 && p2 <= 12) {
-                        const year = p3 < 100 ? 2000 + p3 : p3;
-                        const date = new Date(year, p2 - 1, p1);
-                        if (!isNaN(date.getTime())) return date;
-                    }
-                }
-            } catch (e) { }
-
-            const fallback = new Date(s);
-            return isNaN(fallback.getTime()) ? null : fallback;
+        if (!kycData || !onboardingData) return { 
+            cityStats: [], 
+            clientStats: [], 
+            riderStatsRaw: [], 
+            totals: { kyc: 0, login: 0, diff: 0, conversion: 0 } 
         };
 
         const startDate = new Date(dateRange.start + 'T00:00:00');
         const endDate = new Date(dateRange.end + 'T23:59:59');
 
-        const filterByName = (data, rangeStart, rangeEnd) => {
-            return data.filter(item => {
-                const date = parseDateFlexible(
-                    item.deployment_date || item.date_record || item.created_at || item.timestamp,
-                    item.month
-                );
-                return date && date >= rangeStart && date <= rangeEnd;
+        const cityMap = new Map();
+        const riderMap = new Map();
+        const riderList = [];
+
+        const processDataset = (data, type) => {
+            data.forEach(item => {
+                const ids = getAllIds(item);
+                if (ids.length === 0) return;
+                
+                const inPeriod = isDateInRange(item, startDate, endDate);
+                let rider = null;
+                for (const id of ids) {
+                    if (riderMap.has(id)) {
+                        rider = riderMap.get(id);
+                        break;
+                    }
+                }
+
+                if (!rider) {
+                    rider = {
+                        primaryId: ids[0],
+                        name: item.rider_name || 'N/A',
+                        city: normalize(item.city),
+                        client: (item.client && item.client !== 'null') ? item.client : 'Other',
+                        kycEver: type === 'kyc',
+                        loginEver: type === 'login',
+                        kycInPeriod: type === 'kyc' && inPeriod,
+                        loginInPeriod: type === 'login' && inPeriod,
+                        ids: new Set(ids)
+                    };
+                    riderList.push(rider);
+                } else {
+                    if (type === 'kyc') rider.kycEver = true;
+                    if (type === 'login') rider.loginEver = true;
+                    if (type === 'kyc' && inPeriod) rider.kycInPeriod = true;
+                    if (type === 'login' && inPeriod) rider.loginInPeriod = true;
+                    
+                    if (rider.name === 'N/A' && item.rider_name) rider.name = item.rider_name;
+                    if ((rider.city === 'Unknown' || !rider.city) && item.city) rider.city = normalize(item.city);
+                    if (rider.client === 'Other' && item.client) rider.client = item.client;
+                    ids.forEach(id => rider.ids.add(id));
+                }
+                ids.forEach(id => riderMap.set(id, rider));
             });
         };
 
-        const filteredKyc = filterByName(kycData, startDate, endDate);
-        const filteredOnboarding = filterByName(onboardingData, startDate, endDate);
+        processDataset(kycData, 'kyc');
+        processDataset(onboardingData, 'login');
 
-        // Normalized Mapping
-        const cityMap = new Map();
-        const normalize = (str) => {
-            const s = (str || 'Unknown').toString().trim().toUpperCase();
-            if (s === 'BANGALORE') return 'BENGALURU';
-            return s;
-        };
-        const toDisplay = (str) => {
-            const s = str.toLowerCase();
-            return s.charAt(0).toUpperCase() + s.slice(1);
-        };
+        // Filtered Lists for breakdowns
+        const filteredKyc = kycData.filter(i => isDateInRange(i, startDate, endDate));
+        const filteredOnboarding = onboardingData.filter(i => isDateInRange(i, startDate, endDate));
 
-        const getUniqueId = (item, idFields) => {
-            for (const f of idFields) {
-                const val = (item[f] || '').toString().trim().toLowerCase();
-                if (val && val.length > 2 && val !== 'null' && val !== 'n/a' && val !== 'nan') return val;
-            }
-            return null;
-        };
-
+        // Regional and Client Stats (Keep these focused on period activity)
         filteredKyc.forEach(item => {
             const cityKey = normalize(item.city);
             if (!cityMap.has(cityKey)) cityMap.set(cityKey, { display: toDisplay(item.city || 'Unknown'), kycRiders: new Set(), loginRiders: new Set() });
-            const rid = getUniqueId(item, ['rider_id', 'rider_mobile_number', 'pan_number', 'aadhar_number']);
-            if (rid) cityMap.get(cityKey).kycRiders.add(rid);
+            const ids = getAllIds(item);
+            if (ids.length > 0) ids.forEach(id => cityMap.get(cityKey).kycRiders.add(id));
         });
 
         filteredOnboarding.forEach(item => {
             const cityKey = normalize(item.city);
             if (!cityMap.has(cityKey)) cityMap.set(cityKey, { display: toDisplay(item.city || 'Unknown'), kycRiders: new Set(), loginRiders: new Set() });
-            const rid = getUniqueId(item, ['rider_id_details', 'rider_mobile_number']);
-            if (rid) cityMap.get(cityKey).loginRiders.add(rid);
-        });
-
-        // Advanced cross-referencing maps
-        const riderToClientMap = new Map();
-        const sourceToClientMap = new Map();
-        
-        onboardingData.forEach(item => {
-            const rid = getUniqueId(item, ['rider_id_details', 'rider_mobile_number']);
-            const cl = item.client && item.client !== 'null' ? item.client : null;
-            if (rid && cl) riderToClientMap.set(rid, cl);
-            if (item.source_name && cl) sourceToClientMap.set(item.source_name, cl);
+            const ids = getAllIds(item);
+            if (ids.length > 0) ids.forEach(id => cityMap.get(cityKey).loginRiders.add(id));
         });
 
         const clientMap = new Map();
@@ -128,17 +182,8 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
         };
 
         filteredKyc.forEach(item => {
-            const rid = getUniqueId(item, ['rider_id', 'rider_mobile_number', 'pan_number', 'aadhar_number']);
-            
-            // Priority for client attribution:
-            // 1. Direct record client
-            // 2. Rider ID match (from any FreshLogin record)
-            // 3. Source Name match (proxy for client)
-            let clientRaw = (item.client && item.client !== 'null') ? item.client : null;
-            if (!clientRaw && rid) clientRaw = riderToClientMap.get(rid);
-            if (!clientRaw && item.source_name) clientRaw = sourceToClientMap.get(item.source_name);
-            
-            clientRaw = clientRaw || 'Other';
+            const ids = getAllIds(item);
+            let clientRaw = (item.client && item.client !== 'null') ? item.client : 'Other';
             const clientKey = normalizeClient(clientRaw);
             
             if (!clientMap.has(clientKey)) {
@@ -148,21 +193,21 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                     loginRiders: new Set() 
                 });
             }
-            if (rid) clientMap.get(clientKey).kycRiders.add(rid);
+            if (ids.length > 0) ids.forEach(id => clientMap.get(clientKey).kycRiders.add(id));
         });
 
         filteredOnboarding.forEach(item => {
+            const ids = getAllIds(item);
             const clientRaw = (item.client || 'Other').toString().trim();
             const clientKey = normalizeClient(clientRaw);
             if (!clientMap.has(clientKey)) {
                 clientMap.set(clientKey, { 
-                    display: (clientKey === 'BIGBASKET') ? 'Bigbasket' : clientRaw, 
+                    display: (clientKey === 'BIGBASKET') ? 'Bigbasket' : (clientRaw === 'Other' ? 'Other' : clientRaw), 
                     kycRiders: new Set(), 
                     loginRiders: new Set() 
                 });
             }
-            const rid = getUniqueId(item, ['rider_id_details', 'rider_mobile_number']);
-            if (rid) clientMap.get(clientKey).loginRiders.add(rid);
+            if (ids.length > 0) ids.forEach(id => clientMap.get(clientKey).loginRiders.add(id));
         });
 
         const cityStats = Array.from(cityMap.values())
@@ -183,12 +228,24 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
             })
             .sort((a, b) => b.kycCount - a.kycCount);
 
-        const totalKyc = new Set(filteredKyc.map(i => getUniqueId(i, ['rider_id', 'rider_mobile_number', 'pan_number', 'aadhar_number'])).filter(Boolean)).size;
-        const totalLogin = new Set(filteredOnboarding.map(i => getUniqueId(i, ['rider_id_details', 'rider_mobile_number'])).filter(Boolean)).size;
+        const totalKyc = riderList.filter(r => r.kycInPeriod).length;
+        const totalLogin = riderList.filter(r => r.loginInPeriod).length;
+
+        const riderStatsRaw = riderList
+            .filter(r => r.kycInPeriod || r.loginInPeriod)
+            .map(r => ({
+                id: r.primaryId,
+                name: r.name,
+                city: toDisplay(r.city),
+                client: r.client,
+                kyc: r.kycEver,
+                login: r.loginEver
+            }));
 
         return {
             cityStats,
             clientStats,
+            riderStatsRaw,
             totals: {
                 kyc: totalKyc,
                 login: totalLogin,
@@ -197,6 +254,33 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
             }
         };
     }, [kycData, onboardingData, dateRange]);
+
+    const filteredRiderStats = useMemo(() => {
+        if (!processedData.riderStatsRaw) return [];
+        return processedData.riderStatsRaw.filter(r => 
+            r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            r.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            r.city.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            String(r.client).toLowerCase().includes(searchTerm.toLowerCase())
+        );
+    }, [processedData.riderStatsRaw, searchTerm]);
+
+    const handleExport = () => {
+        const dataToExport = filteredRiderStats.map(r => ({
+            'Rider Name': r.name,
+            'Rider ID/Phone': r.id,
+            'City': r.city,
+            'Client': r.client,
+            'KYC Done': r.kyc ? 'YES' : 'NO',
+            'Fresh Login': r.login ? 'YES' : 'NO',
+            'Overall Status': r.kyc && r.login ? 'Active' : (r.kyc ? 'Onboarded' : 'Pending KYC')
+        }));
+        
+        const ws = XLSX.utils.json_to_sheet(dataToExport);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Rider Breakdown");
+        XLSX.writeFile(wb, `Rider_Analytics_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+    };
 
     if (loading) return <div className="loading-container"><span className="loader"></span></div>;
 
@@ -331,6 +415,103 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                             </tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+
+            {/* Rider Wise Breakdown Table */}
+            <div className="table-card glass" style={{ marginTop: '2rem' }}>
+                <div className="table-header" style={{ padding: '1.25rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <Users size={20} className="text-primary" />
+                        <h3>Rider Wise Breakdown</h3>
+                        <span className="status-badge" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-dim)' }}>
+                            {filteredRiderStats.length} Riders
+                        </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '1rem' }}>
+                        <div className="search-box glass" style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', width: '300px' }}>
+                            <Search size={18} style={{ color: 'var(--text-dim)' }} />
+                            <input 
+                                type="text" 
+                                placeholder="Search riders, IDs or cities..." 
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none', width: '100%' }}
+                            />
+                        </div>
+                        <button 
+                            onClick={handleExport}
+                            className="btn-export"
+                            style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                gap: '0.5rem', 
+                                background: 'var(--primary-color)', 
+                                color: '#fff', 
+                                border: 'none', 
+                                padding: '0.5rem 1.25rem', 
+                                borderRadius: '8px', 
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                                transition: 'all 0.2s'
+                            }}
+                        >
+                            <Download size={18} />
+                            Excel Export
+                        </button>
+                    </div>
+                </div>
+                <div className="table-container" style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0' }}>
+                        <thead style={{ position: 'sticky', top: 0, background: '#1a1a1a', zIndex: 10 }}>
+                            <tr>
+                                <th>Rider Name</th>
+                                <th>Rider ID / Mobile</th>
+                                <th>City</th>
+                                <th>Client</th>
+                                <th style={{ textAlign: 'center' }}>KYC Status</th>
+                                <th style={{ textAlign: 'center' }}>Login Status</th>
+                                <th style={{ textAlign: 'center' }}>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredRiderStats.slice(0, 500).map((rider, idx) => (
+                                <tr key={rider.id + idx}>
+                                    <td style={{ fontWeight: 600 }}>{rider.name}</td>
+                                    <td>{rider.id}</td>
+                                    <td>{rider.city}</td>
+                                    <td style={{ color: 'var(--accent-purple)' }}>{rider.client}</td>
+                                    <td style={{ textAlign: 'center' }}>
+                                        {rider.kyc ? 
+                                            <span style={{ color: 'var(--accent-green)' }}>● Done</span> : 
+                                            <span style={{ color: 'var(--text-dim)' }}>○ Pending</span>
+                                        }
+                                    </td>
+                                    <td style={{ textAlign: 'center' }}>
+                                        {rider.login ? 
+                                            <span style={{ color: 'var(--accent-green)' }}>● Done</span> : 
+                                            <span style={{ color: 'var(--text-dim)' }}>○ Pending</span>
+                                        }
+                                    </td>
+                                    <td style={{ textAlign: 'center' }}>
+                                        {rider.kyc && rider.login ? 
+                                            <span className="status-badge active" style={{ fontSize: '0.8rem' }}>Complete</span> :
+                                            rider.kyc ? 
+                                            <span className="status-badge" style={{ fontSize: '0.8rem', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)' }}>Onboarded</span> :
+                                            <span className="status-badge return" style={{ fontSize: '0.8rem' }}>Login Only</span>
+                                        }
+                                    </td>
+                                </tr>
+                            ))}
+                            {filteredRiderStats.length > 500 && (
+                                <tr>
+                                    <td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '2rem' }}>
+                                        Showing first 500 riders. Use search or export for full list.
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
                 </div>
             </div>
 

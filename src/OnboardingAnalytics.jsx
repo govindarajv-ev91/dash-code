@@ -40,6 +40,26 @@ const getAllIds = (item) => {
     return Array.from(found);
 };
 
+const getVehicleNumber = (item) => {
+    const vehicleFields = [
+        'deployed_vehicle_number',
+        'deployment_vehicle_number',
+        'vehicle_number',
+        'vehicle_no',
+        'bike_number',
+        'bike_no'
+    ];
+    for (const field of vehicleFields) {
+        const val = item[field];
+        if (val === null || val === undefined) continue;
+        const normalized = val.toString().trim();
+        if (normalized && normalized.toLowerCase() !== 'null' && normalized.toLowerCase() !== 'n/a') {
+            return normalized;
+        }
+    }
+    return '';
+};
+
 const parseDateFlexible = (d, itemMonth) => {
     if (!d) {
         const m = (itemMonth || '').toLowerCase();
@@ -88,7 +108,7 @@ const isDateInRange = (item, start, end) => {
     return date && date >= start && date <= end;
 };
 
-const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
+const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) => {
     const [dateRange, setDateRange] = useState({
         start: format(new Date(new Date().getFullYear(), 0, 1), 'yyyy-MM-dd'),
         end: format(new Date(), 'yyyy-MM-dd')
@@ -134,7 +154,9 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                         loginEver: type === 'login',
                         kycInPeriod: type === 'kyc' && inPeriod,
                         loginInPeriod: type === 'login' && inPeriod,
-                        ids: new Set(ids)
+                        ids: new Set(ids),
+                        latestVehicleNumber: '',
+                        latestVehicleDate: null
                     };
                     riderList.push(rider);
                 } else {
@@ -148,12 +170,53 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                     if (rider.client === 'Other' && item.client) rider.client = item.client;
                     ids.forEach(id => rider.ids.add(id));
                 }
+
+                const vehicleNumber = getVehicleNumber(item);
+                if (vehicleNumber) {
+                    const recordDate = parseDateFlexible(
+                        item.deployment_date || item.date_record || item.created_at || item.timestamp,
+                        item.month
+                    );
+                    if (!rider.latestVehicleDate || (recordDate && recordDate > rider.latestVehicleDate)) {
+                        rider.latestVehicleDate = recordDate || rider.latestVehicleDate;
+                        rider.latestVehicleNumber = vehicleNumber;
+                    } else if (!rider.latestVehicleNumber) {
+                        rider.latestVehicleNumber = vehicleNumber;
+                    }
+                }
                 ids.forEach(id => riderMap.set(id, rider));
             });
         };
 
         processDataset(kycData, 'kyc');
         processDataset(onboardingData, 'login');
+
+        // Build latest deployed vehicle map from fleet records.
+        // This is the reliable source for deployed vehicle numbers.
+        const latestVehicleById = new Map();
+        (fleetData || []).forEach(item => {
+            const ids = getAllIds(item);
+            if (ids.length === 0) return;
+
+            const status = (item.vehicle_status || '').toString().toLowerCase();
+            if (!status.includes('deploy')) return;
+
+            const vehicleNumber = getVehicleNumber(item);
+            if (!vehicleNumber) return;
+
+            const recordDate = parseDateFlexible(
+                item.date_record || item.bike_deployed_date_sd_refund_request || item.created_at,
+                item.month
+            );
+            const recordTime = recordDate ? recordDate.getTime() : 0;
+
+            ids.forEach(id => {
+                const prev = latestVehicleById.get(id);
+                if (!prev || recordTime >= prev.time) {
+                    latestVehicleById.set(id, { vehicleNumber, time: recordTime });
+                }
+            });
+        });
 
         // Filtered Lists for breakdowns
         const filteredKyc = kycData.filter(i => isDateInRange(i, startDate, endDate));
@@ -233,14 +296,28 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
 
         const riderStatsRaw = riderList
             .filter(r => r.kycInPeriod || r.loginInPeriod)
-            .map(r => ({
-                id: r.primaryId,
-                name: r.name,
-                city: toDisplay(r.city),
-                client: r.client,
-                kyc: r.kycEver,
-                login: r.loginEver
-            }));
+            .map(r => {
+                let latestFleetVehicle = '';
+                let latestFleetVehicleTime = -1;
+                r.ids.forEach(id => {
+                    const v = latestVehicleById.get(id);
+                    if (!v) return;
+                    if (v.time >= latestFleetVehicleTime) {
+                        latestFleetVehicle = v.vehicleNumber;
+                        latestFleetVehicleTime = v.time;
+                    }
+                });
+
+                return {
+                    id: r.primaryId,
+                    name: r.name,
+                    city: toDisplay(r.city),
+                    client: r.client,
+                    kyc: r.kycEver,
+                    login: r.loginEver,
+                    latestVehicleNumber: latestFleetVehicle || r.latestVehicleNumber || 'N/A'
+                };
+            });
 
         return {
             cityStats,
@@ -253,7 +330,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                 conversion: totalKyc > 0 ? ((totalLogin / totalKyc) * 100).toFixed(1) : 0
             }
         };
-    }, [kycData, onboardingData, dateRange]);
+    }, [kycData, onboardingData, fleetData, dateRange]);
 
     const filteredRiderStats = useMemo(() => {
         if (!processedData.riderStatsRaw) return [];
@@ -261,7 +338,8 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
             r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
             r.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
             r.city.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            String(r.client).toLowerCase().includes(searchTerm.toLowerCase())
+            String(r.client).toLowerCase().includes(searchTerm.toLowerCase()) ||
+            String(r.latestVehicleNumber).toLowerCase().includes(searchTerm.toLowerCase())
         );
     }, [processedData.riderStatsRaw, searchTerm]);
 
@@ -273,6 +351,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
             'Client': r.client,
             'KYC Done': r.kyc ? 'YES' : 'NO',
             'Fresh Login': r.login ? 'YES' : 'NO',
+            'Last Deployed Vehicle Number': r.latestVehicleNumber,
             'Overall Status': r.kyc && r.login ? 'Active' : (r.kyc ? 'Onboarded' : 'Pending KYC')
         }));
         
@@ -472,6 +551,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                                 <th style={{ textAlign: 'center' }}>KYC Status</th>
                                 <th style={{ textAlign: 'center' }}>Login Status</th>
                                 <th style={{ textAlign: 'center' }}>Status</th>
+                                <th style={{ textAlign: 'center' }}>Last Deployed Vehicle Number</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -501,11 +581,14 @@ const OnboardingAnalytics = ({ kycData, onboardingData, loading }) => {
                                             <span className="status-badge return" style={{ fontSize: '0.8rem' }}>Login Only</span>
                                         }
                                     </td>
+                                    <td style={{ textAlign: 'center', fontWeight: 600 }}>
+                                        {rider.latestVehicleNumber}
+                                    </td>
                                 </tr>
                             ))}
                             {filteredRiderStats.length > 500 && (
                                 <tr>
-                                    <td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '2rem' }}>
+                                    <td colSpan="8" style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '2rem' }}>
                                         Showing first 500 riders. Use search or export for full list.
                                     </td>
                                 </tr>

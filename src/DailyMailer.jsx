@@ -4,24 +4,31 @@ import { format, subDays, subMonths, parse, isValid } from 'date-fns';
 import { 
     Mail, Calendar, MapPin, Briefcase, TrendingUp, 
     TrendingDown, Users, Package, ChevronRight, Copy, Check, Download, Activity, ChevronDown,
-    ArrowUpRight, ArrowDownRight, UserPlus
+    ArrowUpRight, ArrowDownRight, UserPlus, RefreshCcw
 } from 'lucide-react';
 
 // Reliable date parser for DD/MM/YYYY
+// Reliable date parser for DD/MM/YYYY or YYYY-MM-DD
 const parseCustomDate = (str) => {
     if (!str || str === 'null') return null;
     try {
-        const parts = str.toString().split('/');
-        if (parts.length === 3) {
-            const d = new Date(parts[2], parts[1] - 1, parts[0]);
-            return isValid(d) ? d : null;
+        const s = str.toString().trim();
+        // Handle DD/MM/YYYY
+        if (s.includes('/')) {
+            const parts = s.split('/');
+            if (parts.length === 3) {
+                // date-fns parse or native Date
+                const d = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+                return isValid(d) ? d : null;
+            }
         }
-        const d = new Date(str);
+        // Handle YYYY-MM-DD
+        const d = new Date(s);
         return isValid(d) ? d : null;
     } catch (e) { return null; }
 };
 
-const DailyMailer = ({ riderData, loading }) => {
+const DailyMailer = ({ riderData, loading, refreshData }) => {
     // Default to Yesterday (D-1) as requested
     const [selectedDate, setSelectedDate] = useState(() => {
         return format(subDays(new Date(), 1), 'yyyy-MM-dd');
@@ -51,12 +58,18 @@ const DailyMailer = ({ riderData, loading }) => {
         if (!riderData || !Array.isArray(riderData)) return { stats: [], totals: { today: 0, tRiders: 0, new: 0, mOrders: 0, mRiders: 0, mNew: 0, lwOrders: 0, lwRiders: 0, lwNew: 0, lmOrders: 0, lmRiders: 0, lmNew: 0 } };
 
         try {
-            const targetDateObj = new Date(selectedDate);
+            // Force local date creation to avoid UTC shift issues
+            const [ty, tm, td] = selectedDate.split('-').map(Number);
+            const targetDateObj = new Date(ty, tm - 1, td);
+            
             if (!isValid(targetDateObj)) return { stats: [], totals: { today: 0, tRiders: 0, new: 0, mOrders: 0, mRiders: 0, mNew: 0, lwOrders: 0, lwRiders: 0, lwNew: 0, lmOrders: 0, lmRiders: 0, lmNew: 0 } };
 
             const targetStr = format(targetDateObj, 'yyyy-MM-dd');
-            const lwStr = format(subDays(targetDateObj, 7), 'yyyy-MM-dd');
-            const lmStr = format(subMonths(targetDateObj, 1), 'yyyy-MM-dd');
+            const lwDate = subDays(targetDateObj, 7);
+            const lmDate = subMonths(targetDateObj, 1);
+            
+            const lwStr = format(lwDate, 'yyyy-MM-dd');
+            const lmStr = format(lmDate, 'yyyy-MM-dd');
             const targetMonth = targetDateObj.getMonth();
             const targetYear = targetDateObj.getFullYear();
 
@@ -84,54 +97,59 @@ const DailyMailer = ({ riderData, loading }) => {
 
             // Aggregation pass
             filteredData.forEach(item => {
-                const d = parseCustomDate(item.date_record);
-                if (!d) return;
-                const dateKey = format(d, 'yyyy-MM-dd');
-                const riderFirstDate = firstOrderMap.get(item.worker_code);
-                
-                const isToday = dateKey === targetStr;
-                const isLW = dateKey === lwStr;
-                const isLM = dateKey === lmStr;
-                const inMonth = d.getMonth() === targetMonth && d.getFullYear() === targetYear && d <= targetDateObj;
+                try {
+                    const d = parseCustomDate(item.date_record);
+                    if (!d) return;
+                    const dateKey = format(d, 'yyyy-MM-dd');
+                    const riderFirstDate = firstOrderMap.get(item.worker_code);
+                    
+                    const isToday = dateKey === targetStr;
+                    const isLW = dateKey === lwStr;
+                    const isLM = dateKey === lmStr;
+                    const inMonth = d.getMonth() === targetMonth && d.getFullYear() === targetYear && d <= targetDateObj;
 
-                if (!isToday && !inMonth && !isLW && !isLM) return;
+                    if (!isToday && !inMonth && !isLW && !isLM) return;
 
-                const name = (viewType === 'city' ? item.city : item.client) || 'Other';
-                if (!groups.has(name)) {
-                    groups.set(name, { 
-                        name, today: 0, tRiders: new Set(), todayNew: new Set(),
-                        mOrders: 0, mRiders: new Set(), mNew: new Set(),
-                        lwOrders: 0, lwRiders: new Set(), lwNew: new Set(),
-                        lmOrders: 0, lmRiders: new Set(), lmNew: new Set()
-                    });
-                }
-
-                const g = groups.get(name);
-                const amt = parseFloat(item.delivered || 0);
-
-                if (isToday) {
-                    g.today += amt;
-                    g.tRiders.add(item.worker_code);
-                    if (riderFirstDate === targetStr) g.todayNew.add(item.worker_code);
-                }
-                if (inMonth) {
-                    g.mOrders += amt;
-                    g.mRiders.add(item.worker_code);
-                    // Check if rider's absolute first day was in this month (MTD new)
-                    const fd = parseCustomDate(riderFirstDate);
-                    if (fd && fd.getMonth() === targetMonth && fd.getFullYear() === targetYear) {
-                        g.mNew.add(item.worker_code);
+                    const name = (viewType === 'city' ? item.city : item.client) || 'Other';
+                    if (!groups.has(name)) {
+                        groups.set(name, { 
+                            name, today: 0, tRiders: new Set(), todayNew: new Set(),
+                            mOrders: 0, mRiders: new Set(), mNew: new Set(),
+                            lwOrders: 0, lwRiders: new Set(), lwNew: new Set(),
+                            lmOrders: 0, lmRiders: new Set(), lmNew: new Set()
+                        });
                     }
-                }
-                if (isLW) {
-                    g.lwOrders += amt;
-                    g.lwRiders.add(item.worker_code);
-                    if (riderFirstDate === lwStr) g.lwNew.add(item.worker_code);
-                }
-                if (isLM) {
-                    g.lmOrders += amt;
-                    g.lmRiders.add(item.worker_code);
-                    if (riderFirstDate === lmStr) g.lmNew.add(item.worker_code);
+
+                    const g = groups.get(name);
+                    // Robust parsing for 'delivered'
+                    const amt = parseFloat(item.delivered?.toString().replace(/[^\d.-]/g, '') || 0) || 0;
+
+                    if (isToday) {
+                        g.today += amt;
+                        g.tRiders.add(item.worker_code);
+                        if (riderFirstDate === targetStr) g.todayNew.add(item.worker_code);
+                    }
+                    if (inMonth) {
+                        g.mOrders += amt;
+                        g.mRiders.add(item.worker_code);
+                        // Check if rider's absolute first day was in this month (MTD new)
+                        const fd = parseCustomDate(riderFirstDate);
+                        if (fd && fd.getMonth() === targetMonth && fd.getFullYear() === targetYear) {
+                            g.mNew.add(item.worker_code);
+                        }
+                    }
+                    if (isLW) {
+                        g.lwOrders += amt;
+                        g.lwRiders.add(item.worker_code);
+                        if (riderFirstDate === lwStr) g.lwNew.add(item.worker_code);
+                    }
+                    if (isLM) {
+                        g.lmOrders += amt;
+                        g.lmRiders.add(item.worker_code);
+                        if (riderFirstDate === lmStr) g.lmNew.add(item.worker_code);
+                    }
+                } catch (e) {
+                    console.warn("Row processing error:", e, item);
                 }
             });
 
@@ -226,8 +244,23 @@ const DailyMailer = ({ riderData, loading }) => {
             <header className="header">
                 <div>
                     <h1>Daily Performance Mailer</h1>
-                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem', alignItems: 'center' }}>
                         <span className="status-badge" style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)' }}>D-1 Performance</span>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginLeft: '0.5rem' }}>
+                            {riderData?.length?.toLocaleString()} records
+                        </span>
+                        <button 
+                            onClick={refreshData} 
+                            className="glass-btn" 
+                            style={{ 
+                                padding: '0.4rem', borderRadius: '50%', display: 'flex', alignItems: 'center', 
+                                justifyContent: 'center', color: 'var(--accent-blue)', cursor: 'pointer',
+                                background: 'rgba(59, 130, 246, 0.1)', border: 'none'
+                            }}
+                            title="Refresh Data"
+                        >
+                            <RefreshCcw size={14} className={loading ? 'spin' : ''} />
+                        </button>
                     </div>
                 </div>
                 <div className="flex-gap" style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
@@ -476,6 +509,8 @@ const DailyMailer = ({ riderData, loading }) => {
                 .date-input::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
                 .dropdown-menu::-webkit-scrollbar { width: 4px; }
                 .dropdown-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
+                .spin { animation: spin 1s linear infinite; }
+                @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
             `}} />
         </motion.div>
     );

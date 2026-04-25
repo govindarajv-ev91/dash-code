@@ -70,7 +70,7 @@ function App() {
     let allData = [];
     let from = 0;
     const size = 1000;
-    const batchSize = 5;
+    const batchSize = 10; // Increased concurrency
 
     while (true) {
        const promises = [];
@@ -83,16 +83,20 @@ function App() {
        let hitEnd = false;
        for (const res of results) {
            if (res.error) {
-               console.error(`Error ${table}:`, res.error);
+               console.error(`Error ${table} at range ${from}:`, res.error);
                hitEnd = true;
                break;
            }
-           if (res.data) {
-               allData = allData.concat(res.data);
+           if (res.data && res.data.length > 0) {
+               // Use spread for push to avoid concat overhead, but in chunks to avoid stack limits
+               allData.push(...res.data);
                if (res.data.length < size) {
                    hitEnd = true;
                    break;
                }
+           } else {
+               hitEnd = true;
+               break;
            }
        }
        if (hitEnd) break;
@@ -119,29 +123,43 @@ function App() {
     if (cachedRiders && cachedFleet) setLoading(false);
 
     try {
-      const riderCols = 'delivered,date_record,worker_code,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2';
+      const riderCols = 'delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number';
       const fleetCols = 'id,vehicle_number,rider_name,rider_id,vehicle_status,date_record,city_locations,bike_deployed_date_sd_refund_request,bike_return_date_sd_refund_request,created_at';
       const weeklyCols = 'inactive_days,date_record';
 
       const [riderRes, fleetRes, weeklyRes, kycRes, onboardingRes] = await Promise.all([
-        fetchAllData('rider_metrics', '*'),
+        fetchAllData('rider_metrics', riderCols),
         fetchAllData('fleet_data', fleetCols),
         fetchAllData('weekly_performance', weeklyCols),
         fetchAllData('rider_kyc', '*'),
         fetchAllData('rider_onboarding', '*')
       ]);
       
-      setRiderData(riderRes.data || []);
-      setFleetData(fleetRes.data || []);
-      setWeeklyData(weeklyRes.data || []);
-      setKycData(kycRes.data || []);
-      setOnboardingData(onboardingRes.data || []);
+      if (riderRes.data && riderRes.data.length > 0) {
+        setRiderData(riderRes.data);
+        cacheData('rider_metrics', riderRes.data);
+      }
       
-      cacheData('rider_metrics', riderRes.data || []);
-      cacheData('fleet_data', fleetRes.data || []);
-      cacheData('weekly_performance', weeklyRes.data || []);
-      cacheData('rider_kyc', kycRes.data || []);
-      cacheData('rider_onboarding', onboardingRes.data || []);
+      if (fleetRes.data && fleetRes.data.length > 0) {
+        setFleetData(fleetRes.data);
+        cacheData('fleet_data', fleetRes.data);
+      }
+
+      if (weeklyRes.data) {
+        setWeeklyData(weeklyRes.data);
+        cacheData('weekly_performance', weeklyRes.data);
+      }
+
+      if (kycRes.data) {
+        setKycData(kycRes.data);
+        cacheData('rider_kyc', kycRes.data);
+      }
+
+      if (onboardingRes.data) {
+        setOnboardingData(onboardingRes.data);
+        cacheData('rider_onboarding', onboardingRes.data);
+      }
+      
     } catch (error) {
       console.error('Fetch error:', error);
     } finally {
@@ -240,6 +258,7 @@ function App() {
           <OnboardingAnalytics
             kycData={kycData}
             onboardingData={onboardingData}
+            fleetData={fleetData}
             loading={loading}
           />
         ) : activePage === 'errorfinder' ? (
@@ -252,6 +271,7 @@ function App() {
           <DailyMailer
             riderData={riderData}
             loading={loading}
+            refreshData={fetchData}
           />
         ) : activePage === 'tempparser' ? (
           <TempSourceActive

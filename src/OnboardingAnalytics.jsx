@@ -172,7 +172,8 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                         metricsInPeriod: type === 'metrics' && inPeriod,
                         ids: new Set(ids),
                         latestVehicleNumber: '',
-                        latestVehicleDate: null
+                        latestVehicleDate: null,
+                        source: item.source || item.rider_source || ''
                     };
                     riderList.push(rider);
                 } else {
@@ -182,6 +183,8 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                     if (type === 'kyc' && inPeriod) rider.flInPeriod = true;
                     if (type === 'login' && inPeriod) rider.obInPeriod = true;
                     if (type === 'metrics' && inPeriod) rider.metricsInPeriod = true;
+                    
+                    if (item.source || item.rider_source) rider.source = item.source || item.rider_source;
                     
                     if (rider.name === 'N/A' && (item.rider_name || item.worker_name)) {
                         rider.name = item.rider_name || item.worker_name;
@@ -346,6 +349,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                     ob: r.obEver,
                     metrics: r.metricsEver,
                     metricsInPeriod: r.metricsInPeriod,
+                    source: r.source || 'N/A',
                     latestVehicleNumber: latestFleetVehicle || r.latestVehicleNumber || 'N/A'
                 };
             });
@@ -382,6 +386,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
             'Rider ID/Phone': r.id,
             'City': r.city,
             'Client': r.client,
+            'Source': r.source,
             'FL Done': r.fl ? 'YES' : 'NO',
             'OB Done': r.ob ? 'YES' : 'NO',
             'Last Deployed Vehicle Number': r.latestVehicleNumber,
@@ -400,6 +405,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
             'Rider ID/Phone': r.id,
             'City': r.city,
             'Client': r.client,
+            'Source': r.source,
             'FL Done': r.fl ? 'YES' : 'NO',
             'OB Done': r.ob ? 'YES' : 'NO',
             'Last Deployed Vehicle Number': r.latestVehicleNumber
@@ -637,6 +643,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                                             <th>Rider ID / Mobile</th>
                                             <th>City</th>
                                             <th>Client</th>
+                                            <th>Source</th>
                                             <th style={{ textAlign: 'center' }}>OB Status</th>
                                             <th style={{ textAlign: 'center' }}>FL Status</th>
                                         </tr>
@@ -648,6 +655,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                                                 <td>{r.id}</td>
                                                 <td>{r.city}</td>
                                                 <td style={{ color: 'var(--accent-purple)' }}>{r.client}</td>
+                                                <td>{r.source}</td>
                                                 <td style={{ textAlign: 'center' }}>
                                                     {r.ob ? <span style={{ color: 'var(--accent-green)' }}>Done</span> : <span style={{ color: 'var(--accent-red)' }}>Missing</span>}
                                                 </td>
@@ -715,6 +723,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                                 <th>Rider ID / Mobile</th>
                                 <th>City</th>
                                 <th>Client</th>
+                                <th>Source</th>
                                 <th style={{ textAlign: 'center' }}>OB Status</th>
                                 <th style={{ textAlign: 'center' }}>FL Status</th>
                                 <th style={{ textAlign: 'center' }}>Status</th>
@@ -728,6 +737,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, lo
                                     <td>{rider.id}</td>
                                     <td>{rider.city}</td>
                                     <td style={{ color: 'var(--accent-purple)' }}>{rider.client}</td>
+                                    <td>{rider.source}</td>
                                     <td style={{ textAlign: 'center' }}>
                                         {rider.ob ? 
                                             <span style={{ color: 'var(--accent-green)' }}>● Done</span> : 

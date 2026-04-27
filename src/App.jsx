@@ -259,6 +259,7 @@ function App() {
             kycData={kycData}
             onboardingData={onboardingData}
             fleetData={fleetData}
+            riderData={riderData}
             loading={loading}
           />
         ) : activePage === 'errorfinder' ? (

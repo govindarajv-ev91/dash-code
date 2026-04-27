@@ -4,7 +4,7 @@ import { format, isWithinInterval, startOfDay, endOfDay, parse } from 'date-fns'
 import * as XLSX from 'xlsx';
 import {
     Users, UserPlus, LogIn, TrendingUp, Filter, Calendar, MapPin,
-    Briefcase, ChevronDown, ChevronUp, Search, Activity, Download
+    Briefcase, ChevronDown, ChevronUp, Search, Activity, Download, X
 } from 'lucide-react';
 
 // Helper functions outside component to avoid hoisting issues and redundant declarations
@@ -23,10 +23,18 @@ const toDisplay = (str) => {
     } catch (e) { return 'Unknown'; }
 };
 
+const normalizeClient = (str) => {
+    try {
+        const s = (str || 'Other').toString().trim().toUpperCase();
+        if (s === 'BB' || s === 'BB NOW' || s === 'BIGBASKET' || s === 'BIG BASKET') return 'BIGBASKET';
+        return s;
+    } catch (e) { return 'OTHER'; }
+};
+
 const getAllIds = (item) => {
     const potentialFields = [
-        'rider_id', 'rider_id_details', 'rider_mobile_number', 
-        'pan_number', 'aadhar_number', 'worker_code', 'worker_id'
+        'worker_code', 'rider_id', 'rider_id_details', 'rider_mobile_number', 
+        'mob_number', 'pan_number', 'aadhar_number', 'worker_id'
     ];
     const found = new Set();
     potentialFields.forEach(f => {
@@ -35,6 +43,11 @@ const getAllIds = (item) => {
         const s = v.toString().trim().toLowerCase();
         if (s && s.length > 2 && s !== 'null' && s !== 'nan' && s !== 'n/a' && s !== 'undefined') {
             found.add(s);
+            // If it looks like a mobile number (10+ digits), add the last 10 digits as a normalized ID
+            const digits = s.replace(/\D/g, '');
+            if (digits.length >= 10) {
+                found.add(digits.slice(-10));
+            }
         }
     });
     return Array.from(found);
@@ -108,12 +121,13 @@ const isDateInRange = (item, start, end) => {
     return date && date >= start && date <= end;
 };
 
-const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) => {
+const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, riderData, loading }) => {
     const [dateRange, setDateRange] = useState({
         start: format(new Date(new Date().getFullYear(), 0, 1), 'yyyy-MM-dd'),
         end: format(new Date(), 'yyyy-MM-dd')
     });
     const [searchTerm, setSearchTerm] = useState('');
+    const [selectedDetail, setSelectedDetail] = useState(null); // { title: string, riders: [] }
 
     const processedData = useMemo(() => {
         if (!kycData || !onboardingData) return { 
@@ -147,25 +161,31 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                 if (!rider) {
                     rider = {
                         primaryId: ids[0],
-                        name: item.rider_name || 'N/A',
+                        name: item.rider_name || item.worker_name || 'N/A',
                         city: normalize(item.city),
                         client: (item.client && item.client !== 'null') ? item.client : 'Other',
-                        kycEver: type === 'kyc',
-                        loginEver: type === 'login',
-                        kycInPeriod: type === 'kyc' && inPeriod,
-                        loginInPeriod: type === 'login' && inPeriod,
+                        obEver: type === 'login',
+                        flEver: type === 'kyc',
+                        metricsEver: type === 'metrics',
+                        obInPeriod: type === 'login' && inPeriod,
+                        flInPeriod: type === 'kyc' && inPeriod,
+                        metricsInPeriod: type === 'metrics' && inPeriod,
                         ids: new Set(ids),
                         latestVehicleNumber: '',
                         latestVehicleDate: null
                     };
                     riderList.push(rider);
                 } else {
-                    if (type === 'kyc') rider.kycEver = true;
-                    if (type === 'login') rider.loginEver = true;
-                    if (type === 'kyc' && inPeriod) rider.kycInPeriod = true;
-                    if (type === 'login' && inPeriod) rider.loginInPeriod = true;
+                    if (type === 'kyc') rider.flEver = true;
+                    if (type === 'login') rider.obEver = true;
+                    if (type === 'metrics') rider.metricsEver = true;
+                    if (type === 'kyc' && inPeriod) rider.flInPeriod = true;
+                    if (type === 'login' && inPeriod) rider.obInPeriod = true;
+                    if (type === 'metrics' && inPeriod) rider.metricsInPeriod = true;
                     
-                    if (rider.name === 'N/A' && item.rider_name) rider.name = item.rider_name;
+                    if (rider.name === 'N/A' && (item.rider_name || item.worker_name)) {
+                        rider.name = item.rider_name || item.worker_name;
+                    }
                     if ((rider.city === 'Unknown' || !rider.city) && item.city) rider.city = normalize(item.city);
                     if (rider.client === 'Other' && item.client) rider.client = item.client;
                     ids.forEach(id => rider.ids.add(id));
@@ -188,6 +208,7 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
             });
         };
 
+        processDataset(riderData || [], 'metrics');
         processDataset(kycData, 'kyc');
         processDataset(onboardingData, 'login');
 
@@ -223,79 +244,87 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
         const filteredOnboarding = onboardingData.filter(i => isDateInRange(i, startDate, endDate));
 
         // Regional and Client Stats (Keep these focused on period activity)
-        filteredKyc.forEach(item => {
-            const cityKey = normalize(item.city);
-            if (!cityMap.has(cityKey)) cityMap.set(cityKey, { display: toDisplay(item.city || 'Unknown'), kycRiders: new Set(), loginRiders: new Set() });
-            const ids = getAllIds(item);
-            if (ids.length > 0) ids.forEach(id => cityMap.get(cityKey).kycRiders.add(id));
-        });
+        const filteredMetrics = (riderData || []).filter(i => isDateInRange(i, startDate, endDate));
 
-        filteredOnboarding.forEach(item => {
+        filteredMetrics.forEach(item => {
             const cityKey = normalize(item.city);
-            if (!cityMap.has(cityKey)) cityMap.set(cityKey, { display: toDisplay(item.city || 'Unknown'), kycRiders: new Set(), loginRiders: new Set() });
+            if (!cityMap.has(cityKey)) cityMap.set(cityKey, { 
+                display: toDisplay(item.city || 'Unknown'), 
+                activeIds: new Set(),
+                state: item.state || 'N/A'
+            });
             const ids = getAllIds(item);
-            if (ids.length > 0) ids.forEach(id => cityMap.get(cityKey).loginRiders.add(id));
+            if (ids.length > 0) ids.forEach(id => cityMap.get(cityKey).activeIds.add(id));
         });
 
         const clientMap = new Map();
-        const normalizeClient = (str) => {
-            const s = (str || 'Other').toString().trim().toUpperCase();
-            if (s === 'BB' || s === 'BB NOW' || s === 'BIGBASKET' || s === 'BIG BASKET') return 'BIGBASKET';
-            return s;
-        };
-
-        filteredKyc.forEach(item => {
+        filteredMetrics.forEach(item => {
             const ids = getAllIds(item);
-            let clientRaw = (item.client && item.client !== 'null') ? item.client : 'Other';
+            const clientRaw = (item.client && item.client !== 'null') ? item.client : 'Other';
             const clientKey = normalizeClient(clientRaw);
             
             if (!clientMap.has(clientKey)) {
                 clientMap.set(clientKey, { 
                     display: (clientKey === 'BIGBASKET') ? 'Bigbasket' : (clientRaw === 'Other' ? 'Other' : clientRaw), 
-                    kycRiders: new Set(), 
-                    loginRiders: new Set() 
+                    activeIds: new Set()
                 });
             }
-            if (ids.length > 0) ids.forEach(id => clientMap.get(clientKey).kycRiders.add(id));
-        });
-
-        filteredOnboarding.forEach(item => {
-            const ids = getAllIds(item);
-            const clientRaw = (item.client || 'Other').toString().trim();
-            const clientKey = normalizeClient(clientRaw);
-            if (!clientMap.has(clientKey)) {
-                clientMap.set(clientKey, { 
-                    display: (clientKey === 'BIGBASKET') ? 'Bigbasket' : (clientRaw === 'Other' ? 'Other' : clientRaw), 
-                    kycRiders: new Set(), 
-                    loginRiders: new Set() 
-                });
-            }
-            if (ids.length > 0) ids.forEach(id => clientMap.get(clientKey).loginRiders.add(id));
+            if (ids.length > 0) ids.forEach(id => clientMap.get(clientKey).activeIds.add(id));
         });
 
         const cityStats = Array.from(cityMap.values())
             .filter(s => normalize(s.display) !== 'UNKNOWN')
             .map(s => {
-                const kycCount = s.kycRiders.size;
-                const loginCount = s.loginRiders.size;
-                return { city: s.display, kycCount, loginCount, diff: kycCount - loginCount };
+                const cityKey = normalize(s.display);
+                const activeInCity = riderList.filter(r => 
+                    normalize(r.city) === cityKey && r.metricsInPeriod
+                );
+                
+                const totalActive = activeInCity.length;
+                const obDone = activeInCity.filter(r => r.obEver).length;
+                const flDone = activeInCity.filter(r => r.flEver).length;
+
+                return { 
+                    city: s.display, 
+                    state: s.state,
+                    totalActive, 
+                    obDone, 
+                    flDone, 
+                    obNotDone: totalActive - obDone, 
+                    flNotDone: totalActive - flDone 
+                };
             })
-            .sort((a, b) => b.kycCount - a.kycCount);
+            .sort((a, b) => b.totalActive - a.totalActive);
 
         const clientStats = Array.from(clientMap.values())
             .filter(s => normalizeClient(s.display) !== 'OTHER')
             .map(s => {
-                const kycCount = s.kycRiders.size;
-                const loginCount = s.loginRiders.size;
-                return { client: s.display, kycCount, loginCount, diff: kycCount - loginCount };
-            })
-            .sort((a, b) => b.kycCount - a.kycCount);
+                const clientKey = normalizeClient(s.display);
+                const activeInClient = riderList.filter(r => 
+                    normalizeClient(r.client) === clientKey && r.metricsInPeriod
+                );
+                
+                const totalActive = activeInClient.length;
+                const obDone = activeInClient.filter(r => r.obEver).length;
+                const flDone = activeInClient.filter(r => r.flEver).length;
 
-        const totalKyc = riderList.filter(r => r.kycInPeriod).length;
-        const totalLogin = riderList.filter(r => r.loginInPeriod).length;
+                return { 
+                    client: s.display, 
+                    totalActive, 
+                    obDone, 
+                    flDone, 
+                    obNotDone: totalActive - obDone, 
+                    flNotDone: totalActive - flDone 
+                };
+            })
+            .sort((a, b) => b.totalActive - a.totalActive);
+
+        const totalActiveRiders = riderList.filter(r => r.metricsInPeriod).length;
+        const totalObDone = riderList.filter(r => r.metricsInPeriod && r.obEver).length;
+        const totalFlDone = riderList.filter(r => r.metricsInPeriod && r.flEver).length;
 
         const riderStatsRaw = riderList
-            .filter(r => r.kycInPeriod || r.loginInPeriod)
+            .filter(r => r.kycInPeriod || r.loginInPeriod || r.metricsInPeriod)
             .map(r => {
                 let latestFleetVehicle = '';
                 let latestFleetVehicleTime = -1;
@@ -313,8 +342,10 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                     name: r.name,
                     city: toDisplay(r.city),
                     client: r.client,
-                    kyc: r.kycEver,
-                    login: r.loginEver,
+                    fl: r.flEver,
+                    ob: r.obEver,
+                    metrics: r.metricsEver,
+                    metricsInPeriod: r.metricsInPeriod,
                     latestVehicleNumber: latestFleetVehicle || r.latestVehicleNumber || 'N/A'
                 };
             });
@@ -324,13 +355,15 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
             clientStats,
             riderStatsRaw,
             totals: {
-                kyc: totalKyc,
-                login: totalLogin,
-                diff: totalKyc - totalLogin,
-                conversion: totalKyc > 0 ? ((totalLogin / totalKyc) * 100).toFixed(1) : 0
+                active: totalActiveRiders,
+                ob: totalObDone,
+                fl: totalFlDone,
+                obNotDone: totalActiveRiders - totalObDone,
+                flNotDone: totalActiveRiders - totalFlDone,
+                conversion: totalActiveRiders > 0 ? ((totalFlDone / totalActiveRiders) * 100).toFixed(1) : 0
             }
         };
-    }, [kycData, onboardingData, fleetData, dateRange]);
+    }, [kycData, onboardingData, fleetData, riderData, dateRange]);
 
     const filteredRiderStats = useMemo(() => {
         if (!processedData.riderStatsRaw) return [];
@@ -349,16 +382,53 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
             'Rider ID/Phone': r.id,
             'City': r.city,
             'Client': r.client,
-            'KYC Done': r.kyc ? 'YES' : 'NO',
-            'Fresh Login': r.login ? 'YES' : 'NO',
+            'FL Done': r.fl ? 'YES' : 'NO',
+            'OB Done': r.ob ? 'YES' : 'NO',
             'Last Deployed Vehicle Number': r.latestVehicleNumber,
-            'Overall Status': r.kyc && r.login ? 'Active' : (r.kyc ? 'Onboarded' : 'Pending KYC')
+            'Overall Status': r.metrics ? 'Active' : (r.fl && r.ob ? 'Complete' : (r.ob ? 'Onboarded' : 'Pending'))
         }));
         
         const ws = XLSX.utils.json_to_sheet(dataToExport);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Rider Breakdown");
         XLSX.writeFile(wb, `Rider_Analytics_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+    };
+
+    const handleDetailExport = (riders, title) => {
+        const dataToExport = riders.map(r => ({
+            'Rider Name': r.name,
+            'Rider ID/Phone': r.id,
+            'City': r.city,
+            'Client': r.client,
+            'FL Done': r.fl ? 'YES' : 'NO',
+            'OB Done': r.ob ? 'YES' : 'NO',
+            'Last Deployed Vehicle Number': r.latestVehicleNumber
+        }));
+        
+        const ws = XLSX.utils.json_to_sheet(dataToExport);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Detail List");
+        XLSX.writeFile(wb, `${title.replace(/\s+/g, '_')}_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+    };
+
+    const openDetail = (type, name, metric) => {
+        const cityKey = type === 'city' ? normalize(name) : null;
+        const clientKey = type === 'client' ? normalizeClient(name) : null;
+        
+        let list = processedData.riderStatsRaw.filter(r => {
+            const matchesLoc = type === 'city' ? normalize(r.city) === cityKey : normalizeClient(r.client) === clientKey;
+            if (!matchesLoc) return false;
+            
+            // Only consider riders who were active in the selected period
+            if (!r.metricsInPeriod) return false;
+
+            if (metric === 'ob_missing') return !r.ob;
+            if (metric === 'fl_missing') return !r.fl;
+            return true; // active
+        });
+
+        const title = `${metric === 'active' ? 'Active' : (metric === 'ob_missing' ? 'OB Missing' : 'FL Missing')} Riders - ${name}`;
+        setSelectedDetail({ title, riders: list });
     };
 
     if (loading) return <div className="loading-container"><span className="loader"></span></div>;
@@ -393,32 +463,32 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
             <section className="stats-grid">
                 <div className="stat-card glass">
                     <div className="flex-between">
-                        <UserPlus size={24} style={{ color: 'var(--accent-blue)' }} />
+                        <Users size={24} style={{ color: 'var(--accent-blue)' }} />
                     </div>
                     <div>
-                        <div className="label">Total Onboarded</div>
-                        <div className="value">{processedData.totals.kyc}</div>
+                        <div className="label">Total Active Riders</div>
+                        <div className="value">{processedData.totals.active}</div>
                     </div>
                 </div>
 
                 <div className="stat-card glass">
                     <div className="flex-between">
-                        <LogIn size={24} style={{ color: 'var(--accent-green)' }} />
-                        <span className="status-badge active">Fresh Logins</span>
+                        <UserPlus size={24} style={{ color: 'var(--accent-green)' }} />
+                        <span className="status-badge active">Integrity</span>
                     </div>
                     <div>
-                        <div className="label">Total Fresh Logins</div>
-                        <div className="value">{processedData.totals.login}</div>
+                        <div className="label">OB Done Matched</div>
+                        <div className="value">{processedData.totals.ob}</div>
                     </div>
                 </div>
 
                 <div className="stat-card glass">
                     <div className="flex-between">
-                        <TrendingUp size={24} style={{ color: 'var(--accent-red)' }} />
+                        <LogIn size={24} style={{ color: 'var(--accent-purple)' }} />
                     </div>
                     <div>
-                        <div className="label">Total Dropout Gap</div>
-                        <div className="value" style={{ color: 'var(--accent-red)' }}>{processedData.totals.diff}</div>
+                        <div className="label">FL Done Matched</div>
+                        <div className="value">{processedData.totals.fl}</div>
                     </div>
                 </div>
             </section>
@@ -437,21 +507,33 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                             <thead>
                                 <tr>
                                     <th>City Name</th>
-                                    <th style={{ textAlign: 'center' }}>Onboarding</th>
-                                    <th style={{ textAlign: 'center' }}>FreshLogin</th>
-                                    <th style={{ textAlign: 'center' }}>Difference</th>
+                                    <th>State</th>
+                                    <th style={{ textAlign: 'center' }}>Total Active</th>
+                                    <th style={{ textAlign: 'center' }}>OB Done</th>
+                                    <th style={{ textAlign: 'center' }}>FL Done</th>
+                                    <th style={{ textAlign: 'center' }}>OB Not Done</th>
+                                    <th style={{ textAlign: 'center' }}>FL Not Done</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {processedData.cityStats.map(stat => (
                                     <tr key={stat.city}>
                                         <td style={{ fontWeight: 600 }}>{stat.city}</td>
-                                        <td style={{ textAlign: 'center' }}>{stat.kycCount}</td>
-                                        <td style={{ textAlign: 'center' }}>{stat.loginCount}</td>
+                                        <td style={{ color: 'var(--text-dim)', fontSize: '0.9rem' }}>{stat.state}</td>
+                                        <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                                            <button onClick={() => openDetail('city', stat.city, 'active')} className="count-btn">{stat.totalActive}</button>
+                                        </td>
+                                        <td style={{ textAlign: 'center', color: 'var(--accent-blue)', fontWeight: 600 }}>{stat.obDone}</td>
+                                        <td style={{ textAlign: 'center', color: 'var(--accent-purple)', fontWeight: 600 }}>{stat.flDone}</td>
                                         <td style={{ textAlign: 'center' }}>
-                                            <span className="status-badge return" style={{ fontSize: '0.85rem' }}>
-                                                {stat.diff}
-                                            </span>
+                                            <button onClick={() => openDetail('city', stat.city, 'ob_missing')} className="status-badge return count-btn" style={{ fontSize: '0.85rem', border: 'none' }}>
+                                                {stat.obNotDone}
+                                            </button>
+                                        </td>
+                                        <td style={{ textAlign: 'center' }}>
+                                            <button onClick={() => openDetail('city', stat.city, 'fl_missing')} className="status-badge return count-btn" style={{ fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)', border: 'none' }}>
+                                                {stat.flNotDone}
+                                            </button>
                                         </td>
                                     </tr>
                                 ))}
@@ -473,21 +555,31 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                             <thead>
                                 <tr>
                                     <th>Client Name</th>
-                                    <th style={{ textAlign: 'center' }}>Onboarding</th>
-                                    <th style={{ textAlign: 'center' }}>FreshLogin</th>
-                                    <th style={{ textAlign: 'center' }}>Difference</th>
+                                    <th style={{ textAlign: 'center' }}>Total Active</th>
+                                    <th style={{ textAlign: 'center' }}>OB Done</th>
+                                    <th style={{ textAlign: 'center' }}>FL Done</th>
+                                    <th style={{ textAlign: 'center' }}>OB Not Done</th>
+                                    <th style={{ textAlign: 'center' }}>FL Not Done</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {processedData.clientStats.map(stat => (
                                     <tr key={stat.client}>
                                         <td style={{ fontWeight: 600, color: 'var(--accent-purple)' }}>{stat.client}</td>
-                                        <td style={{ textAlign: 'center' }}>{stat.kycCount}</td>
-                                        <td style={{ textAlign: 'center' }}>{stat.loginCount}</td>
+                                        <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                                            <button onClick={() => openDetail('client', stat.client, 'active')} className="count-btn">{stat.totalActive}</button>
+                                        </td>
+                                        <td style={{ textAlign: 'center', color: 'var(--accent-blue)', fontWeight: 600 }}>{stat.obDone}</td>
+                                        <td style={{ textAlign: 'center', color: 'var(--accent-purple)', fontWeight: 600 }}>{stat.flDone}</td>
                                         <td style={{ textAlign: 'center' }}>
-                                            <span style={{ color: stat.diff > 0 ? 'var(--accent-red)' : 'var(--accent-green)', fontWeight: 700 }}>
-                                                {stat.diff > 0 ? `+${stat.diff}` : stat.diff}
-                                            </span>
+                                            <button onClick={() => openDetail('client', stat.client, 'ob_missing')} className="count-btn" style={{ color: 'var(--accent-red)', fontWeight: 700, border: 'none', background: 'transparent' }}>
+                                                {stat.obNotDone}
+                                            </button>
+                                        </td>
+                                        <td style={{ textAlign: 'center' }}>
+                                            <button onClick={() => openDetail('client', stat.client, 'fl_missing')} className="count-btn" style={{ color: 'var(--accent-red)', fontWeight: 700, border: 'none', background: 'transparent' }}>
+                                                {stat.flNotDone}
+                                            </button>
                                         </td>
                                     </tr>
                                 ))}
@@ -496,6 +588,81 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                     </div>
                 </div>
             </div>
+
+            {/* Drill-down Detail Modal */}
+            <AnimatePresence>
+                {selectedDetail && (
+                    <>
+                        <motion.div 
+                            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                            onClick={() => setSelectedDetail(null)}
+                            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000, backdropFilter: 'blur(4px)' }}
+                        />
+                        <motion.div 
+                            initial={{ scale: 0.9, opacity: 0, y: 20 }} 
+                            animate={{ scale: 1, opacity: 1, y: 0 }} 
+                            exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                            className="glass"
+                            style={{ 
+                                position: 'fixed', top: '10%', left: '10%', right: '10%', bottom: '10%', 
+                                zIndex: 1001, padding: '2rem', display: 'flex', flexDirection: 'column',
+                                borderRadius: '24px', background: '#111827', border: '1px solid rgba(255,255,255,0.1)'
+                            }}
+                        >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                    <Activity className="text-primary" />
+                                    <h2 style={{ margin: 0 }}>{selectedDetail.title}</h2>
+                                    <span className="status-badge" style={{ background: 'rgba(255,255,255,0.05)' }}>{selectedDetail.riders.length} Riders</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '1rem' }}>
+                                    <button 
+                                        onClick={() => handleDetailExport(selectedDetail.riders, selectedDetail.title)}
+                                        className="btn-export"
+                                        style={{ background: 'var(--primary-color)', color: '#fff', border: 'none', padding: '0.5rem 1.25rem', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}
+                                    >
+                                        <Download size={18} /> Excel Export
+                                    </button>
+                                    <button onClick={() => setSelectedDetail(null)} className="glass-btn" style={{ padding: '0.5rem', borderRadius: '50%' }}>
+                                        <X size={20} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div style={{ flex: 1, overflowY: 'auto' }} className="table-container">
+                                <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0' }}>
+                                    <thead style={{ position: 'sticky', top: 0, background: '#111827', zIndex: 10 }}>
+                                        <tr>
+                                            <th>Rider Name</th>
+                                            <th>Rider ID / Mobile</th>
+                                            <th>City</th>
+                                            <th>Client</th>
+                                            <th style={{ textAlign: 'center' }}>OB Status</th>
+                                            <th style={{ textAlign: 'center' }}>FL Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {selectedDetail.riders.map((r, i) => (
+                                            <tr key={r.id + i}>
+                                                <td style={{ fontWeight: 600 }}>{r.name}</td>
+                                                <td>{r.id}</td>
+                                                <td>{r.city}</td>
+                                                <td style={{ color: 'var(--accent-purple)' }}>{r.client}</td>
+                                                <td style={{ textAlign: 'center' }}>
+                                                    {r.ob ? <span style={{ color: 'var(--accent-green)' }}>Done</span> : <span style={{ color: 'var(--accent-red)' }}>Missing</span>}
+                                                </td>
+                                                <td style={{ textAlign: 'center' }}>
+                                                    {r.fl ? <span style={{ color: 'var(--accent-green)' }}>Done</span> : <span style={{ color: 'var(--accent-red)' }}>Missing</span>}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </motion.div>
+                    </>
+                )}
+            </AnimatePresence>
 
             {/* Rider Wise Breakdown Table */}
             <div className="table-card glass" style={{ marginTop: '2rem' }}>
@@ -548,8 +715,8 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                                 <th>Rider ID / Mobile</th>
                                 <th>City</th>
                                 <th>Client</th>
-                                <th style={{ textAlign: 'center' }}>KYC Status</th>
-                                <th style={{ textAlign: 'center' }}>Login Status</th>
+                                <th style={{ textAlign: 'center' }}>OB Status</th>
+                                <th style={{ textAlign: 'center' }}>FL Status</th>
                                 <th style={{ textAlign: 'center' }}>Status</th>
                                 <th style={{ textAlign: 'center' }}>Last Deployed Vehicle Number</th>
                             </tr>
@@ -562,23 +729,26 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                                     <td>{rider.city}</td>
                                     <td style={{ color: 'var(--accent-purple)' }}>{rider.client}</td>
                                     <td style={{ textAlign: 'center' }}>
-                                        {rider.kyc ? 
+                                        {rider.ob ? 
                                             <span style={{ color: 'var(--accent-green)' }}>● Done</span> : 
                                             <span style={{ color: 'var(--text-dim)' }}>○ Pending</span>
                                         }
                                     </td>
                                     <td style={{ textAlign: 'center' }}>
-                                        {rider.login ? 
+                                        {rider.fl ? 
                                             <span style={{ color: 'var(--accent-green)' }}>● Done</span> : 
                                             <span style={{ color: 'var(--text-dim)' }}>○ Pending</span>
                                         }
                                     </td>
                                     <td style={{ textAlign: 'center' }}>
-                                        {rider.kyc && rider.login ? 
-                                            <span className="status-badge active" style={{ fontSize: '0.8rem' }}>Complete</span> :
-                                            rider.kyc ? 
-                                            <span className="status-badge" style={{ fontSize: '0.8rem', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)' }}>Onboarded</span> :
-                                            <span className="status-badge return" style={{ fontSize: '0.8rem' }}>Login Only</span>
+                                        {rider.metrics ? 
+                                            <span className="status-badge active" style={{ fontSize: '0.8rem', background: 'var(--accent-green)', color: '#000' }}>Active</span> :
+                                            (rider.fl && rider.ob ? 
+                                                <span className="status-badge active" style={{ fontSize: '0.8rem' }}>Complete</span> :
+                                                rider.ob ? 
+                                                <span className="status-badge" style={{ fontSize: '0.8rem', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)' }}>OB Done</span> :
+                                                <span className="status-badge return" style={{ fontSize: '0.8rem' }}>FL Only</span>
+                                            )
                                         }
                                     </td>
                                     <td style={{ textAlign: 'center', fontWeight: 600 }}>
@@ -617,6 +787,24 @@ const OnboardingAnalytics = ({ kycData, onboardingData, fleetData, loading }) =>
                     justify-content: space-between;
                     align-items: center;
                     margin-bottom: 1rem;
+                }
+                .count-btn {
+                    background: transparent;
+                    border: none;
+                    color: inherit;
+                    font-weight: inherit;
+                    font-size: inherit;
+                    cursor: pointer;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    transition: background 0.2s;
+                    text-decoration: underline;
+                    text-underline-offset: 4px;
+                    text-decoration-color: rgba(255,255,255,0.2);
+                }
+                .count-btn:hover {
+                    background: rgba(255,255,255,0.1);
+                    text-decoration-color: currentColor;
                 }
             `}} />
         </motion.div>

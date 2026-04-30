@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import { 
   TrendingUp, Users, Truck, Calendar, Activity, 
-  ArrowUpRight, ArrowDownRight, RefreshCw, Search
+  ArrowUpRight, ArrowDownRight, RefreshCw, Search, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -14,7 +14,8 @@ import { clsx } from 'clsx';
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80'];
 
 const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) => {
-  const [timeRange, setTimeRange] = useState('All time');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
   // Process data for charts
@@ -27,25 +28,37 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
         const yyyy = part ? part.split(' ')[0] : '2026';
         date = `${yyyy}-${mm}-${dd}`;
       }
-      if (!acc[date]) acc[date] = 0;
-      acc[date] += (parseInt(curr.delivered, 10) || 0);
+
+      if (startDate && date < startDate) return acc;
+      if (endDate && date > endDate) return acc;
+
+      if (!acc[date]) acc[date] = { date, ev: 0, nonEv: 0, total: 0 };
+      
+      const delivered = parseInt(curr.delivered, 10) || 0;
+      acc[date].total += delivered;
+      
+      const t1 = String(curr.type1 || '').toUpperCase();
+      const t2 = String(curr.type2 || '').toUpperCase();
+      
+      const isEv1 = t1.includes('EV') && !t1.includes('NON');
+      const isEv2 = t2.includes('EV') && !t2.includes('NON');
+
+      if (isEv1 || isEv2) {
+        acc[date].ev += delivered;
+      } else {
+        acc[date].nonEv += delivered;
+      }
       return acc;
     }, {});
 
-    return Object.entries(grouped)
-      .map(([date, total]) => ({ date, total }))
+    return Object.values(grouped)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [riderData]);
+  }, [riderData, startDate, endDate]);
 
   const vehicleStatusDist = useMemo(() => {
-    const counts = fleetData.reduce((acc, curr) => {
-      const status = curr.vehicle_status || 'Unknown';
-      acc[status] = (acc[status] || 0) + 1;
-      return acc;
-    }, {});
-
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [fleetData]);
+    // Moved below filteredFleet, will define it after filteredFleet.
+    return [];
+  }, []);
 
   const combinedVehicles = useMemo(() => {
     const map = new Map();
@@ -137,29 +150,29 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
   }, [fleetData]);
 
   const stats = useMemo(() => {
-    const today = format(new Date(), 'yyyy-MM-dd');
-    const isToday = timeRange === 'Today';
-    
     let totalOrders = 0;
     const activeCodes = new Set();
-    const now = new Date();
-    const threeDaysAgo = new Date();
-    threeDaysAgo.setDate(now.getDate() - 3);
-    threeDaysAgo.setHours(0,0,0,0);
 
     riderData.forEach(r => {
       const delivered = parseInt(r.delivered, 10) || 0;
       const dateStr = r.date_record || '';
-      if (!isToday || dateStr.includes(today)) totalOrders += delivered;
+      
+      let yyyy_mm_dd = '';
+      if (dateStr.includes('/')) {
+        const [dd, mm, yPart] = dateStr.split('/');
+        const yyyy = yPart ? yPart.split(' ')[0] : '2026';
+        yyyy_mm_dd = `${yyyy}-${mm}-${dd}`;
+      } else if (dateStr) {
+        yyyy_mm_dd = dateStr;
+      }
 
-      if (delivered > 0 && r.worker_code) {
-        let d;
-        if (dateStr.includes('/')) {
-          const [dd, mm, yPart] = dateStr.split('/');
-          const yyyy = yPart ? yPart.split(' ')[0] : '2026';
-          d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-        } else if (dateStr) d = new Date(dateStr);
-        if (d && !isNaN(d.getTime()) && d >= threeDaysAgo) activeCodes.add(r.worker_code);
+      const isWithinDateRange = (!startDate || yyyy_mm_dd >= startDate) && (!endDate || yyyy_mm_dd <= endDate);
+
+      if (isWithinDateRange) {
+         totalOrders += delivered;
+         if (delivered > 0 && r.worker_code) {
+           activeCodes.add(r.worker_code);
+         }
       }
     });
 
@@ -168,39 +181,71 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
 
     combinedVehicles.forEach(item => {
       const s = item.status?.toLowerCase() || '';
-      if (isToday) {
-         const isDepToday = item.deployed_obj && format(item.deployed_obj, 'yyyy-MM-dd') === today;
-         const isRetToday = item.returned_obj && format(item.returned_obj, 'yyyy-MM-dd') === today;
-         if (s.includes('deploy') && isDepToday) activeVehicles++;
-         if (s.includes('return') && isRetToday) returnedVehicles++;
+      
+      let isDepWithin = false;
+      if (item.deployed_obj) {
+          const depDateStr = format(item.deployed_obj, 'yyyy-MM-dd');
+          isDepWithin = (!startDate || depDateStr >= startDate) && (!endDate || depDateStr <= endDate);
+      }
+      
+      let isRetWithin = false;
+      if (item.returned_obj) {
+          const retDateStr = format(item.returned_obj, 'yyyy-MM-dd');
+          isRetWithin = (!startDate || retDateStr >= startDate) && (!endDate || retDateStr <= endDate);
+      }
+
+      if (startDate || endDate) {
+          if (s.includes('deploy') && isDepWithin) activeVehicles++;
+          if (s.includes('return') && isRetWithin) returnedVehicles++;
       } else {
-         if (s.includes('deploy')) activeVehicles++;
-         if (s.includes('return')) returnedVehicles++;
+          if (s.includes('deploy')) activeVehicles++;
+          if (s.includes('return')) returnedVehicles++;
       }
     });
 
+    let changeStr = 'All Time';
+    if (startDate && endDate && startDate === endDate) changeStr = startDate;
+    else if (startDate && endDate) changeStr = `${startDate} to ${endDate}`;
+    else if (startDate) changeStr = `Since ${startDate}`;
+    else if (endDate) changeStr = `Until ${endDate}`;
+
     return [
-      { label: 'Total Orders', value: totalOrders.toLocaleString(), icon: TrendingUp, change: isToday ? 'Today' : 'All Time', isPositive: true },
-      { label: 'Active Riders', value: activeCodes.size.toLocaleString(), icon: Users, change: isToday ? 'Today' : 'All Time', isPositive: true },
-      { label: 'Deployed Vehicles', value: activeVehicles.toLocaleString(), icon: Truck, change: isToday ? 'Today' : 'All Time', isPositive: true },
-      { label: 'Returned Units', value: returnedVehicles.toLocaleString(), icon: Activity, change: isToday ? 'Today' : 'All Time', isPositive: false },
+      { label: 'Total Orders', value: totalOrders.toLocaleString(), icon: TrendingUp, change: changeStr, isPositive: true },
+      { label: 'Active Riders', value: activeCodes.size.toLocaleString(), icon: Users, change: changeStr, isPositive: true },
+      { label: 'Deployed Vehicles', value: activeVehicles.toLocaleString(), icon: Truck, change: changeStr, isPositive: true },
+      { label: 'Returned Units', value: returnedVehicles.toLocaleString(), icon: Activity, change: changeStr, isPositive: false },
     ];
-  }, [riderData, combinedVehicles, timeRange]);
+  }, [riderData, combinedVehicles, startDate, endDate]);
 
   const filteredFleet = useMemo(() => {
-    const today = format(new Date(), 'yyyy-MM-dd');
-    const isToday = timeRange === 'Today';
-
     return combinedVehicles.filter(item => {
-      if (isToday) {
-         const isDepToday = item.deployed_obj && format(item.deployed_obj, 'yyyy-MM-dd') === today;
-         const isRetToday = item.returned_obj && format(item.returned_obj, 'yyyy-MM-dd') === today;
-         if (!isDepToday && !isRetToday) return false;
+      if (startDate || endDate) {
+         let isDepWithin = false;
+         if (item.deployed_obj) {
+             const depDateStr = format(item.deployed_obj, 'yyyy-MM-dd');
+             isDepWithin = (!startDate || depDateStr >= startDate) && (!endDate || depDateStr <= endDate);
+         }
+         let isRetWithin = false;
+         if (item.returned_obj) {
+             const retDateStr = format(item.returned_obj, 'yyyy-MM-dd');
+             isRetWithin = (!startDate || retDateStr >= startDate) && (!endDate || retDateStr <= endDate);
+         }
+         if (!isDepWithin && !isRetWithin) return false;
       }
       const searchContent = `${item.vehicle_number} ${item.rider_name} ${item.city} ${item.status}`.toLowerCase();
       return searchContent.includes(searchTerm.toLowerCase());
     });
-  }, [combinedVehicles, searchTerm, timeRange]);
+  }, [combinedVehicles, searchTerm, startDate, endDate]);
+
+  const realVehicleStatusDist = useMemo(() => {
+    const counts = filteredFleet.reduce((acc, curr) => {
+      const status = curr.status || 'Unknown';
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {});
+
+    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+  }, [filteredFleet]);
 
   if (loading && riderData.length === 0) {
     return (
@@ -217,15 +262,28 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
           <h1>General Overview</h1>
           <p style={{ color: 'var(--text-dim)' }}>Fleet & Rider Performance Metrics</p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <button 
-            className="glass" 
-            style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: timeRange === 'Today' ? 'var(--primary)' : '#fff', cursor: 'pointer', border: timeRange === 'Today' ? '1px solid var(--primary)' : '1px solid transparent' }} 
-            onClick={() => setTimeRange(timeRange === 'Today' ? 'All time' : 'Today')}
-          >
-            <Calendar size={18} />
-            {timeRange === 'Today' ? 'Today Only' : 'All Time'}
-          </button>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.05)', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <Calendar size={18} style={{ color: 'var(--text-dim)' }} />
+            <input 
+              type="date" 
+              value={startDate} 
+              onChange={(e) => setStartDate(e.target.value)}
+              style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none' }}
+            />
+            <span style={{ color: 'var(--text-dim)' }}>to</span>
+            <input 
+              type="date" 
+              value={endDate} 
+              onChange={(e) => setEndDate(e.target.value)}
+              style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none' }}
+            />
+            {(startDate || endDate) && (
+              <button onClick={() => { setStartDate(''); setEndDate(''); }} style={{ background: 'transparent', border: 'none', color: 'var(--accent-red)', cursor: 'pointer', padding: '0 0.5rem' }}>
+                <X size={16} />
+              </button>
+            )}
+          </div>
           <button className="glass" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }} onClick={refreshData}>
             <RefreshCw size={18} /> Refresh
           </button>
@@ -258,7 +316,9 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
               <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
               <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
-              <Line type="monotone" dataKey="total" stroke="var(--primary)" strokeWidth={3} dot={{ fill: 'var(--primary)', r: 4 }} activeDot={{ r: 6, stroke: '#fff', strokeWidth: 2 }} />
+              <Legend verticalAlign="top" height={36}/>
+              <Line type="monotone" name="EV Orders" dataKey="ev" stroke="#4ade80" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              <Line type="monotone" name="Non-EV Orders" dataKey="nonEv" stroke="#f43f5e" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -267,8 +327,8 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
           <h3>Vehicle Status Distribution</h3>
           <ResponsiveContainer width="100%" height="90%">
             <PieChart>
-              <Pie data={vehicleStatusDist} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
-                {vehicleStatusDist.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+              <Pie data={realVehicleStatusDist} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
+                {realVehicleStatusDist.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
               </Pie>
               <Tooltip />
               <Legend verticalAlign="bottom" height={36}/>

@@ -8,7 +8,9 @@ import ErrorFinder from './ErrorFinder'
 import TempSourceActive from './TempSourceActive'
 import DailyMailer from './DailyMailer'
 import RiderDetails from './RiderDetails'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users } from 'lucide-react'
+import InactiveRiderMailer from './InactiveRiderMailer'
+import VehicleInventory from './VehicleInventory'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -61,46 +63,55 @@ function App() {
   const [weeklyData, setWeeklyData] = useState([])
   const [kycData, setKycData] = useState([])
   const [onboardingData, setOnboardingData] = useState([])
+  const [vehicleInventoryData, setVehicleInventoryData] = useState([])
 
   useEffect(() => {
     fetchData()
   }, [])
 
-  const fetchAllData = async (table, columns = '*') => {
+  const fetchAllData = async (table, columns = '*', orderBy = 'id') => {
     let allData = [];
     let from = 0;
     const size = 1000;
-    const batchSize = 10; // Increased concurrency
+    let consecutiveErrors = 0;
+
+    console.log(`Starting fetch for ${table}...`);
 
     while (true) {
-       const promises = [];
-       for (let i = 0; i < batchSize; i++) {
-           const start = from + (i * size);
-           promises.push(supabase.from(table).select(columns).range(start, start + size - 1));
-       }
-       const results = await Promise.all(promises);
-       
-       let hitEnd = false;
-       for (const res of results) {
-           if (res.error) {
-               console.error(`Error ${table} at range ${from}:`, res.error);
-               hitEnd = true;
-               break;
-           }
-           if (res.data && res.data.length > 0) {
-               // Use spread for push to avoid concat overhead, but in chunks to avoid stack limits
-               allData.push(...res.data);
-               if (res.data.length < size) {
-                   hitEnd = true;
-                   break;
-               }
-           } else {
-               hitEnd = true;
-               break;
-           }
-       }
-       if (hitEnd) break;
-       from += (batchSize * size);
+      try {
+        let query = supabase.from(table).select(columns);
+        if (orderBy) {
+          query = query.order(orderBy, { ascending: true });
+        }
+        
+        const { data, error } = await query.range(from, from + size - 1);
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          allData.push(...data);
+          consecutiveErrors = 0; // Reset on success
+          
+          if (data.length < size) break;
+          from += size;
+          
+          // Optional: log progress for very large tables
+          if (from % 10000 === 0) console.log(`${table}: Fetched ${from} rows...`);
+        } else {
+          break;
+        }
+      } catch (err) {
+        console.error(`Error fetching ${table} at ${from}:`, err);
+        consecutiveErrors++;
+        
+        if (consecutiveErrors > 3) {
+          console.error(`Giving up on ${table} after 3 retries.`);
+          break;
+        }
+        
+        // Wait 1s before retrying
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
     return { data: allData };
   };
@@ -113,38 +124,47 @@ function App() {
     const cachedWeekly = await getCachedData('weekly_performance');
     const cachedKyc = await getCachedData('rider_kyc');
     const cachedOnboarding = await getCachedData('rider_onboarding');
+    const cachedInventory = await getCachedData('vehicle_inventory');
 
     if (cachedRiders) setRiderData(cachedRiders);
     if (cachedFleet) setFleetData(cachedFleet);
     if (cachedWeekly) setWeeklyData(cachedWeekly);
     if (cachedKyc) setKycData(cachedKyc);
     if (cachedOnboarding) setOnboardingData(cachedOnboarding);
+    if (cachedInventory) setVehicleInventoryData(cachedInventory);
     
     if (cachedRiders && cachedFleet) setLoading(false);
 
     try {
-      const riderCols = 'delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number';
-      const fleetCols = 'id,vehicle_number,rider_name,rider_id,vehicle_status,date_record,city_locations,bike_deployed_date_sd_refund_request,bike_return_date_sd_refund_request,created_at';
-      const weeklyCols = 'inactive_days,date_record';
+      const riderCols = 'id,delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number';
+      const fleetCols = 'id,vehicle_number,rider_name,rider_id,rider_contact_number,email_address,vehicle_status,date_record,city_locations,bike_deployed_date_sd_refund_request,bike_return_date_sd_refund_request,created_at';
+      const weeklyCols = 'id,inactive_days,date_record';
 
-      const [riderRes, fleetRes, weeklyRes, kycRes, onboardingRes] = await Promise.all([
-        fetchAllData('rider_metrics', riderCols),
-        fetchAllData('fleet_data', fleetCols),
-        fetchAllData('weekly_performance', weeklyCols),
-        fetchAllData('rider_kyc', '*'),
-        fetchAllData('rider_onboarding', '*')
+      // --- STEP 1: PRIORITY FETCH (CRITICAL FOR DASHBOARD) ---
+      const [riderRes, fleetRes] = await Promise.all([
+        fetchAllData('rider_metrics', riderCols, null),
+        fetchAllData('fleet_data', fleetCols)
       ]);
       
-      if (riderRes.data && riderRes.data.length > 0) {
+      if (riderRes.data?.length) {
         setRiderData(riderRes.data);
         cacheData('rider_metrics', riderRes.data);
       }
-      
-      if (fleetRes.data && fleetRes.data.length > 0) {
+      if (fleetRes.data?.length) {
         setFleetData(fleetRes.data);
         cacheData('fleet_data', fleetRes.data);
       }
 
+      setLoading(false); // Make UI responsive as soon as primary data is ready
+
+      // --- STEP 2: BACKGROUND FETCH (SECONDARY TABLES) ---
+      const [weeklyRes, kycRes, onboardingRes, inventoryRes] = await Promise.all([
+        fetchAllData('weekly_rent', weeklyCols),
+        fetchAllData('rider_kyc', '*'),
+        fetchAllData('rider_onboarding', '*'),
+        fetchAllData('vehicle_inventory', '*')
+      ]);
+      
       if (weeklyRes.data) {
         setWeeklyData(weeklyRes.data);
         cacheData('weekly_performance', weeklyRes.data);
@@ -158,6 +178,11 @@ function App() {
       if (onboardingRes.data) {
         setOnboardingData(onboardingRes.data);
         cacheData('rider_onboarding', onboardingRes.data);
+      }
+
+      if (inventoryRes.data) {
+        setVehicleInventoryData(inventoryRes.data);
+        cacheData('vehicle_inventory', inventoryRes.data);
       }
       
     } catch (error) {
@@ -231,6 +256,13 @@ function App() {
             <Users size={20} />
             Rider Details
           </button>
+          <button 
+            className={`nav-item ${activePage === 'inactivemailer' ? 'active' : ''}`}
+            onClick={() => setActivePage('inactivemailer')}
+          >
+            <UserX size={20} />
+            Inactive Mailer
+          </button>
         </nav>
       </aside>
 
@@ -280,7 +312,7 @@ function App() {
             fleetData={fleetData}
             loading={loading}
           />
-        ) : (
+        ) : activePage === 'riderdetails' ? (
           <RiderDetails
             fleetData={fleetData}
             kycData={kycData}
@@ -288,7 +320,16 @@ function App() {
             riderData={riderData}
             loading={loading}
           />
-        )}
+        ) : activePage === 'inactivemailer' ? (
+          <InactiveRiderMailer
+            riderData={riderData}
+            kycData={kycData}
+            fleetData={fleetData}
+            onboardingData={onboardingData}
+            inventoryData={vehicleInventoryData}
+            loading={loading}
+          />
+        ) : null}
       </main>
     </div>
   )

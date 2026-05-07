@@ -21,53 +21,67 @@ const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }
 
         const riderMap = new Map();
 
-        // Enhanced ID detection handle multiple possible column names across 4 tables
-        const getPrimaryId = (item) => {
-            if (!item) return null;
-            const potentialId = 
-                item.rider_id || 
-                item.worker_code || 
-                item.rider_id_details || 
-                item.rider_mobile_number || 
-                item.mob_number ||
-                item.mobile_number ||
-                item.id;
-            
-            return potentialId?.toString().trim();
+        const getAllIds = (item) => {
+            if (!item) return [];
+            const fields = [
+                'worker_code', 'rider_id', 'rider_id_details', 'rider_mobile_number', 
+                'mob_number', 'mobile_number', 'phone', 'contact_number', 'rider_contact_number', 'id'
+            ];
+            const found = new Set();
+            for (const f of fields) {
+                const v = item[f];
+                if (v === null || v === undefined) continue;
+                const s = v.toString().trim().toLowerCase();
+                if (s && s !== 'n/a' && s !== 'null' && s !== 'undefined') {
+                    found.add(s);
+                }
+            }
+            return Array.from(found);
         };
 
         const processDataset = (data, source) => {
             if (!Array.isArray(data)) return;
             for (let i = 0; i < data.length; i++) {
                 const item = data[i];
-                const rawId = getPrimaryId(item);
-                if (!rawId) continue;
+                const ids = getAllIds(item);
+                if (ids.length === 0) continue;
                 
-                const idKey = rawId.toLowerCase();
+                let entry = null;
+                // Find existing rider by checking all possible IDs
+                for (const idKey of ids) {
+                    if (riderMap.has(idKey)) {
+                        entry = riderMap.get(idKey);
+                        break;
+                    }
+                }
 
-                let entry = riderMap.get(idKey);
                 if (!entry) {
                     entry = {
-                        id: rawId, // Keep original casing for display
+                        id: item.rider_id || item.worker_code || ids[0], // Prefer a formal ID for display
                         name: item.rider_name || item.worker_name || item.name || 'N/A',
-                        mobile: item.rider_mobile_number || item.mob_number || item.mobile_number || item.phone || 'N/A',
+                        mobile: item.rider_contact_number || item.contact_number || item.rider_mobile_number || item.mob_number || item.mobile_number || item.phone || 'N/A',
                         city: item.city || item.city_locations || item.rider_location || 'Unknown',
                         client: item.client || 'Other',
                         fleetInfo: [],
                         kycInfo: null,
                         onboardingInfo: null,
                         metricsInfo: [],
-                        sources: new Set([source])
+                        sources: new Set([source]),
+                        allIds: new Set(ids)
                     };
-                    riderMap.set(idKey, entry);
                 } else {
                     entry.sources.add(source);
+                    ids.forEach(id => entry.allIds.add(id));
+                    // Update formal ID if it was just a mobile number
+                    if (entry.id === ids[0] && (item.rider_id || item.worker_code)) {
+                        entry.id = item.rider_id || item.worker_code;
+                    }
                     // Use truthy values to update N/A fields
                     if ((entry.name === 'N/A' || !entry.name) && (item.rider_name || item.worker_name || item.name)) {
                         entry.name = item.rider_name || item.worker_name || item.name;
                     }
-                    if ((entry.mobile === 'N/A' || !entry.mobile) && (item.rider_mobile_number || item.mob_number || item.mobile_number)) {
-                        entry.mobile = item.rider_mobile_number || item.mob_number || item.mobile_number;
+                    if ((entry.mobile === 'N/A' || !entry.mobile) && (item.rider_contact_number || item.contact_number || item.rider_mobile_number || item.mob_number || item.mobile_number)) {
+                        entry.mobile = item.rider_contact_number || item.contact_number || item.rider_mobile_number || item.mob_number || item.mobile_number;
                     }
                     if ((entry.city === 'Unknown' || !entry.city) && (item.city || item.city_locations || item.rider_location)) {
                         entry.city = item.city || item.city_locations || item.rider_location;
@@ -76,6 +90,9 @@ const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }
                         entry.client = item.client;
                     }
                 }
+
+                // Ensure all IDs point to this entry
+                entry.allIds.forEach(id => riderMap.set(id, entry));
 
                 if (source === 'fleet') entry.fleetInfo.push(item);
                 if (source === 'kyc') entry.kycInfo = item;
@@ -90,7 +107,7 @@ const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }
         processDataset(kycData, 'kyc');
         processDataset(fleetData, 'fleet');
 
-        return Array.from(riderMap.values());
+        return Array.from(new Set(riderMap.values()));
     }, [fleetData, kycData, onboardingData, riderData]);
 
     const filteredData = useMemo(() => {

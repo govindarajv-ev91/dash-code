@@ -106,26 +106,32 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       const record = map.get(key);
       const rawStatus = item.vehicle_status || '';
       const statusLower = rawStatus.toLowerCase();
-      
-      const riderCols = 'delivered,date_record,worker_code,hub_name,city,client,cumulative_order,source,week,month,state';
-      const dateVal = item.date_record || item.bike_deployed_date_sd_refund_request || item.bike_return_date_sd_refund_request || item.created_at;
-      const parsedDate = parseCustomDate(dateVal);
 
-      if (parsedDate && (!record.latest_obj || parsedDate > record.latest_obj)) {
+      // Use created_at (ISO timestamp) for reliable ordering of latest status
+      const createdAt = item.created_at ? new Date(item.created_at) : null;
+      if (createdAt && (!record.latest_obj || createdAt > record.latest_obj)) {
           record.status = rawStatus;
-          record.latest_obj = parsedDate;
+          record.latest_obj = createdAt;
       } else if (!record.latest_obj && rawStatus) {
           record.status = rawStatus;
       }
-      
+
+      // Track deployed/returned dates from dedicated date columns
+      const deployDateVal = item.bike_deployed_date_sd_refund_request;
+      const returnDateVal = item.bike_return_date_sd_refund_request;
+      const deployParsed = parseCustomDate(deployDateVal);
+      const returnParsed = parseCustomDate(returnDateVal);
+
       if (statusLower.includes('deploy')) {
+         const parsedDate = deployParsed || createdAt;
          if (!record.deployed_obj || (parsedDate && parsedDate > record.deployed_obj)) {
-             record.deployed_date = dateVal;
+             record.deployed_date = deployDateVal || item.created_at;
              record.deployed_obj = parsedDate;
          }
       } else if (statusLower.includes('return')) {
+         const parsedDate = returnParsed || createdAt;
          if (!record.returned_obj || (parsedDate && parsedDate > record.returned_obj)) {
-             record.returned_date = dateVal;
+             record.returned_date = returnDateVal || item.created_at;
              record.returned_obj = parsedDate;
          }
       }
@@ -179,28 +185,25 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     let activeVehicles = 0;
     let returnedVehicles = 0;
 
+    // Count by current/latest status of each unique vehicle
     combinedVehicles.forEach(item => {
-      const s = item.status?.toLowerCase() || '';
-      
-      let isDepWithin = false;
-      if (item.deployed_obj) {
-          const depDateStr = format(item.deployed_obj, 'yyyy-MM-dd');
-          isDepWithin = (!startDate || depDateStr >= startDate) && (!endDate || depDateStr <= endDate);
-      }
-      
-      let isRetWithin = false;
-      if (item.returned_obj) {
-          const retDateStr = format(item.returned_obj, 'yyyy-MM-dd');
-          isRetWithin = (!startDate || retDateStr >= startDate) && (!endDate || retDateStr <= endDate);
-      }
+      const s = (item.status || '').toLowerCase().trim();
 
       if (startDate || endDate) {
-          if (s.includes('deploy') && isDepWithin) activeVehicles++;
-          if (s.includes('return') && isRetWithin) returnedVehicles++;
-      } else {
-          if (s.includes('deploy')) activeVehicles++;
-          if (s.includes('return')) returnedVehicles++;
+        // When date filter is active: count vehicles whose latest status date is within range
+        const latestDateStr = item.latest_obj ? format(item.latest_obj, 'yyyy-MM-dd') : '';
+        const isWithin = latestDateStr &&
+          (!startDate || latestDateStr >= startDate) &&
+          (!endDate || latestDateStr <= endDate);
+        if (!isWithin) return;
       }
+
+      // 'Deployee' + 'BGV' = deployed (bike is still with rider)
+      // 'Return' = returned units (excludes sub-statuses like 'Proof Return', 'SD Refund Request')
+      const isDeployed = s.includes('deployee') || s.includes('deploy') || s === 'bgv' || s === 'bgv done';
+      const isReturned = s === 'return';
+      if (isDeployed) activeVehicles++;
+      else if (isReturned) returnedVehicles++;
     });
 
     let changeStr = 'All Time';
@@ -310,30 +313,34 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       <div className="charts-grid">
         <div className="chart-card glass">
           <h3>Orders Performance</h3>
-          <ResponsiveContainer width="100%" height="90%">
-            <LineChart data={ordersByDate}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-              <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
-              <Legend verticalAlign="top" height={36}/>
-              <Line type="monotone" name="EV Orders" dataKey="ev" stroke="#4ade80" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-              <Line type="monotone" name="Non-EV Orders" dataKey="nonEv" stroke="#f43f5e" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-            </LineChart>
-          </ResponsiveContainer>
+          <div style={{ height: '300px', width: '100%' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={ordersByDate}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
+                <Legend verticalAlign="top" height={36}/>
+                <Line type="monotone" name="EV Orders" dataKey="ev" stroke="#4ade80" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                <Line type="monotone" name="Non-EV Orders" dataKey="nonEv" stroke="#f43f5e" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         <div className="chart-card glass">
           <h3>Vehicle Status Distribution</h3>
-          <ResponsiveContainer width="100%" height="90%">
-            <PieChart>
-              <Pie data={realVehicleStatusDist} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
-                {realVehicleStatusDist.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-              </Pie>
-              <Tooltip />
-              <Legend verticalAlign="bottom" height={36}/>
-            </PieChart>
-          </ResponsiveContainer>
+          <div style={{ height: '300px', width: '100%' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={realVehicleStatusDist} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
+                  {realVehicleStatusDist.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                </Pie>
+                <Tooltip />
+                <Legend verticalAlign="bottom" height={36}/>
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
 

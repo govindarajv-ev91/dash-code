@@ -10,6 +10,7 @@ import DailyMailer from './DailyMailer'
 import RiderDetails from './RiderDetails'
 import InactiveRiderMailer from './InactiveRiderMailer'
 import VehicleInventory from './VehicleInventory'
+import FleetDataViewer from './FleetDataViewer'
 import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database } from 'lucide-react'
 import './index.css'
 
@@ -60,6 +61,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [riderData, setRiderData] = useState([])
   const [fleetData, setFleetData] = useState([])
+  const [fleetTotalCount, setFleetTotalCount] = useState(0)
   const [weeklyData, setWeeklyData] = useState([])
   const [kycData, setKycData] = useState([])
   const [onboardingData, setOnboardingData] = useState([])
@@ -69,20 +71,33 @@ function App() {
     fetchData()
   }, [])
 
-  const fetchAllData = async (table, columns = '*', orderBy = 'id') => {
+  const fetchAllData = async (table, columns = '*', orderBy = null) => {
     let allData = [];
     let from = 0;
     const size = 1000;
     let consecutiveErrors = 0;
+    let totalCount = null;
+    const sortColumn = orderBy || 'id';
 
     console.log(`Starting fetch for ${table}...`);
 
+    try {
+      const { count, error: countError } = await supabase
+        .from(table)
+        .select('*', { count: 'exact', head: true });
+      if (countError) throw countError;
+      totalCount = count ?? 0;
+      console.log(`${table}: DB total count (head query) =`, totalCount);
+    } catch (countErr) {
+      console.error(`Count query failed for ${table}:`, countErr);
+    }
+
     while (true) {
+      if (totalCount !== null && from >= totalCount) break;
+
       try {
         let query = supabase.from(table).select(columns);
-        if (orderBy) {
-          query = query.order(orderBy, { ascending: true });
-        }
+        query = query.order(sortColumn, { ascending: true });
         
         const { data, error } = await query.range(from, from + size - 1);
 
@@ -91,14 +106,17 @@ function App() {
         if (data && data.length > 0) {
           allData.push(...data);
           consecutiveErrors = 0; // Reset on success
-          
-          if (data.length < size) break;
-          from += size;
+          from += data.length;
           
           // Optional: log progress for very large tables
           if (from % 10000 === 0) console.log(`${table}: Fetched ${from} rows...`);
+
+          if (data.length < size && (totalCount === null || from >= totalCount)) break;
         } else {
-          break;
+          // If total count is unknown or we've reached expected rows, stop.
+          // Otherwise retry the same window a few times before giving up.
+          if (totalCount === null || from >= totalCount) break;
+          throw new Error(`Empty page for ${table} at offset ${from} before reaching expected total ${totalCount}`);
         }
       } catch (err) {
         console.error(`Error fetching ${table} at ${from}:`, err);
@@ -113,7 +131,10 @@ function App() {
         await new Promise(r => setTimeout(r, 1000));
       }
     }
-    return { data: allData };
+    if (totalCount !== null && allData.length !== totalCount) {
+      console.warn(`${table}: fetched ${allData.length} rows but expected ${totalCount}. This usually means API errors/timeouts OR RLS/permissions are limiting visible rows.`);
+    }
+    return { data: allData, totalCount };
   };
 
   const fetchData = async () => {
@@ -137,38 +158,29 @@ function App() {
 
     try {
       const riderCols = 'id,delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number';
-      const fleetCols = 'id,vehicle_number,rider_name,rider_id,rider_contact_number,email_address,vehicle_status,date_record,city_locations,bike_deployed_date_sd_refund_request,bike_return_date_sd_refund_request,created_at';
       const weeklyCols = 'id,inactive_days,date_record';
 
-      // --- STEP 1: PRIORITY FETCH (CRITICAL FOR DASHBOARD) ---
-      const [riderRes, fleetRes] = await Promise.all([
-        fetchAllData('rider_metrics', riderCols, null),
-        fetchAllData('fleet_data', fleetCols)
-      ]);
+      // --- STEP 1: PRIORITY FETCH (DASHBOARD ONLY - FAST) ---
+      const riderRes = await fetchAllData('rider_metrics', riderCols, null);
       
       if (riderRes.data?.length) {
         setRiderData(riderRes.data);
         cacheData('rider_metrics', riderRes.data);
       }
-      if (fleetRes.data?.length) {
-        setFleetData(fleetRes.data);
-        cacheData('fleet_data', fleetRes.data);
-      }
 
-      setLoading(false); // Make UI responsive as soon as primary data is ready
+      setLoading(false); // Dashboard is ready!
 
-      // --- STEP 2: BACKGROUND FETCH (SECONDARY TABLES) ---
-      const [weeklyRes, kycRes, onboardingRes, inventoryRes] = await Promise.all([
-        fetchAllData('weekly_rent', weeklyCols),
+      // --- STEP 2: BACKGROUND FETCH (ALL SECONDARY TABLES + FULL FLEET DATA) ---
+      const [fleetRes, kycRes, onboardingRes, inventoryRes] = await Promise.all([
+        fetchAllData('fleet_data', '*'),
         fetchAllData('rider_kyc', '*'),
         fetchAllData('rider_onboarding', '*'),
         fetchAllData('vehicle_inventory', '*')
       ]);
-      
-      if (weeklyRes.data) {
-        setWeeklyData(weeklyRes.data);
-        cacheData('weekly_performance', weeklyRes.data);
-      }
+
+      setFleetData(fleetRes.data || []);
+      setFleetTotalCount(fleetRes.totalCount ?? fleetRes.data?.length ?? 0);
+      if (fleetRes.data?.length) cacheData('fleet_data', fleetRes.data);
 
       if (kycRes.data) {
         setKycData(kycRes.data);
@@ -263,6 +275,13 @@ function App() {
             <UserX size={20} />
             Inactive Mailer
           </button>
+          <button 
+            className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
+            onClick={() => setActivePage('fleetdata')}
+          >
+            <Database size={20} />
+            Fleet Data
+          </button>
         </nav>
       </aside>
 
@@ -328,6 +347,13 @@ function App() {
             onboardingData={onboardingData}
             inventoryData={vehicleInventoryData}
             loading={loading}
+          />
+        ) : activePage === 'fleetdata' ? (
+          <FleetDataViewer
+            fleetData={fleetData}
+            totalCount={fleetTotalCount}
+            loading={loading}
+            refreshData={fetchData}
           />
         ) : null}
       </main>

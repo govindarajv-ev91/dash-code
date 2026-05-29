@@ -7,6 +7,46 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
+const formatDateToDDMMYYYY = (dateStr) => {
+    if (!dateStr || dateStr === 'N/A') return 'N/A';
+    const cleanStr = String(dateStr).trim();
+    if (/^\d{2}-\d{2}-\d{4}$/.test(cleanStr)) return cleanStr;
+    const yyyymmddMatch = cleanStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (yyyymmddMatch) return yyyymmddMatch[3] + '-' + yyyymmddMatch[2] + '-' + yyyymmddMatch[1];
+    let targetStr = cleanStr;
+    if (cleanStr.includes(',')) {
+        const parts = cleanStr.split(',');
+        targetStr = parts[parts.length - 1].trim();
+    }
+    const tokens = targetStr.split(/\s+/);
+    if (tokens.length >= 3) {
+        const dayPart = tokens[0].replace(/\D/g, '');
+        const monthPart = tokens[1].toLowerCase();
+        const yearPart = tokens[2].replace(/\D/g, '');
+        const monthMap = {
+            jan: '01', january: '01', feb: '02', february: '02', mar: '03', march: '03',
+            apr: '04', april: '04', may: '05', jun: '06', june: '06', jul: '07', july: '07',
+            aug: '08', august: '08', sep: '09', september: '09', oct: '10', october: '10',
+            nov: '11', november: '11', dec: '12', december: '12'
+        };
+        const monthNum = monthMap[monthPart.substring(0, 3)] || monthMap[monthPart];
+        if (dayPart && monthNum && yearPart && yearPart.length === 4) {
+            const paddedDay = String(dayPart).padStart(2, '0');
+            return paddedDay + '-' + monthNum + '-' + yearPart;
+        }
+    }
+    try {
+        const d = new Date(cleanStr);
+        if (!isNaN(d.getTime())) {
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            return day + '-' + month + '-' + year;
+        }
+    } catch (e) {}
+    return cleanStr;
+};
+
 const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedRider, setSelectedRider] = useState(null);
@@ -147,6 +187,8 @@ const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }
             'Rider ID': r.id,
             'Rider Name': r.name,
             'Mobile Number': r.mobile,
+            'Date of Birth': formatDateToDDMMYYYY(r.kycInfo?.rider_dob),
+            'Age': r.kycInfo?.rider_age || 'N/A',
             'City': r.city,
             'Client': r.client,
             'Sources': Array.from(r.sources).join(', '),
@@ -387,6 +429,14 @@ const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }
                                         <div className="glass" style={{ padding: '1rem' }}>
                                             {selectedRider.kycInfo ? (
                                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                                    <div>
+                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>DATE OF BIRTH</div>
+                                                        <div style={{ fontWeight: 600, color: 'var(--accent-blue)' }}>{formatDateToDDMMYYYY(selectedRider.kycInfo.rider_dob)}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>AGE</div>
+                                                        <div style={{ fontWeight: 600 }}>{selectedRider.kycInfo.rider_age || 'N/A'}</div>
+                                                    </div>
                                                     <div>
                                                         <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>AADHAR</div>
                                                         <div style={{ fontWeight: 600 }}>{selectedRider.kycInfo.aadhar_number || 'N/A'}</div>

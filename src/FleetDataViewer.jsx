@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react'
-import { Search, Download, ChevronUp, ChevronDown, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, Database, X, Filter, Columns3, Eye, EyeOff, FileSpreadsheet } from 'lucide-react'
+import { Search, Download, ChevronUp, ChevronDown, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, Database, X, Filter, Columns3, Eye, EyeOff, FileSpreadsheet, BarChart3 } from 'lucide-react'
 import { downloadDeployReturnCsv } from './lib/fleetDeployReturnExport'
+import FleetSummaryReport from './FleetSummaryReport'
 
 const PAGE_SIZES = [25, 50, 100, 250]
 
@@ -262,6 +263,7 @@ function highlightText(text, highlight) {
 }
 
 export default function FleetDataViewer({ fleetData, totalCount = 0, sheetCount = 0, loading, refreshData }) {
+  const [activeTab, setActiveTab] = useState('data')
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState('date_record')
   const [sortDir, setSortDir] = useState('asc')
@@ -544,6 +546,35 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, sheetCount 
   const isMissingRows = totalCount > 0 && (fleetData?.length || 0) < totalCount
   const isFleetLoading = loading || refreshing
 
+  // Render summary view if active
+  if (activeTab === 'summary') {
+    return (
+      <div className="dashboard-container fdv-root">
+        {/* Tab Bar */}
+        <div className="fdv-tab-bar glass">
+          <button
+            className={`fdv-tab ${activeTab === 'data' ? 'fdv-tab-active' : ''}`}
+            onClick={() => setActiveTab('data')}
+            title="View fleet data table"
+          >
+            <Database size={16} />
+            Data
+          </button>
+          <button
+            className={`fdv-tab ${activeTab === 'summary' ? 'fdv-tab-active' : ''}`}
+            onClick={() => setActiveTab('summary')}
+            title="View fleet summary report"
+          >
+            <BarChart3 size={16} />
+            Summary Report
+          </button>
+        </div>
+
+        <FleetSummaryReport fleetData={fleetData} loading={loading} />
+      </div>
+    )
+  }
+
   return (
     <div className="dashboard-container fdv-root">
       {(refreshing || (loading && fleetData?.length > 0)) && (
@@ -554,6 +585,26 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, sheetCount 
           </span>
         </div>
       )}
+
+      {/* Tab Bar */}
+      <div className="fdv-tab-bar glass">
+        <button
+          className={`fdv-tab ${activeTab === 'data' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveTab('data')}
+          title="View fleet data table"
+        >
+          <Database size={16} />
+          Data
+        </button>
+        <button
+          className={`fdv-tab ${activeTab === 'summary' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveTab('summary')}
+          title="View fleet summary report"
+        >
+          <BarChart3 size={16} />
+          Summary Report
+        </button>
+      </div>
       {/* Loading banner when only partial data */}
       {isPartialData && !refreshing && (
         <div className="fdv-loading-banner glass">

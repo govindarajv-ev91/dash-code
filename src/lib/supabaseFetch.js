@@ -1,0 +1,73 @@
+import { supabase } from './supabaseClient'
+
+const DEFAULT_PAGE_SIZE = 1000
+const WIDE_PAGE_SIZE = 250
+
+/**
+ * Paginated table fetch. Uses keyset (cursor) pagination when orderBy is set —
+ * avoids slow OFFSET scans and statement timeouts on large tables.
+ */
+export async function fetchAllData(table, columns = '*', orderBy = 'id', options = {}) {
+  const isWideSelect = columns === '*'
+  let pageSize = options.pageSize ?? (isWideSelect ? WIDE_PAGE_SIZE : DEFAULT_PAGE_SIZE)
+  const useKeyset = orderBy != null && options.useKeyset !== false
+  const maxRetries = options.maxRetries ?? 5
+
+  const allData = []
+  let consecutiveErrors = 0
+  let cursor = null
+  let offset = 0
+
+  while (true) {
+    try {
+      let query = supabase.from(table).select(columns)
+      if (orderBy) query = query.order(orderBy, { ascending: true })
+
+      if (useKeyset) {
+        if (cursor != null) query = query.gt(orderBy, cursor)
+        query = query.limit(pageSize)
+      } else {
+        query = query.range(offset, offset + pageSize - 1)
+      }
+
+      const { data, error } = await query
+      if (error) throw error
+
+      if (!data?.length) break
+
+      allData.push(...data)
+      consecutiveErrors = 0
+
+      if (useKeyset) {
+        const lastRow = data[data.length - 1]
+        const nextCursor = lastRow?.[orderBy]
+        if (nextCursor == null) {
+          console.warn(`${table}: missing ${orderBy} on last row; stopping pagination.`)
+          break
+        }
+        cursor = nextCursor
+      } else {
+        offset += data.length
+      }
+
+      if (data.length < pageSize) break
+    } catch (err) {
+      const isTimeout = err?.code === '57014'
+      if (isTimeout && pageSize > 100) {
+        pageSize = Math.max(100, Math.floor(pageSize / 2))
+        console.warn(`${table}: query timed out; retrying with page size ${pageSize}.`)
+        consecutiveErrors = 0
+        continue
+      }
+
+      consecutiveErrors++
+      if (consecutiveErrors > maxRetries) {
+        console.error(`Stopped fetching ${table} after ${maxRetries} failures.`, err)
+        break
+      }
+      await new Promise((r) => setTimeout(r, 1000 * consecutiveErrors))
+    }
+  }
+
+  return { data: allData, totalCount: allData.length }
+}

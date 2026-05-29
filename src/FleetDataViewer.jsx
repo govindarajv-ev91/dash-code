@@ -1,12 +1,13 @@
-import React, { useState, useMemo, useCallback } from 'react'
-import { Search, Download, ChevronUp, ChevronDown, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, Database, X, Filter, Columns3, Eye, EyeOff } from 'lucide-react'
+import React, { useState, useMemo, useCallback, useEffect } from 'react'
+import { Search, Download, ChevronUp, ChevronDown, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, Database, X, Filter, Columns3, Eye, EyeOff, FileSpreadsheet } from 'lucide-react'
+import { downloadDeployReturnCsv } from './lib/fleetDeployReturnExport'
 
 const PAGE_SIZES = [25, 50, 100, 250]
 
 // ── Column ordering: grouped logically with payment/SD/source in the middle ──
 const ORDERED_KEYS = [
   // 🔵 Core / Rider Info
-  'id', 'date_record', 'vehicle_number', 'rider_name', 'rider_id',
+  'id', 'data_source', 'date_record', 'vehicle_number', 'rider_name', 'rider_id',
   'rider_contact_number', 'email_address', 'vehicle_status',
   'city_locations', 'client_name', 'hub_location', 'category',
   'keerthana_tc_chenai_tn',
@@ -164,6 +165,7 @@ function getHeaderColor(key) {
 // Friendly labels for known columns
 const LABELS = {
   id: 'ID',
+  data_source: 'Data Source',
   keerthana_tc_chenai_tn: 'Timestamp',
   email_address: 'Email',
   city_locations: 'City / Location',
@@ -259,7 +261,7 @@ function highlightText(text, highlight) {
   )
 }
 
-export default function FleetDataViewer({ fleetData, totalCount = 0, loading, refreshData }) {
+export default function FleetDataViewer({ fleetData, totalCount = 0, sheetCount = 0, loading, refreshData }) {
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState('date_record')
   const [sortDir, setSortDir] = useState('asc')
@@ -269,6 +271,29 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
   const [hiddenCols, setHiddenCols] = useState(new Set())
   const [showColManager, setShowColManager] = useState(false)
   const [showSuggestions, setShowSuggestions] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState('all') // all | Database | Google Sheet
+  const [refreshing, setRefreshing] = useState(false)
+
+  useEffect(() => {
+    if (!loading && refreshing) setRefreshing(false)
+  }, [loading, refreshing])
+
+  const sourceCounts = useMemo(() => {
+    if (!fleetData?.length) return { all: 0, database: 0, sheet: 0 }
+    let database = 0
+    let sheet = 0
+    for (const row of fleetData) {
+      if (row.data_source === 'Google Sheet') sheet++
+      else database++
+    }
+    return { all: fleetData.length, database, sheet }
+  }, [fleetData])
+
+  const sourceFiltered = useMemo(() => {
+    if (!fleetData) return []
+    if (sourceFilter === 'all') return fleetData
+    return fleetData.filter(row => (row.data_source || 'Database') === sourceFilter)
+  }, [fleetData, sourceFilter])
 
   // ---------- dynamic columns from data ----------
   const allColumns = useMemo(() => {
@@ -294,10 +319,10 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
   // Autocomplete suggestions based on typed search query across all visible / selected columns
   const suggestions = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (q.length < 2 || !fleetData) return []
+    if (q.length < 2 || !sourceFiltered.length) return []
 
     const matches = new Set()
-    for (const row of fleetData) {
+    for (const row of sourceFiltered) {
       if (matches.size >= 8) break // Limit to 8 suggestions for performance & readability
 
       if (columnFilter === 'all') {
@@ -335,15 +360,15 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
       }
     }
     return Array.from(matches)
-  }, [search, fleetData, columnFilter, visibleColumns])
+  }, [search, sourceFiltered, columnFilter, visibleColumns])
 
   // ---------- filtered + sorted data ----------
   const filtered = useMemo(() => {
-    if (!fleetData) return []
+    if (!sourceFiltered.length) return []
     const q = search.trim().toLowerCase()
-    if (!q) return [...fleetData]
+    if (!q) return [...sourceFiltered]
 
-    return fleetData.filter(row => {
+    return sourceFiltered.filter(row => {
       if (columnFilter === 'all') {
         return visibleColumns.some(col => {
           const v = row[col]
@@ -354,7 +379,12 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
         return v != null && v.toString().toLowerCase().includes(q)
       }
     })
-  }, [fleetData, search, columnFilter, visibleColumns])
+  }, [sourceFiltered, search, columnFilter, visibleColumns])
+
+  const handleSourceFilter = useCallback((value) => {
+    setSourceFilter(value)
+    setPage(0)
+  }, [])
 
   const sorted = useMemo(() => {
     const arr = [...filtered]
@@ -399,16 +429,24 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
   }, [])
 
   const handleClearCacheAndRefresh = useCallback(async () => {
+    setRefreshing(true)
     try {
-      // Open the db
       const request = indexedDB.open('DashFleetDB', 1)
+      request.onerror = () => {
+        console.error('IndexedDB open error:', request.error)
+        if (refreshData) refreshData()
+      }
       request.onsuccess = (e) => {
         const db = e.target.result
         try {
           const tx = db.transaction('cacheStore', 'readwrite')
-          tx.objectStore('cacheStore').delete('fleet_data')
+          const store = tx.objectStore('cacheStore')
+          store.delete('fleet_data')
+          store.delete('fleet_sheet_data')
           tx.oncomplete = () => {
-            console.log('Cache cleared successfully')
+            if (refreshData) refreshData()
+          }
+          tx.onerror = () => {
             if (refreshData) refreshData()
           }
         } catch (err) {
@@ -444,6 +482,11 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
 
   const showAllCols = useCallback(() => setHiddenCols(new Set()), [])
 
+  const exportDeployReturn = useCallback(() => {
+    const count = downloadDeployReturnCsv(fleetData || [])
+    console.log(`Deploy/Return export: ${count} rows (all Deployee cycles, duplicate vehicles kept)`)
+  }, [fleetData])
+
   // export CSV
   const exportCSV = useCallback(() => {
     const headers = visibleColumns.map(c => prettyLabel(c)).join(',')
@@ -468,6 +511,14 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
   const renderCell = (col, value) => {
     if (value == null || value === '') return <span className="fdv-cell-empty">—</span>
     if (col === 'vehicle_status') return <StatusBadge value={value} />
+    if (col === 'data_source') {
+      const isSheet = value === 'Google Sheet'
+      return (
+        <span className={`fdv-source-badge ${isSheet ? 'fdv-source-sheet' : 'fdv-source-db'}`}>
+          {value || 'Database'}
+        </span>
+      )
+    }
     const str = value.toString()
     if (isImageUrl(str)) {
       return <a href={str} target="_blank" rel="noopener noreferrer" className="fdv-link">📎 View</a>
@@ -491,14 +542,31 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
 
   const isPartialData = allColumns.length > 0 && allColumns.length < 20
   const isMissingRows = totalCount > 0 && (fleetData?.length || 0) < totalCount
+  const isFleetLoading = loading || refreshing
 
   return (
     <div className="dashboard-container fdv-root">
+      {(refreshing || (loading && fleetData?.length > 0)) && (
+        <div className="fdv-loading-banner glass fdv-refresh-loading-banner">
+          <span className="loader" style={{ width: 22, height: 22, borderWidth: 3 }} />
+          <span>
+            {refreshing ? 'Refreshing fleet data from database & Google Sheet…' : 'Loading fleet data…'}
+          </span>
+        </div>
+      )}
       {/* Loading banner when only partial data */}
-      {isPartialData && (
+      {isPartialData && !refreshing && (
         <div className="fdv-loading-banner glass">
           <span className="loader" style={{ width: 20, height: 20, borderWidth: 3 }}></span>
           <span>Loading full fleet data ({allColumns.length} columns loaded so far, ~100+ total)… Please wait a moment.</span>
+        </div>
+      )}
+      {!loading && sheetCount === 0 && sourceCounts.database > 0 && (
+        <div className="fdv-loading-banner glass" style={{ borderColor: 'rgba(251,113,133,0.35)' }}>
+          <span style={{ color: '#fb7185', fontWeight: 600 }}>Google Sheet not loaded:</span>
+          <span style={{ marginLeft: 8 }}>
+            0 rows imported from the published sheet. Click <b>Refresh Cache</b> to retry (uses proxy + fallback fetch).
+          </span>
         </div>
       )}
       {isMissingRows && (
@@ -521,13 +589,23 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
           <button
             className="fdv-refresh-btn"
             onClick={handleClearCacheAndRefresh}
+            disabled={isFleetLoading}
             title="Clear cache and fetch full columns fresh from database"
           >
-            Refresh Cache
+            {isFleetLoading ? (
+              <>
+                <span className="loader fdv-btn-loader" />
+                Refreshing…
+              </>
+            ) : (
+              'Refresh Cache'
+            )}
           </button>
           <span className="fdv-row-count">
-            {sorted.length.toLocaleString()} {sorted.length !== fleetData.length ? `of ${fleetData.length.toLocaleString()}` : ''} rows
-            {totalCount > 0 ? ` (DB total: ${totalCount.toLocaleString()})` : ''}
+            {sorted.length.toLocaleString()}
+            {sorted.length !== sourceFiltered.length ? ` of ${sourceFiltered.length.toLocaleString()}` : ''} rows
+            {sourceFilter !== 'all' ? ` · ${sourceFilter}` : ''}
+            {totalCount > 0 && sourceFilter !== 'Google Sheet' ? ` (DB: ${totalCount.toLocaleString()})` : ''}
           </span>
           <span className="fdv-row-count">
             {visibleColumns.length} / {allColumns.length} cols
@@ -539,7 +617,14 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
           >
             <Columns3 size={16} /> Columns
           </button>
-          <button className="fdv-export-btn" onClick={exportCSV} title="Download CSV">
+          <button
+            className="fdv-export-btn"
+            onClick={exportDeployReturn}
+            title="Export every Deployee row with paired Return (duplicate vehicles & riders included)"
+          >
+            <FileSpreadsheet size={16} /> Deploy/Return
+          </button>
+          <button className="fdv-export-btn" onClick={exportCSV} title="Download visible table as CSV">
             <Download size={16} /> Export
           </button>
         </div>
@@ -572,6 +657,34 @@ export default function FleetDataViewer({ fleetData, totalCount = 0, loading, re
           </div>
         </div>
       )}
+
+      {/* Data source filter */}
+      <div className="fdv-source-filter glass">
+        <span className="fdv-source-filter-label">Data source</span>
+        <div className="fdv-source-filter-btns">
+          <button
+            type="button"
+            className={`fdv-source-btn ${sourceFilter === 'all' ? 'fdv-source-btn-active' : ''}`}
+            onClick={() => handleSourceFilter('all')}
+          >
+            All <span className="fdv-source-btn-count">{sourceCounts.all.toLocaleString()}</span>
+          </button>
+          <button
+            type="button"
+            className={`fdv-source-btn fdv-source-btn-db ${sourceFilter === 'Database' ? 'fdv-source-btn-active' : ''}`}
+            onClick={() => handleSourceFilter('Database')}
+          >
+            Database <span className="fdv-source-btn-count">{sourceCounts.database.toLocaleString()}</span>
+          </button>
+          <button
+            type="button"
+            className={`fdv-source-btn fdv-source-btn-sheet ${sourceFilter === 'Google Sheet' ? 'fdv-source-btn-active' : ''}`}
+            onClick={() => handleSourceFilter('Google Sheet')}
+          >
+            Google Sheet <span className="fdv-source-btn-count">{(sheetCount || sourceCounts.sheet).toLocaleString()}</span>
+          </button>
+        </div>
+      </div>
 
       {/* Search + Column filter bar */}
       <div className="fdv-search-bar glass">

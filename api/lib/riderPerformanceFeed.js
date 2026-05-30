@@ -1,9 +1,45 @@
 import { buildRiderPerformanceReport } from '../../src/lib/riderPerformanceReport.js'
-import {
-  FLEET_SHEET_CSV_URL,
-  mapGoogleSheetRowsToFleetKeys,
-} from '../../src/lib/fleetSheetMerge.js'
-import { fetchAllRows } from './supabaseServer.js'
+import { fetchAllRows, fetchAllFleetTables, getSupabase } from './supabaseServer.js'
+
+const RIDER_PERFORMANCE_CACHE_KEY = 'rider_performance_api_v1'
+const API_CACHE_TTL_MS = 10 * 60 * 1000
+
+async function readApiCache(cacheKey = RIDER_PERFORMANCE_CACHE_KEY) {
+  try {
+    const supabase = getSupabase()
+    const { data, error } = await supabase
+      .from('api_cache')
+      .select('payload, updated_at')
+      .eq('cache_key', cacheKey)
+      .maybeSingle()
+
+    if (error || !data?.payload?.rows?.length) return null
+
+    const age = Date.now() - new Date(data.updated_at).getTime()
+    if (age > API_CACHE_TTL_MS) return null
+
+    return { rows: data.payload.rows, updatedAt: data.updated_at, fromCache: true }
+  } catch {
+    return null
+  }
+}
+
+async function writeApiCache(rows, cacheKey = RIDER_PERFORMANCE_CACHE_KEY) {
+  try {
+    const supabase = getSupabase()
+    const { error } = await supabase.from('api_cache').upsert(
+      {
+        cache_key: cacheKey,
+        payload: { rows },
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'cache_key' }
+    )
+    return !error
+  } catch {
+    return false
+  }
+}
 
 const RIDER_COLS =
   'id,delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number,fl'
@@ -44,64 +80,64 @@ function buildGoogleTsvBody(columns, rows, includeHeader) {
   return lines.join('\n')
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000
-let reportCache = { rows: null, builtAt: 0, building: null }
+const MEMORY_CACHE_TTL_MS = 5 * 60 * 1000
+let memoryCache = { rows: null, builtAt: 0, building: null }
 
-export async function getCachedReportRows(asOfDate = new Date()) {
-  const now = Date.now()
-  if (reportCache.rows && now - reportCache.builtAt < CACHE_TTL_MS) {
-    return reportCache.rows
-  }
-  if (reportCache.building) {
-    return reportCache.building
+export async function buildFreshApiRows(asOfDate = new Date()) {
+  const [riderRows, fleetRows] = await Promise.all([
+    fetchAllRows('rider_metrics', RIDER_COLS, null, 1000),
+    fetchAllFleetTables(FLEET_COLS, 250),
+  ])
+  const reportRows = buildRiderPerformanceReport(fleetRows, riderRows, asOfDate)
+  return pickRiderPerformanceApiRows(reportRows)
+}
+
+export async function getCachedApiRows(asOfDate = new Date(), { forceRebuild = false } = {}) {
+  if (!forceRebuild) {
+    const dbCache = await readApiCache()
+    if (dbCache?.rows?.length) {
+      memoryCache = { rows: dbCache.rows, builtAt: Date.now(), building: null }
+      return { rows: dbCache.rows, fromCache: true, updatedAt: dbCache.updatedAt }
+    }
+
+    const now = Date.now()
+    if (memoryCache.rows && now - memoryCache.builtAt < MEMORY_CACHE_TTL_MS) {
+      return { rows: memoryCache.rows, fromCache: true, updatedAt: new Date(memoryCache.builtAt).toISOString() }
+    }
   }
 
-  reportCache.building = loadRiderPerformanceReportRows(asOfDate)
-    .then((rows) => {
-      reportCache.rows = rows
-      reportCache.builtAt = Date.now()
-      reportCache.building = null
+  if (memoryCache.building) {
+    const rows = await memoryCache.building
+    return { rows, fromCache: false, updatedAt: new Date().toISOString() }
+  }
+
+  memoryCache.building = buildFreshApiRows(asOfDate)
+    .then(async (rows) => {
+      memoryCache.rows = rows
+      memoryCache.builtAt = Date.now()
+      memoryCache.building = null
+      await writeApiCache(rows)
       return rows
     })
     .catch((err) => {
-      reportCache.building = null
+      memoryCache.building = null
       throw err
     })
 
-  return reportCache.building
+  const rows = await memoryCache.building
+  return { rows, fromCache: false, updatedAt: new Date().toISOString() }
+}
+
+/** @deprecated use getCachedApiRows */
+export async function getCachedReportRows(asOfDate = new Date()) {
+  return loadRiderPerformanceReportRows(asOfDate)
 }
 
 export async function loadRiderPerformanceReportRows(asOfDate = new Date()) {
-  const [riderRows, dbFleetRows] = await Promise.all([
+  const [riderRows, fleetRows] = await Promise.all([
     fetchAllRows('rider_metrics', RIDER_COLS, null, 1000),
-    fetchAllRows('fleet_data', FLEET_COLS, 'id', 250),
+    fetchAllFleetTables(FLEET_COLS, 250),
   ])
-
-  const fleetDb = (dbFleetRows || []).map((row) => ({
-    ...row,
-    data_source: 'Database',
-  }))
-
-  let sheetFleetRows = []
-  try {
-    const upstream = await fetch(FLEET_SHEET_CSV_URL, {
-      headers: {
-        Accept: 'text/csv,text/plain,*/*',
-        'User-Agent': 'FleetProDashboard/1.0',
-      },
-      cache: 'no-store',
-    })
-    if (upstream.ok) {
-      const csvText = await upstream.text()
-      const sampleKeys = fleetDb.length ? Object.keys(fleetDb[0]) : []
-      const { rows } = mapGoogleSheetRowsToFleetKeys(csvText, sampleKeys)
-      sheetFleetRows = rows
-    }
-  } catch (err) {
-    console.warn('[rider-performance-feed] Google Sheet fleet merge skipped:', err?.message)
-  }
-
-  const fleetRows = [...fleetDb, ...sheetFleetRows]
   return buildRiderPerformanceReport(fleetRows, riderRows, asOfDate)
 }
 
@@ -138,16 +174,15 @@ function escapeTsv(value) {
   return String(value ?? '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ')
 }
 
-export function rowsToRiderPerformanceCsv(reportRows, options = {}) {
+export function rowsToRiderPerformanceCsv(allRows, options = {}) {
   const {
     page,
     pageSize = SHEETS_PAGE_SIZE,
     includeHeader = true,
-    allRows: precomputedRows,
     google = false,
   } = options
 
-  const allRows = precomputedRows || pickRiderPerformanceApiRows(reportRows)
+  const rows = allRows || []
   const paged =
     page != null
       ? paginateApiRows(allRows, page, pageSize)

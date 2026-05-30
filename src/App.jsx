@@ -11,8 +11,13 @@ import InactiveRiderMailer from './InactiveRiderMailer'
 import VehicleInventory from './VehicleInventory'
 import FleetDataViewer from './FleetDataViewer'
 import RiderPerformance from './RiderPerformance'
-import { fetchFleetSheetCsv, mapGoogleSheetRowsToFleetKeys } from './lib/fleetSheetMerge'
 import { fetchAllData } from './lib/supabaseFetch'
+import {
+  FLEET_FORM_CACHE_KEY,
+  FLEET_FORM_TABLE,
+  FLEET_LEGACY_TABLE,
+} from './lib/fleetDataConfig'
+import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
 import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity } from 'lucide-react'
 import './index.css'
 
@@ -64,7 +69,7 @@ function App() {
   const [riderData, setRiderData] = useState([])
   const [fleetData, setFleetData] = useState([])
   const [fleetTotalCount, setFleetTotalCount] = useState(0)
-  const [fleetSheetCount, setFleetSheetCount] = useState(0)
+  const [fleetFormCount, setFleetFormCount] = useState(0)
   const [weeklyData, setWeeklyData] = useState([])
   const [kycData, setKycData] = useState([])
   const [onboardingData, setOnboardingData] = useState([])
@@ -79,18 +84,20 @@ function App() {
     
     const cachedRiders = await getCachedData('rider_metrics');
     const cachedFleet = await getCachedData('fleet_data');
-    const cachedSheet = await getCachedData('fleet_sheet_data');
+    const cachedFormFleet = await getCachedData(FLEET_FORM_CACHE_KEY);
     const cachedWeekly = await getCachedData('weekly_performance');
     const cachedKyc = await getCachedData('rider_kyc');
     const cachedOnboarding = await getCachedData('rider_onboarding');
     const cachedInventory = await getCachedData('vehicle_inventory');
 
     if (cachedRiders) setRiderData(cachedRiders);
-    if (cachedFleet || cachedSheet) {
-      const dbRows = (cachedFleet || []).filter(r => (r.data_source || 'Database') !== 'Google Sheet')
-      const sheetRows = cachedSheet || (cachedFleet || []).filter(r => r.data_source === 'Google Sheet')
-      setFleetData([...dbRows, ...sheetRows])
-      setFleetSheetCount(sheetRows.length)
+    if (cachedFleet || cachedFormFleet) {
+      const { legacy, form } = splitFleetBySource([
+        ...(cachedFleet || []),
+        ...(cachedFormFleet || []),
+      ])
+      setFleetData([...legacy, ...form])
+      setFleetFormCount(form.length)
     }
     if (cachedWeekly) setWeeklyData(cachedWeekly);
     if (cachedKyc) setKycData(cachedKyc);
@@ -114,38 +121,27 @@ function App() {
       setLoading(false); // Dashboard is ready!
 
       // --- STEP 2: BACKGROUND FETCH (fleet first — large rows, keyset pagination) ---
-      const fleetRes = await fetchAllData('fleet_data', '*', 'id', { pageSize: 250 })
-
-      const [kycRes, onboardingRes, inventoryRes] = await Promise.all([
+      const [fleetRes, formFleetRes, kycRes, onboardingRes, inventoryRes] = await Promise.all([
+        fetchAllData(FLEET_LEGACY_TABLE, '*', 'id', { pageSize: 250 }),
+        fetchAllData(FLEET_FORM_TABLE, '*', 'id', { pageSize: 250 }),
         fetchAllData('rider_kyc', '*', 'id', { pageSize: 250 }),
         fetchAllData('rider_onboarding', '*', 'id', { pageSize: 500 }),
         fetchAllData('vehicle_inventory', '*', 'id', { pageSize: 500 }),
       ])
 
-      const dbFleetRows = (fleetRes.data || []).map((row) => ({
-        ...row,
-        data_source: 'Database'
-      }))
+      const dbFleetRows = tagLegacyFleetRows(fleetRes.data)
+      const mergedFleetRows = mergeFleetSources(fleetRes.data, formFleetRes.data)
+      const formFleetRows = mergedFleetRows.filter((r) => r.data_source !== 'Database')
 
-      let sheetFleetRows = []
-      try {
-        const csvText = await fetchFleetSheetCsv()
-        const sampleKeys = dbFleetRows.length ? Object.keys(dbFleetRows[0]) : []
-        const { rows, matchedHeaders, totalHeaders } = mapGoogleSheetRowsToFleetKeys(csvText, sampleKeys)
-        sheetFleetRows = rows
-        console.log(
-          `fleet_data: merged ${sheetFleetRows.length} rows from Google Sheet (${matchedHeaders}/${totalHeaders} headers mapped)`
-        )
-        if (sheetFleetRows.length) cacheData('fleet_sheet_data', sheetFleetRows)
-      } catch (sheetErr) {
-        console.error('Google Sheet merge failed:', sheetErr)
-      }
+      setFleetData(mergedFleetRows)
+      setFleetTotalCount(fleetRes.totalCount ?? fleetRes.data?.length ?? 0)
+      setFleetFormCount(formFleetRows.length)
+      if (dbFleetRows.length) cacheData('fleet_data', dbFleetRows)
+      if (formFleetRows.length) cacheData(FLEET_FORM_CACHE_KEY, formFleetRows)
 
-      const mergedFleetRows = [...dbFleetRows, ...sheetFleetRows]
-      setFleetData(mergedFleetRows);
-      setFleetTotalCount(fleetRes.totalCount ?? fleetRes.data?.length ?? 0);
-      setFleetSheetCount(sheetFleetRows.length);
-      if (dbFleetRows.length) cacheData('fleet_data', dbFleetRows);
+      console.log(
+        `Fleet loaded: ${dbFleetRows.length} from ${FLEET_LEGACY_TABLE}, ${formFleetRows.length} from ${FLEET_FORM_TABLE}`
+      )
 
       if (kycRes.data) {
         setKycData(kycRes.data);
@@ -347,7 +343,7 @@ function App() {
             fleetData={fleetData}
             riderData={riderData}
             totalCount={fleetTotalCount}
-            sheetCount={fleetSheetCount}
+            sheetCount={fleetFormCount}
             loading={loading}
             refreshData={fetchData}
             defaultTab="data"
@@ -357,7 +353,7 @@ function App() {
             fleetData={fleetData}
             riderData={riderData}
             totalCount={fleetTotalCount}
-            sheetCount={fleetSheetCount}
+            sheetCount={fleetFormCount}
             loading={loading}
             refreshData={fetchData}
             defaultTab="citysummary"
@@ -367,7 +363,7 @@ function App() {
             fleetData={fleetData}
             riderData={riderData}
             totalCount={fleetTotalCount}
-            sheetCount={fleetSheetCount}
+            sheetCount={fleetFormCount}
             loading={loading}
             refreshData={fetchData}
             defaultTab="clientsummary"

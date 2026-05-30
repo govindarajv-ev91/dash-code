@@ -1,6 +1,5 @@
 import {
-  getCachedReportRows,
-  pickRiderPerformanceApiRows,
+  getCachedApiRows,
   rowsToRiderPerformanceCsv,
   SHEETS_PAGE_SIZE,
 } from './lib/riderPerformanceFeed.js'
@@ -30,59 +29,55 @@ export default async function handler(req, res) {
   const googleMode = req.query?.google === '1' || req.query?.sheets === '1'
   const metaOnly = req.query?.meta === '1'
 
+  const forceRebuild = req.query?.rebuild === '1'
+
   try {
-    const reportRows = await getCachedReportRows(new Date())
-    const allRows = pickRiderPerformanceApiRows(reportRows)
+    const { rows: allRows, fromCache, updatedAt } = await getCachedApiRows(new Date(), { forceRebuild })
     const page = pageParam != null ? Number(pageParam) : 1
     const pageSize = pageSizeParam != null ? Number(pageSizeParam) : SHEETS_PAGE_SIZE
     const includeHeader = req.query?.header !== '0'
-    const preview = rowsToRiderPerformanceCsv(reportRows, { page: 1, pageSize, allRows })
+    const preview = rowsToRiderPerformanceCsv(allRows, { page: 1, pageSize })
 
     res.setHeader('Cache-Control', `public, s-maxage=${CACHE_SECONDS}, stale-while-revalidate=600`)
+    res.setHeader('X-Cache-Hit', fromCache ? 'true' : 'false')
 
     if (format === 'json') {
       if (metaOnly) {
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         return res.status(200).json({
-          updatedAt: new Date().toISOString(),
+          updatedAt: updatedAt || new Date().toISOString(),
           total: allRows.length,
           pageSize: preview.pageSize,
           totalPages: preview.totalPages,
-          recommended: 'Use Apps Script (JSON works). See scripts/google-sheets-rider-performance.gs',
+          fromCache,
           importDataFormulas: Array.from({ length: preview.totalPages }, (_, i) => {
             const p = i + 1
             const header = p > 1 ? '&header=0' : ''
             return `=IMPORTDATA("${BASE_URL}/api/rider-performance-csv?google=1&page=${p}${header}")`
           }),
-          appsScriptUrl: `${BASE_URL}/api/rider-performance-csv?format=json`,
         })
       }
 
-      const csvMeta = rowsToRiderPerformanceCsv(reportRows, {
-        page,
-        pageSize,
-        allRows,
-      })
+      const paged = rowsToRiderPerformanceCsv(allRows, { page, pageSize })
 
       res.setHeader('Content-Type', 'application/json; charset=utf-8')
       return res.status(200).json({
-        updatedAt: new Date().toISOString(),
+        updatedAt: updatedAt || new Date().toISOString(),
         total: allRows.length,
-        page: csvMeta.page,
-        pageSize: csvMeta.pageSize,
-        totalPages: csvMeta.totalPages,
-        importDataFormula: `=IMPORTDATA("${BASE_URL}/feeds/rider-performance-${csvMeta.page}.csv")`,
+        page: paged.page,
+        pageSize: paged.pageSize,
+        totalPages: paged.totalPages,
+        fromCache,
         columns: ['ID', 'In-active Days', 'Eff/inff', 'Current week orders'],
-        rows: csvMeta.rows,
+        rows: paged.rows,
       })
     }
 
     if (format === 'tsv' || googleMode) {
-      const tsv = rowsToRiderPerformanceCsv(reportRows, {
+      const tsv = rowsToRiderPerformanceCsv(allRows, {
         page,
         pageSize,
         includeHeader,
-        allRows,
         google: true,
       })
       res.setHeader('Content-Type', tsv.mimeType)
@@ -92,7 +87,7 @@ export default async function handler(req, res) {
       return res.status(200).send(tsv.body)
     }
 
-    const csv = rowsToRiderPerformanceCsv(reportRows, { page, pageSize, includeHeader, allRows })
+    const csv = rowsToRiderPerformanceCsv(allRows, { page, pageSize, includeHeader })
     res.setHeader('Content-Type', csv.mimeType)
     res.setHeader('X-Total-Rows', String(csv.total))
     res.setHeader('X-Total-Pages', String(csv.totalPages))

@@ -4,6 +4,7 @@ import { downloadDeployReturnCsv } from './lib/fleetDeployReturnExport'
 import FleetSummaryReport from './FleetSummaryReport'
 import FleetCitySummary from './FleetCitySummary'
 import FleetCurrentDeployed from './FleetCurrentDeployed'
+import { FLEET_FORM_CACHE_KEY, FLEET_FORM_SOURCE, FLEET_FORM_SOURCE_LABEL } from './lib/fleetDataConfig'
 
 const PAGE_SIZES = [25, 50, 100, 250]
 
@@ -279,7 +280,7 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
   const [hiddenCols, setHiddenCols] = useState(new Set())
   const [showColManager, setShowColManager] = useState(false)
   const [showSuggestions, setShowSuggestions] = useState(false)
-  const [sourceFilter, setSourceFilter] = useState('all') // all | Database | Google Sheet
+  const [sourceFilter, setSourceFilter] = useState('all') // all | Database | new_fleet_data
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
@@ -287,14 +288,14 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
   }, [loading, refreshing])
 
   const sourceCounts = useMemo(() => {
-    if (!fleetData?.length) return { all: 0, database: 0, sheet: 0 }
+    if (!fleetData?.length) return { all: 0, database: 0, form: 0 }
     let database = 0
-    let sheet = 0
+    let form = 0
     for (const row of fleetData) {
-      if (row.data_source === 'Google Sheet') sheet++
+      if (row.data_source === FLEET_FORM_SOURCE) form++
       else database++
     }
-    return { all: fleetData.length, database, sheet }
+    return { all: fleetData.length, database, form }
   }, [fleetData])
 
   const sourceFiltered = useMemo(() => {
@@ -450,6 +451,7 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
           const tx = db.transaction('cacheStore', 'readwrite')
           const store = tx.objectStore('cacheStore')
           store.delete('fleet_data')
+          store.delete(FLEET_FORM_CACHE_KEY)
           store.delete('fleet_sheet_data')
           tx.oncomplete = () => {
             if (refreshData) refreshData()
@@ -520,10 +522,10 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
     if (value == null || value === '') return <span className="fdv-cell-empty">—</span>
     if (col === 'vehicle_status') return <StatusBadge value={value} />
     if (col === 'data_source') {
-      const isSheet = value === 'Google Sheet'
+      const isForm = value === FLEET_FORM_SOURCE
       return (
-        <span className={`fdv-source-badge ${isSheet ? 'fdv-source-sheet' : 'fdv-source-db'}`}>
-          {value || 'Database'}
+        <span className={`fdv-source-badge ${isForm ? 'fdv-source-sheet' : 'fdv-source-db'}`}>
+          {value === FLEET_FORM_SOURCE ? FLEET_FORM_SOURCE_LABEL : value || 'Database'}
         </span>
       )
     }
@@ -627,7 +629,7 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
         <div className="fdv-loading-banner glass fdv-refresh-loading-banner">
           <span className="loader" style={{ width: 22, height: 22, borderWidth: 3 }} />
           <span>
-            {refreshing ? 'Refreshing fleet data from database & Google Sheet…' : 'Loading fleet data…'}
+            {refreshing ? 'Refreshing fleet data from database…' : 'Loading fleet data…'}
           </span>
         </div>
       )}
@@ -641,9 +643,9 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
       )}
       {!loading && sheetCount === 0 && sourceCounts.database > 0 && (
         <div className="fdv-loading-banner glass" style={{ borderColor: 'rgba(251,113,133,0.35)' }}>
-          <span style={{ color: '#fb7185', fontWeight: 600 }}>Google Sheet not loaded:</span>
+          <span style={{ color: '#fb7185', fontWeight: 600 }}>{FLEET_FORM_SOURCE_LABEL} not loaded:</span>
           <span style={{ marginLeft: 8 }}>
-            0 rows imported from the published sheet. Click <b>Refresh Cache</b> to retry (uses proxy + fallback fetch).
+            0 rows from `{FLEET_FORM_SOURCE}`. Check Supabase table access, then click <b>Refresh Cache</b>.
           </span>
         </div>
       )}
@@ -683,7 +685,7 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
             {sorted.length.toLocaleString()}
             {sorted.length !== sourceFiltered.length ? ` of ${sourceFiltered.length.toLocaleString()}` : ''} rows
             {sourceFilter !== 'all' ? ` · ${sourceFilter}` : ''}
-            {totalCount > 0 && sourceFilter !== 'Google Sheet' ? ` (DB: ${totalCount.toLocaleString()})` : ''}
+            {totalCount > 0 && sourceFilter !== FLEET_FORM_SOURCE ? ` (DB: ${totalCount.toLocaleString()})` : ''}
           </span>
           <span className="fdv-row-count">
             {visibleColumns.length} / {allColumns.length} cols
@@ -756,10 +758,11 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
           </button>
           <button
             type="button"
-            className={`fdv-source-btn fdv-source-btn-sheet ${sourceFilter === 'Google Sheet' ? 'fdv-source-btn-active' : ''}`}
-            onClick={() => handleSourceFilter('Google Sheet')}
+            className={`fdv-source-btn fdv-source-btn-sheet ${sourceFilter === FLEET_FORM_SOURCE ? 'fdv-source-btn-active' : ''}`}
+            onClick={() => handleSourceFilter(FLEET_FORM_SOURCE)}
           >
-            Google Sheet <span className="fdv-source-btn-count">{(sheetCount || sourceCounts.sheet).toLocaleString()}</span>
+            {FLEET_FORM_SOURCE_LABEL}{' '}
+            <span className="fdv-source-btn-count">{(sheetCount || sourceCounts.form).toLocaleString()}</span>
           </button>
         </div>
       </div>

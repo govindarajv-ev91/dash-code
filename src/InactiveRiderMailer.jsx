@@ -6,6 +6,8 @@ import {
     Download, RefreshCcw, CheckCircle, XCircle, Loader, Calendar, MessageSquare, MapPin,
     ChevronLeft, ChevronRight
 } from 'lucide-react';
+import { fetchPublishedCsv } from './lib/fleetSheetMerge';
+
 
 const normalizeCity = (city) => {
     if (!city) return 'Unknown';
@@ -197,8 +199,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     useEffect(() => {
         const fetchCityConfigs = async () => {
             try {
-                const response = await fetch('https://docs.google.com/spreadsheets/d/e/2PACX-1vSHj8-2m6CG_yHk83DHIfWNuTLL4sO0vqY2xuFGjiUwdyI0BYMhry9nDkQLezfqmfm25E73XoACm2GG/pub?gid=0&single=true&output=csv');
-                const csv = await response.text();
+                const csv = await fetchPublishedCsv('https://docs.google.com/spreadsheets/d/e/2PACX-1vSHj8-2m6CG_yHk83DHIfWNuTLL4sO0vqY2xuFGjiUwdyI0BYMhry9nDkQLezfqmfm25E73XoACm2GG/pub?gid=0&single=true&output=csv');
                 const rows = csv.split('\n').slice(1);
                 const config = {};
                 rows.forEach(row => {

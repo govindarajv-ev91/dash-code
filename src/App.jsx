@@ -10,9 +10,10 @@ import RiderDetails from './RiderDetails'
 import InactiveRiderMailer from './InactiveRiderMailer'
 import VehicleInventory from './VehicleInventory'
 import FleetDataViewer from './FleetDataViewer'
+import RiderPerformance from './RiderPerformance'
 import { fetchFleetSheetCsv, mapGoogleSheetRowsToFleetKeys } from './lib/fleetSheetMerge'
 import { fetchAllData } from './lib/supabaseFetch'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -99,7 +100,7 @@ function App() {
     if (cachedRiders && cachedFleet) setLoading(false);
 
     try {
-      const riderCols = 'id,delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number';
+      const riderCols = 'id,delivered,date_record,worker_code,worker_name,hub_name,city,client,cumulative_order,source,week,month,state,type1,type2,mob_number,fl';
       const weeklyCols = 'id,inactive_days,date_record';
 
       // --- STEP 1: PRIORITY FETCH (DASHBOARD ONLY - FAST) ---
@@ -169,13 +170,14 @@ function App() {
   };
 
   return (
-    <div className="app-layout">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <Layout className="text-primary" />
-          <span>FleetPro</span>
-        </div>
-        <nav className="nav-links">
+    <div className="app-layout app-layout-auto-sidebar">
+      <div className="sidebar-shell">
+        <aside className="sidebar">
+          <div className="sidebar-logo">
+            <Layout className="text-primary" />
+            <span>FleetPro</span>
+          </div>
+          <nav className="nav-links">
           <button 
             className={`nav-item ${activePage === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActivePage('dashboard')}
@@ -196,6 +198,13 @@ function App() {
           >
             <Truck size={20} />
             Vehicle Tracking
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'riderperformance' ? 'active' : ''}`}
+            onClick={() => setActivePage('riderperformance')}
+          >
+            <Activity size={20} />
+            Rider Performance
           </button>
           <button 
             className={`nav-item ${activePage === 'onboarding' ? 'active' : ''}`}
@@ -246,8 +255,23 @@ function App() {
             <Database size={20} />
             Fleet Data
           </button>
+          <button 
+            className={`nav-item ${activePage === 'fleetcitysummary' ? 'active' : ''}`}
+            onClick={() => setActivePage('fleetcitysummary')}
+          >
+            <MapPin size={20} />
+            Fleet Summary
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'fleetsummary' ? 'active' : ''}`}
+            onClick={() => setActivePage('fleetsummary')}
+          >
+            <PieChart size={20} />
+            Client Summary
+          </button>
         </nav>
-      </aside>
+        </aside>
+      </div>
 
       <main className="main-content">
         {activePage === 'dashboard' ? (
@@ -265,6 +289,12 @@ function App() {
           />
         ) : activePage === 'tracking' ? (
           <VehicleTracking 
+            fleetData={fleetData}
+            riderData={riderData}
+            loading={loading}
+          />
+        ) : activePage === 'riderperformance' ? (
+          <RiderPerformance
             fleetData={fleetData}
             riderData={riderData}
             loading={loading}
@@ -315,10 +345,32 @@ function App() {
         ) : activePage === 'fleetdata' ? (
           <FleetDataViewer
             fleetData={fleetData}
+            riderData={riderData}
             totalCount={fleetTotalCount}
             sheetCount={fleetSheetCount}
             loading={loading}
             refreshData={fetchData}
+            defaultTab="data"
+          />
+        ) : activePage === 'fleetcitysummary' ? (
+          <FleetDataViewer
+            fleetData={fleetData}
+            riderData={riderData}
+            totalCount={fleetTotalCount}
+            sheetCount={fleetSheetCount}
+            loading={loading}
+            refreshData={fetchData}
+            defaultTab="citysummary"
+          />
+        ) : activePage === 'fleetsummary' ? (
+          <FleetDataViewer
+            fleetData={fleetData}
+            riderData={riderData}
+            totalCount={fleetTotalCount}
+            sheetCount={fleetSheetCount}
+            loading={loading}
+            refreshData={fetchData}
+            defaultTab="clientsummary"
           />
         ) : null}
       </main>

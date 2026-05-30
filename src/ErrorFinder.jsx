@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Search } from 'lucide-react';
 import { differenceInDays, format } from 'date-fns';
+import EvLookupPanel from './EvLookupPanel';
 
 const ErrorFinder = ({ fleetData, riderData, loading }) => {
     const [searchTerm, setSearchTerm] = useState('');
@@ -281,6 +282,8 @@ const ErrorFinder = ({ fleetData, riderData, loading }) => {
                     </div>
                 </div>
             </div>
+
+            <EvLookupPanel riderData={riderData} />
 
             <div className="table-card glass">
                 <div className="table-header">

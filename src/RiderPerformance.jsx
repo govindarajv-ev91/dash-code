@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from 'react'
 import { format } from 'date-fns'
-import { Activity, Download, Search, MapPin, Briefcase } from 'lucide-react'
+import { Activity, Download, Search, MapPin, Briefcase, FileSpreadsheet } from 'lucide-react'
 import {
   getRiderPerformanceHeaders,
   buildRiderPerformanceReport,
   rowsToPerformanceCsv,
   getCellValue,
+  filterReportRowsForExcelExport,
 } from './lib/riderPerformanceReport'
+import { downloadRiderPerformanceSummaryExcel } from './lib/riderPerformanceExcelExport'
 
 export default function RiderPerformance({ fleetData, riderData, loading }) {
   const [search, setSearch] = useState('')
@@ -51,6 +53,8 @@ export default function RiderPerformance({ fleetData, riderData, loading }) {
     })
   }, [reportRows, search, cityFilter, clientFilter])
 
+  const [exportingSummary, setExportingSummary] = useState(false)
+
   const exportCsv = () => {
     const csv = rowsToPerformanceCsv(filteredRows, tableHeaders)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
@@ -60,6 +64,26 @@ export default function RiderPerformance({ fleetData, riderData, loading }) {
     a.download = `rider_performance_${reportDate}.csv`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  const exportSummaryExcel = async () => {
+    if (!reportRows.length || exportingSummary) return
+    const exportRows = filterReportRowsForExcelExport(reportRows, riderData, today)
+    if (!exportRows.length) {
+      window.alert(
+        'No riders to export. Riders must have client order data in the last 5 days and Max Order below 20 (last 3 days: D-2 to D-4).'
+      )
+      return
+    }
+    setExportingSummary(true)
+    try {
+      await downloadRiderPerformanceSummaryExcel(exportRows, today)
+    } catch (err) {
+      console.error('Summary Excel export failed:', err)
+      window.alert(`Excel export failed: ${err?.message || 'Unknown error'}`)
+    } finally {
+      setExportingSummary(false)
+    }
   }
 
   if (loading && (!fleetData || fleetData.length === 0)) {
@@ -82,9 +106,20 @@ export default function RiderPerformance({ fleetData, riderData, loading }) {
             </p>
           </div>
         </div>
-        <button type="button" className="fsr-export-btn" onClick={exportCsv}>
-          <Download size={16} /> Export
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button type="button" className="fsr-export-btn" onClick={exportCsv}>
+            <Download size={16} /> Export CSV
+          </button>
+          <button
+            type="button"
+            className="fsr-export-btn"
+            onClick={exportSummaryExcel}
+            disabled={!reportRows.length || exportingSummary}
+          >
+            <FileSpreadsheet size={16} />
+            {exportingSummary ? 'Building Excel…' : 'Summary Excel'}
+          </button>
+        </div>
       </header>
 
       <div className="rp-filters glass">

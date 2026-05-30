@@ -6,7 +6,7 @@ import {
   startOfWeek,
   subDays,
 } from 'date-fns'
-import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
+import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport.js'
 
 export const HIDDEN_RIDER_PERFORMANCE_COLUMNS = new Set([
   'Current Week Expected Earnings',
@@ -449,6 +449,64 @@ export function buildRiderPerformanceReport(fleetRows, riderRows, asOfDate = new
     const records = resolveRiderMetricRecords(assignment, metricsIndex)
     const stats = computeOrderStats(records, assignment.deployDate, asOf)
     return buildRowFromAssignment(assignment, stats, asOf, fleetSourceByRider, records)
+  })
+}
+
+export const EXCEL_EXPORT_LOOKBACK_DAYS = 5
+export const EXCEL_EXPORT_ORDER_DAY_OFFSETS = [2, 3, 4]
+
+/** Dates (yyyy-MM-dd) with rider_metrics rows per client in D-1…D-5 window. */
+export function buildClientMetricDatesInWindow(riderRows, asOfDate = new Date(), lookbackDays = EXCEL_EXPORT_LOOKBACK_DAYS) {
+  const asOf = startOfDay(asOfDate)
+  const from = subDays(asOf, lookbackDays)
+  const to = subDays(asOf, 1)
+  const byClient = new Map()
+
+  for (const row of riderRows || []) {
+    const date = parseMetricDate(row.date_record)
+    if (!date || date < from || date > to) continue
+    const clientKey = normalizeClientKey(row.client)
+    if (!clientKey) continue
+    if (!byClient.has(clientKey)) byClient.set(clientKey, new Set())
+    byClient.get(clientKey).add(format(date, 'yyyy-MM-dd'))
+  }
+
+  return byClient
+}
+
+function recordsInMetricWindow(records, asOfDate, lookbackDays = EXCEL_EXPORT_LOOKBACK_DAYS) {
+  const asOf = startOfDay(asOfDate)
+  const from = subDays(asOf, lookbackDays)
+  const to = subDays(asOf, 1)
+  return (records || []).filter((rec) => rec.date >= from && rec.date <= to)
+}
+
+/**
+ * Excel export: only deployed riders whose client uploaded order data in the
+ * last 5 days (D-1…D-5) and who have matching rider_metrics in that window.
+ */
+export function filterReportRowsForExcelExport(
+  reportRows,
+  riderRows,
+  asOfDate = new Date(),
+  lookbackDays = EXCEL_EXPORT_LOOKBACK_DAYS
+) {
+  const clientDates = buildClientMetricDatesInWindow(riderRows, asOfDate, lookbackDays)
+  const metricsIndex = buildRiderMetricsIndex(riderRows)
+
+  return (reportRows || []).filter((row) => {
+    const clientKey = normalizeClientKey(row.Client)
+    if (!clientKey || !clientDates.get(clientKey)?.size) return false
+
+    const records = resolveRiderMetricRecords(
+      {
+        riderId: row.ID,
+        mobile: row['mobile no'],
+        riderName: row.Name,
+      },
+      metricsIndex
+    )
+    return recordsInMetricWindow(records, asOfDate, lookbackDays).length > 0
   })
 }
 

@@ -261,40 +261,17 @@ const fetchWithTimeout = (url, options = {}, timeoutMs = 8000) => {
   ])
 }
 
-// Fetch any published Google Sheet CSV URL using multiple fallback strategies
+// Fetch published Google Sheet CSV via same-origin server proxy (Vercel API / Vite dev proxy).
 export const fetchPublishedCsv = async (url, options = {}) => {
-  const { devProxyUrl } = options
-  const corsProxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`
-  const allOriginsUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-  const corsAnywhereUrl = `https://cors-anywhere.herokuapp.com/${url}`
+  const { proxyUrl } = options
+  const serverProxyUrl =
+    proxyUrl || `/api/sheet-csv?url=${encodeURIComponent(url)}`
 
   const strategies = [
     {
-      name: 'Dev Proxy',
-      url: devProxyUrl,
-      enabled: import.meta.env.DEV && !!devProxyUrl,
-      timeout: 5000,
-    },
-    {
-      name: 'Direct URL',
-      url: url,
-      timeout: 8000,
-    },
-    {
-      name: 'CorsProxy.io',
-      url: corsProxyUrl,
-      timeout: 8000,
-    },
-    {
-      name: 'AllOrigins CORS Proxy',
-      url: allOriginsUrl,
-      timeout: 10000,
-    },
-    {
-      name: 'Cors-Anywhere Proxy',
-      url: corsAnywhereUrl,
-      timeout: 10000,
-      headers: { 'x-requested-with': 'XMLHttpRequest' },
+      name: 'Server Proxy',
+      url: serverProxyUrl,
+      timeout: 30000,
     },
   ]
 
@@ -302,17 +279,13 @@ export const fetchPublishedCsv = async (url, options = {}) => {
   const attemptLog = []
 
   for (const strategy of strategies) {
-    if (strategy.enabled === false) continue
-
     try {
       console.log(`[CSV Fetch] Attempting: ${strategy.name}`)
-      const fetchOptions = {
-        cache: 'no-store',
-        mode: 'cors',
-        ...(strategy.headers && { headers: strategy.headers }),
-      }
-
-      const res = await fetchWithTimeout(strategy.url, fetchOptions, strategy.timeout)
+      const res = await fetchWithTimeout(
+        strategy.url,
+        { cache: 'no-store' },
+        strategy.timeout
+      )
 
       if (!res.ok) {
         const errMsg = `HTTP ${res.status}`
@@ -341,14 +314,14 @@ export const fetchPublishedCsv = async (url, options = {}) => {
     }
   }
 
-  const fullError = `All Google Sheet fetch strategies failed:\n${attemptLog.join('\n')}\nLast error: ${lastError?.message}`
+  const fullError = `Google Sheet fetch failed:\n${attemptLog.join('\n')}\nLast error: ${lastError?.message}`
   console.error(`[CSV Fetch] ✗ ${fullError}`)
   throw new Error(fullError)
 }
 
 export const fetchFleetSheetCsv = async () => {
   return fetchPublishedCsv(FLEET_SHEET_CSV_URL, {
-    devProxyUrl: '/api/fleet-sheet-csv',
+    proxyUrl: '/api/fleet-sheet-csv',
   })
 }
 

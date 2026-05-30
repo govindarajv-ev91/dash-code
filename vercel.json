@@ -1,5 +1,14 @@
 {
+  "functions": {
+    "api/rider-performance-csv.js": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/feeds/rider-performance-:page.csv",
+      "destination": "/api/rider-performance-csv?google=1&page=:page"
+    },
+    { "source": "/((?!api/|feeds/).*)", "destination": "/index.html" }
   ]
 }

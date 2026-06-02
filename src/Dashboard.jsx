@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useDeferredValue } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, Legend 
@@ -17,10 +17,12 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const deferredRiderData = useDeferredValue(riderData);
+  const deferredFleetData = useDeferredValue(fleetData);
 
   // Process data for charts
   const ordersByDate = useMemo(() => {
-    const grouped = riderData.reduce((acc, curr) => {
+    const grouped = deferredRiderData.reduce((acc, curr) => {
       let date = curr.date_record;
       if (!date) return acc;
       if (date.includes('/')) {
@@ -53,7 +55,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
 
     return Object.values(grouped)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [riderData, startDate, endDate]);
+  }, [deferredRiderData, startDate, endDate]);
 
   const vehicleStatusDist = useMemo(() => {
     // Moved below filteredFleet, will define it after filteredFleet.
@@ -83,7 +85,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       return isNaN(plainDate.getTime()) ? null : plainDate;
     };
 
-    fleetData.forEach(item => {
+    deferredFleetData.forEach(item => {
       const vNum = item.vehicle_number || 'Unknown Vehicle';
       const rName = item.rider_name || item.rider_id || 'Unknown Rider';
       const key = vNum; 
@@ -153,13 +155,13 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
        const timeB = b.deployed_obj ? b.deployed_obj.getTime() : 0;
        return timeB - timeA;
     });
-  }, [fleetData]);
+  }, [deferredFleetData]);
 
   const stats = useMemo(() => {
     let totalOrders = 0;
     const activeCodes = new Set();
 
-    riderData.forEach(r => {
+    deferredRiderData.forEach(r => {
       const delivered = parseInt(r.delivered, 10) || 0;
       const dateStr = r.date_record || '';
       
@@ -218,7 +220,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       { label: 'Deployed Vehicles', value: activeVehicles.toLocaleString(), icon: Truck, change: changeStr, isPositive: true },
       { label: 'Returned Units', value: returnedVehicles.toLocaleString(), icon: Activity, change: changeStr, isPositive: false },
     ];
-  }, [riderData, combinedVehicles, startDate, endDate]);
+  }, [deferredRiderData, combinedVehicles, startDate, endDate]);
 
   const filteredFleet = useMemo(() => {
     return combinedVehicles.filter(item => {

@@ -176,6 +176,7 @@ export function buildVehicleAllotmentMap(fleetRows, asOfDate) {
 
     let openDeploy = null
     for (const event of events) {
+      if (event.date > asOf) continue
       if (event.status === 'Deployee') {
         openDeploy = event
       } else if (event.status === 'Return' && openDeploy) {
@@ -196,24 +197,69 @@ export function buildVehicleAllotmentMap(fleetRows, asOfDate) {
   return allotmentByVehicle
 }
 
+/** Latest known contact on or before as-of date (deploy row may omit phone). */
+function buildFleetContactEnrichment(fleetRows, asOfDate) {
+  const asOf = startOfDay(asOfDate)
+  const byRiderId = new Map()
+  const byVehicle = new Map()
+
+  for (const row of fleetRows || []) {
+    const date = parseFleetDate(row.date_record)
+    if (!date || date > asOf) continue
+    const phone = normalizePhone(row.rider_contact_number)
+    if (!phone) continue
+
+    const idKey = normalizeRiderIdKey(row.rider_id)
+    const vKey = vehiclePartitionKey(row.vehicle_number)
+    if (idKey) {
+      const prev = byRiderId.get(idKey)
+      if (!prev || date >= prev.date) byRiderId.set(idKey, { phone, date })
+    }
+    if (vKey) {
+      const prev = byVehicle.get(vKey)
+      if (!prev || date >= prev.date) byVehicle.set(vKey, { phone, date })
+    }
+  }
+
+  return { byRiderId, byVehicle }
+}
+
+function enrichAssignmentMobile(assignment, contactLookup) {
+  if (normalizePhone(assignment.mobile)) return assignment
+
+  const idKey = normalizeRiderIdKey(assignment.riderId)
+  const vKey = vehiclePartitionKey(assignment.vehicleNumber)
+  const fromRider = idKey ? contactLookup.byRiderId.get(idKey) : null
+  const fromVehicle = vKey ? contactLookup.byVehicle.get(vKey) : null
+  const phone = fromRider?.phone || fromVehicle?.phone
+  if (!phone) return assignment
+
+  return { ...assignment, mobile: phone }
+}
+
 export function getCurrentlyDeployedAssignments(fleetRows, asOfDate) {
   const allotmentMap = buildVehicleAllotmentMap(fleetRows, asOfDate)
+  const contactLookup = buildFleetContactEnrichment(fleetRows, asOfDate)
   const assignments = []
 
   for (const [, { days, deploy, deployDate }] of allotmentMap) {
-    assignments.push({
-      vehicleNumber: (deploy.vehicle_number || '').toString().trim(),
-      riderId: normalizeWorkerCode(deploy.rider_id),
-      riderName: (deploy.rider_name || '').toString().trim(),
-      city: (deploy.city_locations || deploy.city || '').toString().trim(),
-      category: (deploy.category || '').toString().trim(),
-      client: normalizeClient(deploy.client_name),
-      mobile: (deploy.rider_contact_number || '').toString().trim(),
-      hub: (deploy.hub_location || '').toString().trim(),
-      source: extractFleetSource(deploy),
-      deployDate,
-      allotmentDays: days,
-    })
+    const assignment = enrichAssignmentMobile(
+      {
+        vehicleNumber: (deploy.vehicle_number || '').toString().trim(),
+        riderId: normalizeWorkerCode(deploy.rider_id),
+        riderName: (deploy.rider_name || '').toString().trim(),
+        city: (deploy.city_locations || deploy.city || '').toString().trim(),
+        category: (deploy.category || '').toString().trim(),
+        client: normalizeClient(deploy.client_name),
+        mobile: (deploy.rider_contact_number || '').toString().trim(),
+        hub: (deploy.hub_location || '').toString().trim(),
+        source: extractFleetSource(deploy),
+        deployDate,
+        allotmentDays: days,
+      },
+      contactLookup
+    )
+    assignments.push(assignment)
   }
 
   return assignments.sort((a, b) => b.deployDate - a.deployDate)
@@ -508,6 +554,90 @@ export function filterReportRowsForExcelExport(
     )
     return recordsInMetricWindow(records, asOfDate, lookbackDays).length > 0
   })
+}
+
+export function classifyInactiveStatus(label) {
+  const s = (label ?? '').toString().trim()
+  if (s === 'Active') return 'active'
+  if (s === 'ID/Tag Error') return 'id_error'
+  if (s.toLowerCase().includes('inactive')) return 'inactive'
+  return 'other'
+}
+
+export function classifyEfficiencyLabel(label) {
+  const s = (label ?? '').toString().trim()
+  if (s === 'High frequency') return 'high'
+  if (s === 'Mid frequency') return 'mid'
+  if (s === 'Low frequency') return 'low'
+  if (s === '0 Orders') return 'zero'
+  return 'unknown'
+}
+
+export function filterRiderPerformanceRows(
+  rows,
+  { city = 'All', client = 'All', source = 'All', search = '' } = {}
+) {
+  const q = search.trim().toLowerCase()
+  return (rows || []).filter((row) => {
+    if (city !== 'All' && row.City !== city) return false
+    if (client !== 'All' && row.Client !== client) return false
+    if (source !== 'All' && row.Source !== source) return false
+    if (!q) return true
+    const blob = [
+      row['V no'],
+      row.ID,
+      row.Name,
+      row.Client,
+      row.City,
+      row.Source,
+      row['mobile no'],
+      row['Eff/inff'],
+      row['In-active Days'],
+      row.Category,
+    ]
+      .join(' ')
+      .toLowerCase()
+    return blob.includes(q)
+  })
+}
+
+export function summarizeRiderPerformanceRows(rows) {
+  const summary = {
+    total: rows.length,
+    active: 0,
+    inactive: 0,
+    idTagError: 0,
+    effHigh: 0,
+    effMid: 0,
+    effLow: 0,
+    effZero: 0,
+    efficient: 0,
+    inefficient: 0,
+  }
+
+  for (const row of rows || []) {
+    const inactiveStatus = classifyInactiveStatus(row['In-active Days'])
+    if (inactiveStatus === 'active') summary.active++
+    else if (inactiveStatus === 'inactive') summary.inactive++
+    else if (inactiveStatus === 'id_error') summary.idTagError++
+
+    const eff = classifyEfficiencyLabel(row['Eff/inff'])
+    if (eff === 'high') {
+      summary.effHigh++
+      summary.efficient++
+    } else if (eff === 'mid') {
+      summary.effMid++
+      summary.efficient++
+    } else if (eff === 'low') {
+      summary.effLow++
+      summary.inefficient++
+    } else if (eff === 'zero') {
+      summary.effZero++
+      summary.inefficient++
+    }
+  }
+
+  return summary
 }
 
 export function rowsToPerformanceCsv(rows, headers) {

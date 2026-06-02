@@ -150,6 +150,26 @@ export function citiesMatch(cityA, cityB) {
   return normalizeCityKey(cityA) === normalizeCityKey(cityB)
 }
 
+/**
+ * IC rider_metrics city vs fleet hub-level city (e.g. filter "Mumbai BB-3", metrics "Mumbai").
+ */
+export function riderCityMatchesFilter(filterCity, riderRow) {
+  if (!filterCity || filterCity === 'All') return true
+
+  const filterKey = normalizeCityKey(filterCity)
+  if (!filterKey) return true
+
+  const riderKey = normalizeCityKey(resolveRiderCity(riderRow))
+  if (!riderKey) return false
+  if (riderKey === filterKey) return true
+
+  // Hub-level fleet city contains base city name
+  if (filterKey.startsWith(`${riderKey} `) || filterKey.startsWith(riderKey)) return true
+  if (riderKey.startsWith(filterKey)) return true
+
+  return false
+}
+
 /** Unique canonical city names for dropdowns. */
 export function dedupeCanonicalCities(cityNames) {
   const byKey = new Map()

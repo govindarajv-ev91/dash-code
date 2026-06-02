@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react'
-import { Search, Download, ChevronUp, ChevronDown, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, Database, X, Filter, Columns3, Eye, EyeOff, FileSpreadsheet, BarChart3, MapPin, Truck } from 'lucide-react'
+import { Search, Download, ChevronUp, ChevronDown, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, Database, X, Filter, Columns3, Eye, EyeOff, FileSpreadsheet, BarChart3, MapPin, Truck, User } from 'lucide-react'
 import { downloadDeployReturnCsv } from './lib/fleetDeployReturnExport'
 import FleetSummaryReport from './FleetSummaryReport'
 import FleetCitySummary from './FleetCitySummary'
 import FleetCurrentDeployed from './FleetCurrentDeployed'
+import FleetActiveRiders from './FleetActiveRiders'
 import { FLEET_FORM_CACHE_KEY, FLEET_FORM_SOURCE, FLEET_FORM_SOURCE_LABEL } from './lib/fleetDataConfig'
 
 const PAGE_SIZES = [25, 50, 100, 250]
@@ -265,7 +266,18 @@ function highlightText(text, highlight) {
   )
 }
 
-export default function FleetDataViewer({ fleetData, riderData = [], totalCount = 0, sheetCount = 0, loading, refreshData, defaultTab = 'data' }) {
+export default function FleetDataViewer({
+  fleetData,
+  riderData = [],
+  totalCount = 0,
+  sheetCount = 0,
+  loading,
+  refreshData,
+  defaultTab = 'data',
+  fleetFullLoading = false,
+  fleetIsSlim = false,
+  loadFullFleet,
+}) {
   const [activeTab, setActiveTab] = useState(defaultTab)
 
   useEffect(() => {
@@ -286,6 +298,12 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
   useEffect(() => {
     if (!loading && refreshing) setRefreshing(false)
   }, [loading, refreshing])
+
+  useEffect(() => {
+    if (defaultTab === 'data' && fleetIsSlim && loadFullFleet) {
+      loadFullFleet()
+    }
+  }, [defaultTab, fleetIsSlim, loadFullFleet])
 
   const sourceCounts = useMemo(() => {
     if (!fleetData?.length) return { all: 0, database: 0, form: 0 }
@@ -592,6 +610,15 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
         <Truck size={16} />
         Current Deployed
       </button>
+      <button
+        type="button"
+        className={`fdv-tab ${activeTab === 'activeriders' ? 'fdv-tab-active' : ''}`}
+        onClick={() => setActiveTab('activeriders')}
+        title="Active riders with city, client, EV/NON-EV, date and week filters"
+      >
+        <User size={16} />
+        Active Riders
+      </button>
     </div>
   )
 
@@ -622,14 +649,27 @@ export default function FleetDataViewer({ fleetData, riderData = [], totalCount 
     )
   }
 
+  if (activeTab === 'activeriders') {
+    return (
+      <div className="dashboard-container fdv-root fdv-summary-root">
+        {tabBar}
+        <FleetActiveRiders fleetData={fleetData} riderData={riderData} loading={loading} />
+      </div>
+    )
+  }
+
   return (
     <div className="dashboard-container fdv-root">
       {tabBar}
-      {(refreshing || (loading && fleetData?.length > 0)) && (
+      {(refreshing || fleetFullLoading || (loading && fleetData?.length > 0)) && (
         <div className="fdv-loading-banner glass fdv-refresh-loading-banner">
           <span className="loader" style={{ width: 22, height: 22, borderWidth: 3 }} />
           <span>
-            {refreshing ? 'Refreshing fleet data from database…' : 'Loading fleet data…'}
+            {fleetFullLoading
+              ? 'Loading all fleet columns from database (first visit may take a minute)…'
+              : refreshing
+                ? 'Refreshing fleet data from database…'
+                : 'Loading fleet data…'}
           </span>
         </div>
       )}

@@ -1,16 +1,17 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useDeferredValue } from 'react'
 import { format } from 'date-fns'
 import { ClipboardPaste, Copy, Download } from 'lucide-react'
 import { lookupRiderEvTypes, evLookupToCsv, evLookupTypesOnly } from './lib/riderEvLookup'
 
-export default function EvLookupPanel({ riderData, defaultOpen = true }) {
+export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen = true }) {
   const [evPasteText, setEvPasteText] = useState('')
   const [showEvLookup, setShowEvLookup] = useState(defaultOpen)
+  const deferredPaste = useDeferredValue(evPasteText)
 
   const evLookupResults = useMemo(() => {
-    if (!evPasteText.trim() || !riderData?.length) return []
-    return lookupRiderEvTypes(evPasteText, riderData)
-  }, [evPasteText, riderData])
+    if (!deferredPaste.trim()) return []
+    return lookupRiderEvTypes(deferredPaste, riderData, fleetData)
+  }, [deferredPaste, riderData, fleetData])
 
   const copyEvTypes = () => {
     if (!evLookupResults.length) return
@@ -36,8 +37,7 @@ export default function EvLookupPanel({ riderData, defaultOpen = true }) {
           <h3><ClipboardPaste size={18} /> EV / NON-EV Lookup</h3>
           <p>
             Paste <strong>Date</strong> and <strong>WorkerCode</strong> (tab or space). Returns{' '}
-            <strong>EV</strong> or <strong>NON-EV</strong> from rider_metrics. If that date is not synced yet,
-            uses the nearest earlier date for the same rider.
+            <strong>EV</strong> if a fleet vehicle is deployed on that date, else from rider_metrics (with earlier-date fallback).
           </p>
         </div>
         <button type="button" className="fdv-col-toggle-btn" onClick={() => setShowEvLookup((v) => !v)}>
@@ -57,7 +57,7 @@ export default function EvLookupPanel({ riderData, defaultOpen = true }) {
           <div className="rp-ev-actions">
             <span className="rp-ev-count">
               {evLookupResults.length > 0
-                ? `${evLookupResults.length} rows · ${evLookupResults.filter((r) => r.evType === 'EV').length} EV · ${evLookupResults.filter((r) => r.evType === 'NON-EV').length} NON-EV · ${evLookupResults.filter((r) => r.status === 'fallback').length} fallback date`
+                ? `${evLookupResults.length} rows · ${evLookupResults.filter((r) => r.evType === 'EV').length} EV · ${evLookupResults.filter((r) => r.evType === 'NON-EV').length} NON-EV · ${evLookupResults.filter((r) => r.status === 'fleet').length} from fleet`
                 : 'Paste rows above to lookup'}
             </span>
             <div className="rp-ev-action-buttons">
@@ -78,7 +78,7 @@ export default function EvLookupPanel({ riderData, defaultOpen = true }) {
                     <th>Date</th>
                     <th>WorkerCode</th>
                     <th>Type</th>
-                    <th>From metrics</th>
+                    <th>Matched from</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -94,9 +94,11 @@ export default function EvLookupPanel({ riderData, defaultOpen = true }) {
                       <td className="rp-ev-matched-date">
                         {row.status === 'not found'
                           ? '—'
-                          : row.status === 'fallback'
-                            ? row.matchedDateKey
-                            : row.dateDisplay}
+                          : row.status === 'fleet'
+                            ? `Fleet deploy ${row.matchedDateKey}`
+                            : row.status === 'fallback'
+                              ? row.matchedDateKey
+                              : row.dateDisplay}
                       </td>
                     </tr>
                   ))}

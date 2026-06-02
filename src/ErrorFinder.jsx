@@ -283,7 +283,7 @@ const ErrorFinder = ({ fleetData, riderData, loading }) => {
                 </div>
             </div>
 
-            <EvLookupPanel riderData={riderData} />
+            <EvLookupPanel riderData={riderData} fleetData={fleetData} />
 
             <div className="table-card glass">
                 <div className="table-header">

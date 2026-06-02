@@ -1,7 +1,13 @@
 import { format, startOfDay, endOfDay } from 'date-fns'
 import { parseFleetDate } from './fleetDeployReturnExport'
 import { normalizeSummaryClient } from './clientSummaryClients'
-import { dedupeCanonicalCities, normalizeCityKey, normalizeSummaryCity, resolveRiderCity } from './citySummaryAliases'
+import {
+  dedupeCanonicalCities,
+  normalizeCityKey,
+  normalizeSummaryCity,
+  resolveRiderCity,
+  riderCityMatchesFilter,
+} from './citySummaryAliases'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 
 export { normalizeCityKey, normalizeSummaryCity }
@@ -94,17 +100,27 @@ export function masterRowToCsvRecord(row) {
   }
 }
 
-function isIcRiderRow(r) {
+export function isIcRiderRow(r) {
   if (String(r.fl ?? '').trim() !== '1') return false
   const type1 = (r.type1 || '').toString().trim().toUpperCase().replace(/\s+/g, '-')
   return type1 === 'NON-EV'
 }
 
 function normalizePhone(value) {
-  return (value ?? '').toString().replace(/\D/g, '')
+  const digits = (value ?? '').toString().replace(/\D/g, '')
+  if (digits.length >= 10) return digits.slice(-10)
+  return digits.length >= 6 ? digits : ''
 }
 
-function buildRiderMetricDateIndex(riderData) {
+function riderIdentityKey(workerOrRiderId, phone) {
+  const id = normalizeRiderIdKey(workerOrRiderId)
+  if (id) return `id:${id}`
+  const p = normalizePhone(phone)
+  if (p) return `phone:${p}`
+  return ''
+}
+
+export function buildRiderMetricDateIndex(riderData) {
   const byWorkerDate = new Map()
   const byPhoneDate = new Map()
 
@@ -121,19 +137,14 @@ function buildRiderMetricDateIndex(riderData) {
   return { byWorkerDate, byPhoneDate }
 }
 
-function lookupRiderMetricForDeployRow(row, index) {
+/** Exact worker/phone + deploy date only (fast path for active-rider lists). */
+export function lookupRiderMetricExact(row, index) {
   const dateKey = format(row.date, 'yyyy-MM-dd')
   const riderKey = normalizeRiderIdKey(row.riderId)
 
   if (riderKey) {
     const exact = index.byWorkerDate.get(`${riderKey}|${dateKey}`)
     if (exact) return exact
-
-    for (const [key, metric] of index.byWorkerDate) {
-      if (!key.endsWith(`|${dateKey}`)) continue
-      const workerKey = key.slice(0, -(dateKey.length + 1))
-      if (workerKey.includes(riderKey) || riderKey.includes(workerKey)) return metric
-    }
   }
 
   const phone = normalizePhone(row.riderContact)
@@ -145,25 +156,33 @@ function lookupRiderMetricForDeployRow(row, index) {
   return null
 }
 
-/** Fleet Deployee row counts as EV unless rider_metrics on that date is fl=1 NON-EV. */
-function isEvFleetDeployeeRow(row, riderIndex) {
-  const metric = lookupRiderMetricForDeployRow(row, riderIndex)
+/** Fleet Deployee row counts as EV unless rider_metrics on that deploy date is fl=1 NON-EV. */
+export function isEvFleetDeployeeRow(row, riderIndex) {
+  const metric = lookupRiderMetricExact(
+    { date: row.date, riderId: row.riderId, riderContact: row.riderContact },
+    riderIndex
+  )
   if (!metric) return true
   return !isIcRiderRow(metric)
 }
 
 /**
  * Client-wise summary for a city + date range.
- * EV from fleet Deployee rows; IC from rider_metrics (fl=1, type1=NON-EV) across range.
- * Total Deployed = Ev Deployed + IC Deployed (matches Excel summary).
+ * EV = deduped fleet Deployee rows (not IC on deploy date).
+ * IC = unique IC riders (fl=1, NON-EV) in week without a fleet Deployee in range.
+ * Total Deployed = Ev Deployed + IC Deployed.
  */
 export function buildClientWiseSummary(filteredMasterRows, riderData, { city, startDate, endDate }) {
   const start = startOfDay(new Date(startDate))
   const end = endOfDay(new Date(endDate))
-  const cityKey = city && city !== 'All' ? normalizeCityKey(city) : null
+  const filterCity = city && city !== 'All' ? city : null
   const riderIndex = buildRiderMetricDateIndex(riderData)
 
   const clientStats = new Map()
+  const seenFleetEvents = new Set()
+  const fleetDeployedRiderKeys = new Set()
+  const icRidersByClient = new Map()
+
   const ensure = (client) => {
     if (!clientStats.has(client)) {
       clientStats.set(client, { returnCount: 0, icDeployed: 0, evDeployed: 0 })
@@ -172,8 +191,21 @@ export function buildClientWiseSummary(filteredMasterRows, riderData, { city, st
   }
 
   for (const row of filteredMasterRows) {
+    const dateKey = format(row.date, 'yyyy-MM-dd')
+    const eventKey = [
+      dateKey,
+      row.vehicleStatus || '',
+      (row.vehicleNumber || '').toUpperCase(),
+      normalizeRiderIdKey(row.riderId),
+      normalizeSummaryClient(row.client),
+    ].join('|')
+    if (seenFleetEvents.has(eventKey)) continue
+    seenFleetEvents.add(eventKey)
+
     const stats = ensure(row.client)
     if (row.vehicleStatus === 'Deployee') {
+      const riderKey = riderIdentityKey(row.riderId, row.riderContact)
+      if (riderKey) fleetDeployedRiderKeys.add(riderKey)
       if (isEvFleetDeployeeRow(row, riderIndex)) stats.evDeployed++
     } else if (row.vehicleStatus === 'Return') {
       stats.returnCount++
@@ -185,9 +217,18 @@ export function buildClientWiseSummary(filteredMasterRows, riderData, { city, st
 
     const rDate = parseFleetDate(r.date_record)
     if (!rDate || rDate < start || rDate > end) continue
-    if (cityKey && normalizeCityKey(resolveRiderCity(r)) !== cityKey) continue
+    if (filterCity && !riderCityMatchesFilter(filterCity, r)) continue
 
-    ensure(normalizeSummaryClient(r.client)).icDeployed++
+    const riderKey = riderIdentityKey(r.worker_code, r.mob_number)
+    if (!riderKey || fleetDeployedRiderKeys.has(riderKey)) continue
+
+    const client = normalizeSummaryClient(r.client)
+    if (!icRidersByClient.has(client)) icRidersByClient.set(client, new Set())
+    icRidersByClient.get(client).add(riderKey)
+  }
+
+  for (const [client, riderSet] of icRidersByClient) {
+    ensure(client).icDeployed = riderSet.size
   }
 
   const clients = [...clientStats.keys()].sort((a, b) => a.localeCompare(b))

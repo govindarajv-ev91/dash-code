@@ -2,6 +2,15 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, differenceInDays } from 'date-fns';
 import { Search, Filter, MapPin, User, Bike, Calendar, ArrowRight, Clipboard, ChevronDown, ChevronUp, Activity, Package, Clock } from 'lucide-react';
+import {
+    buildFleetHistoryIndex,
+    enrichRiderFromFleetRow,
+    normalizeFleetStatus,
+    resolveFleetHistoryForRider,
+    countFleetSources,
+} from './lib/fleetInsightIndex';
+import { parseFleetDate } from './lib/fleetDeployReturnExport';
+import { extractFleetSource } from './lib/riderPerformanceReport';
 
 const VehicleTracking = ({ fleetData, riderData, loading }) => {
     const [searchTerm, setSearchTerm] = useState('');
@@ -16,61 +25,23 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(25);
 
+    const fleetSourceCounts = useMemo(() => countFleetSources(fleetData), [fleetData]);
+
     const processedRiderData = useMemo(() => {
         if (!riderData || riderData.length === 0) return [];
 
         const today = new Date();
-        const dateCache = new Map();
-        const getParsedDate = (dateStr) => {
-            if (!dateStr) return null;
-            if (dateStr instanceof Date) return dateStr;
-            const s = dateStr.toString().trim();
-            if (!s || s === 'null' || s === 'N/A') return null;
-            if (dateCache.has(s)) return dateCache.get(s);
+        const fleetIndex = buildFleetHistoryIndex(fleetData);
+        const getParsedDate = (dateStr) => parseFleetDate(dateStr);
 
-            let d = null;
-            try {
-                // Handle Excel serial numbers
-                if (/^\d{5}(\.\d+)?$/.test(s)) {
-                    d = new Date((parseFloat(s) - 25569) * 86400 * 1000);
-                } 
-                // Handle DD/MM/YYYY
-                else if (s.includes('/')) {
-                    const parts = s.split(' ')[0].split('/');
-                    if (parts.length === 3) {
-                        const dd = parseInt(parts[0], 10);
-                        const mm = parseInt(parts[1], 10) - 1;
-                        let yyyy = parts[2];
-                        if (yyyy.length === 2) yyyy = '20' + yyyy;
-                        d = new Date(parseInt(yyyy, 10), mm, dd);
-                    }
-                } 
-                // Fallback
-                if (!d || isNaN(d.getTime())) {
-                    d = new Date(s);
-                }
-            } catch (e) { d = null; }
-
-            const result = d && !isNaN(d.getTime()) ? d : null;
-            dateCache.set(s, result);
-            return result;
-        };
-
-        // 1. Index Fleet History by Rider
-        const fleetByRider = new Map();
-        fleetData.forEach(item => {
-            if (!item.rider_id) return;
-            if (!fleetByRider.has(item.rider_id)) fleetByRider.set(item.rider_id, []);
-            fleetByRider.get(item.rider_id).push(item);
-        });
-
-        // 2. Process each rider
+        // Process each rider (orders from rider_metrics, deploy/return dates from merged Fleet Data)
         const riderGroups = new Map();
         riderData.forEach(r => {
             if (!r.worker_code) return;
             const existing = riderGroups.get(r.worker_code) || {
                 riderId: r.worker_code,
-                riderName: r.rider_name || 'N/A', // We'll get this from fleet_data if missing
+                riderName: r.rider_name || r.worker_name || 'N/A',
+                mobile: r.mob_number || '',
                 client: r.client || 'N/A',
                 sourceName: r.source || 'N/A',
                 city: r.city || 'N/A',
@@ -78,7 +49,8 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
                 lastOrderDate: null,
                 fleetCategory: r.type1 || 'Unknown',
                 orderRecords: [],
-                history: []
+                history: [],
+                fleetDataSource: null,
             };
 
             const deliveredCount = parseInt(r.delivered || 0, 10);
@@ -93,8 +65,9 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
             if (r.client && r.client !== 'N/A') existing.client = r.client;
             if (r.source && r.source !== 'N/A') existing.sourceName = r.source;
             if (r.city && r.city !== 'N/A') existing.city = r.city;
+            if (r.mob_number) existing.mobile = r.mob_number;
+            if (r.rider_name || r.worker_name) existing.riderName = r.rider_name || r.worker_name;
             
-            // Extract and normalize fleet category
             const rawType = (r.type1 || '').toString().trim().toUpperCase();
             if (rawType === 'EV' || rawType === 'NON-EV' || rawType === 'NON EV') {
                 existing.fleetCategory = rawType.replace('NON EV', 'NON-EV');
@@ -105,18 +78,17 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
 
         const results = [];
         riderGroups.forEach((rider, riderId) => {
-            const rawHistory = fleetByRider.get(riderId) || [];
-            
-            // Sort history by date record
-            rawHistory.sort((a, b) => {
-                const dA = getParsedDate(a.date_record) || new Date(0);
-                const dB = getParsedDate(b.date_record) || new Date(0);
-                return dA - dB;
-            });
+            const rawHistory = resolveFleetHistoryForRider(
+                { workerCode: riderId, mobile: rider.mobile, name: rider.riderName },
+                fleetIndex
+            );
 
-            // Reconstruct assignment history for this rider
+            if (rawHistory.length) {
+                enrichRiderFromFleetRow(rider, rawHistory[rawHistory.length - 1]);
+            }
+
             const finalHistory = [];
-            const activeDeployments = new Map(); // VehicleNum -> DepRecord
+            const activeDeployments = new Map();
 
             rawHistory.forEach(rec => {
                 const date = getParsedDate(rec.date_record);
@@ -125,16 +97,19 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
                 const vehicleNumberKey = vehicleNumberRaw.toUpperCase();
                 if (!vehicleNumberKey) return;
 
-                if (rec.vehicle_status === 'Deployee') {
+                const status = normalizeFleetStatus(rec.vehicle_status);
+
+                if (status === 'Deployee') {
                     activeDeployments.set(vehicleNumberKey, {
                         vehicleNumber: vehicleNumberRaw,
                         deployeeDate: date,
-                        cityName: rec.city_locations || rider.city
+                        cityName: rec.city_locations || rec.city || rider.city,
+                        clientName: rec.client_name || rider.client,
+                        sourceName: extractFleetSource(rec) || rider.sourceName,
+                        fleetDataSource: rec.data_source,
                     });
-                    // Fallback name if missing from rider_metrics
-                    if (rider.riderName === 'N/A' && rec.rider_name) rider.riderName = rec.rider_name;
-                    if (rider.sourceName === 'N/A' && rec.source_name) rider.sourceName = rec.source_name;
-                } else if (rec.vehicle_status === 'Return') {
+                    enrichRiderFromFleetRow(rider, rec);
+                } else if (status === 'Return') {
                     const dep = activeDeployments.get(vehicleNumberKey);
                     if (dep) {
                         finalHistory.push({
@@ -412,7 +387,10 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
             <header className="header">
                 <div>
                     <h1>Rider & Vehicle Insight</h1>
-                    <p style={{ color: 'var(--text-dim)' }}>Current assignments, performance tracking, and deployment history</p>
+                    <p style={{ color: 'var(--text-dim)' }}>
+                        Deploy/return dates from merged Fleet Data ({fleetSourceCounts.total.toLocaleString()} rows:
+                        {' '}{fleetSourceCounts.legacy.toLocaleString()} database + {fleetSourceCounts.form.toLocaleString()} new fleet)
+                    </p>
                 </div>
             </header>
 

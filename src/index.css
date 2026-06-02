@@ -1537,6 +1537,95 @@ select option {
   color: #fff;
 }
 
+/* Fleet Data — Active Riders tab */
+.far-filters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  align-items: end;
+  gap: 1rem;
+}
+
+.far-filter-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.far-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: rgba(251, 113, 133, 0.08);
+  border: 1px solid rgba(251, 113, 133, 0.25);
+  color: #fb7185;
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.far-clear-btn:hover {
+  background: rgba(251, 113, 133, 0.15);
+}
+
+.far-week-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: -0.5rem 0 1rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.far-stat-sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-weight: 500;
+  margin-top: 0.15rem;
+}
+
+.far-table-scroll {
+  max-height: min(70vh, 720px);
+}
+
+.far-table th:first-child,
+.far-table td.far-row-num {
+  width: 48px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.far-fleet-badge {
+  display: inline-block;
+  padding: 0.25rem 0.55rem;
+  border-radius: 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.far-fleet-ev {
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  color: #4ade80;
+}
+
+.far-fleet-nonev {
+  background: rgba(251, 146, 60, 0.12);
+  border: 1px solid rgba(251, 146, 60, 0.35);
+  color: #fb923c;
+}
+
+.far-pagination {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
 /* Fleet Data — Client Summary full page */
 .fdv-summary-root {
   display: flex;
@@ -1927,11 +2016,103 @@ select option {
   gap: 1rem;
 }
 
+.rp-update-banner {
+  margin-bottom: 0;
+}
+
+.rp-recalculating {
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.rp-table-pending {
+  opacity: 0.72;
+  pointer-events: none;
+}
+
 .rp-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
   padding: 0.85rem;
+}
+
+.rp-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+
+.rp-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+}
+
+.rp-stat-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.rp-stat-active { background: rgba(74, 222, 128, 0.12); color: #4ade80; }
+.rp-stat-inactive { background: rgba(251, 146, 60, 0.12); color: #fb923c; }
+.rp-stat-error { background: rgba(251, 113, 133, 0.12); color: #fb7185; }
+.rp-stat-eff { background: rgba(99, 102, 241, 0.12); color: var(--primary); }
+.rp-stat-high { background: rgba(74, 222, 128, 0.12); color: #4ade80; }
+.rp-stat-mid { background: rgba(56, 189, 248, 0.12); color: #38bdf8; }
+.rp-stat-low { background: rgba(251, 113, 133, 0.12); color: #fb7185; }
+
+.rp-stat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.rp-stat-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  letter-spacing: 0.03em;
+}
+
+.rp-stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.1;
+}
+
+.rp-stat-sep {
+  margin: 0 0.2rem;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.rp-stat-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rp-stat-eff-card {
+  grid-column: span 1;
+}
+
+@media (min-width: 1100px) {
+  .rp-stat-eff-card {
+    grid-column: span 2;
+  }
 }
 
 .rp-filter {

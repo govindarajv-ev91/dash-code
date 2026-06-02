@@ -127,6 +127,24 @@ export default function FleetSummaryReport({ fleetData, riderData, loading }) {
     return showHiddenClients ? [...visible, ...hidden] : visible
   }, [visibleClients, hiddenClients, showHiddenClients])
 
+  const tableTotals = useMemo(() => {
+    const totals = {
+      targetEv: 0,
+      targetNonEv: 0,
+    }
+    for (const metric of SUMMARY_METRICS) {
+      totals[metric.key] = 0
+    }
+    for (const c of tableClients) {
+      totals.targetEv += Number(c.targetEv || 0)
+      totals.targetNonEv += Number(c.targetNonEv || 0)
+      for (const metric of SUMMARY_METRICS) {
+        totals[metric.key] += Number(c[metric.key] || 0)
+      }
+    }
+    return totals
+  }, [tableClients])
+
   const renderMetricRow = (label, rowClass, getValue, totalValue) => (
     <tr className={rowClass}>
       <td className="fdv-pivot-metric-col">{label}</td>
@@ -231,7 +249,7 @@ export default function FleetSummaryReport({ fleetData, riderData, loading }) {
           <div>
             <h1>Client Summary</h1>
             <p className="fdv-summary-subtitle">
-              Deployee / Return master data · Total = Ev + IC · EV from fleet Deployee · IC from rider_metrics (fl=1, type1=NON-EV) · targets saved to database
+              Deployee / Return master data · EV = fleet Deployee (deduped) · IC = unique own-bike riders (fl=1, NON-EV, no fleet deploy in week) · targets in database
             </p>
           </div>
         </div>
@@ -392,20 +410,20 @@ export default function FleetSummaryReport({ fleetData, riderData, loading }) {
                       'Target EV',
                       'fsr-metric-target fsr-metric-target-ev',
                       (c) => (c.targetEv ? c.targetEv : '—'),
-                      displaySummary.totals.targetEv || '—'
+                      tableTotals.targetEv || '—'
                     )}
                     {renderMetricRow(
                       'Target NON-EV',
                       'fsr-metric-target fsr-metric-target-non-ev',
                       (c) => (c.targetNonEv ? c.targetNonEv : '—'),
-                      displaySummary.totals.targetNonEv || '—'
+                      tableTotals.targetNonEv || '—'
                     )}
                     {SUMMARY_METRICS.map((metric) =>
                       renderMetricRow(
                         metric.label,
                         metric.rowClass,
                         (c) => c[metric.key],
-                        displaySummary.totals[metric.key]
+                        tableTotals[metric.key]
                       )
                     )}
                   </>

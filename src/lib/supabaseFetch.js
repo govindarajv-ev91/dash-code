@@ -3,6 +3,9 @@ import { supabase } from './supabaseClient'
 const DEFAULT_PAGE_SIZE = 1000
 const WIDE_PAGE_SIZE = 250
 
+const DEPLOY_RETURN_STATUS_FILTER =
+  'vehicle_status.eq.Deployee,vehicle_status.eq.Return,vehicle_status.eq.deployee,vehicle_status.eq.return'
+
 /**
  * Paginated table fetch. Uses keyset (cursor) pagination when orderBy is set —
  * avoids slow OFFSET scans and statement timeouts on large tables.
@@ -12,16 +15,19 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
   let pageSize = options.pageSize ?? (isWideSelect ? WIDE_PAGE_SIZE : DEFAULT_PAGE_SIZE)
   const useKeyset = orderBy != null && options.useKeyset !== false
   const maxRetries = options.maxRetries ?? 5
+  const deployReturnOnly = options.deployReturnOnly === true
 
   const allData = []
   let consecutiveErrors = 0
   let cursor = null
   let offset = 0
+  let pageNum = 0
 
   while (true) {
     try {
       let query = supabase.from(table).select(columns)
       if (orderBy) query = query.order(orderBy, { ascending: true })
+      if (deployReturnOnly) query = query.or(DEPLOY_RETURN_STATUS_FILTER)
 
       if (useKeyset) {
         if (cursor != null) query = query.gt(orderBy, cursor)
@@ -37,6 +43,7 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
 
       allData.push(...data)
       consecutiveErrors = 0
+      pageNum++
 
       if (useKeyset) {
         const lastRow = data[data.length - 1]
@@ -53,6 +60,11 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
       if (data.length < pageSize) break
     } catch (err) {
       const isTimeout = err?.code === '57014'
+      const isBadColumn = err?.code === '42703' || err?.message?.includes('does not exist')
+      if (isBadColumn) {
+        console.error(`Stopped fetching ${table} — invalid column in select:`, err)
+        break
+      }
       if (isTimeout && pageSize > 100) {
         pageSize = Math.max(100, Math.floor(pageSize / 2))
         console.warn(`${table}: query timed out; retrying with page size ${pageSize}.`)
@@ -67,6 +79,10 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
       }
       await new Promise((r) => setTimeout(r, 1000 * consecutiveErrors))
     }
+  }
+
+  if (import.meta.env.DEV && pageNum > 0) {
+    console.info(`[fetch] ${table}: ${allData.length} rows, ${pageNum} page(s), cols=${isWideSelect ? 'all' : 'slim'}`)
   }
 
   return { data: allData, totalCount: allData.length }

@@ -1,6 +1,7 @@
-import { format } from 'date-fns'
-import { parseFleetDate } from './fleetDeployReturnExport'
-import { normalizeRiderIdKey } from './riderPerformanceReport'
+import { format, startOfDay } from 'date-fns'
+import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
+import { getCurrentlyDeployedAssignments, normalizeRiderIdKey } from './riderPerformanceReport'
+import { isIcRiderRow } from './fleetMasterSheet'
 
 export function classifyRiderEvType(type1, type2) {
   const check = (value) => {
@@ -13,6 +14,123 @@ export function classifyRiderEvType(type1, type2) {
 
 function formatMetricDateKey(date) {
   return format(date, 'dd/MM/yyyy')
+}
+
+function normalizePhone(value) {
+  const digits = (value ?? '').toString().replace(/\D/g, '')
+  if (digits.length >= 10) return digits.slice(-10)
+  return digits.length >= 6 ? digits : ''
+}
+
+function riderKeysForLookup(workerCode) {
+  const keys = new Set()
+  const idKey = normalizeRiderIdKey(workerCode)
+  if (idKey) keys.add(idKey)
+  const phone = normalizePhone(workerCode)
+  if (phone) keys.add(`phone:${phone}`)
+  return keys
+}
+
+function assignmentMatchesWorker(assignment, workerCode) {
+  const lookupKeys = riderKeysForLookup(workerCode)
+  const assignId = normalizeRiderIdKey(assignment.riderId)
+  if (assignId && lookupKeys.has(assignId)) return true
+  const assignPhone = normalizePhone(assignment.mobile)
+  if (assignPhone && lookupKeys.has(`phone:${assignPhone}`)) return true
+  return false
+}
+
+/** Per vehicle + deploy rider: contact ids/phones from fleet rows on or before as-of. */
+function buildVehicleRiderContactIndex(fleetRows, asOfDate) {
+  const asOf = startOfDay(asOfDate)
+  const byVehicle = new Map()
+
+  for (const row of fleetRows || []) {
+    const date = parseFleetDate(row.date_record)
+    if (!date || date > asOf) continue
+    const vehicleKey = vehiclePartitionKey(row.vehicle_number)
+    if (!vehicleKey) continue
+
+    const riderId = normalizeRiderIdKey(row.rider_id) || '_unknown'
+    if (!byVehicle.has(vehicleKey)) byVehicle.set(vehicleKey, new Map())
+    const riders = byVehicle.get(vehicleKey)
+    if (!riders.has(riderId)) riders.set(riderId, { ids: new Set(), phones: new Set() })
+
+    const bucket = riders.get(riderId)
+    const id = normalizeRiderIdKey(row.rider_id)
+    const phone = normalizePhone(row.rider_contact_number)
+    if (id) bucket.ids.add(id)
+    if (phone) bucket.phones.add(phone)
+  }
+
+  return byVehicle
+}
+
+function contactIndexMatches(contactIndex, vehicleKey, deployRiderId, workerCode) {
+  const lookupKeys = riderKeysForLookup(workerCode)
+  const riders = contactIndex.get(vehicleKey)
+  if (!riders) return false
+
+  const deployId = normalizeRiderIdKey(deployRiderId)
+  const buckets = deployId ? [riders.get(deployId)].filter(Boolean) : [...riders.values()]
+
+  for (const bucket of buckets) {
+    for (const id of bucket.ids) {
+      if (lookupKeys.has(id)) return true
+    }
+    for (const p of bucket.phones) {
+      if (lookupKeys.has(`phone:${p}`)) return true
+    }
+  }
+  return false
+}
+
+/** Cache deployed riders + contact index per lookup date in the batch. */
+function buildFleetLookupCaches(fleetRows, dates) {
+  const assignmentsCache = new Map()
+  const contactIndexCache = new Map()
+  for (const date of dates) {
+    const dateKey = format(date, 'yyyy-MM-dd')
+    if (assignmentsCache.has(dateKey)) continue
+    assignmentsCache.set(dateKey, getCurrentlyDeployedAssignments(fleetRows, date))
+    contactIndexCache.set(dateKey, buildVehicleRiderContactIndex(fleetRows, date))
+  }
+  return { assignmentsCache, contactIndexCache }
+}
+
+function findFleetDeployment(assignmentsCache, contactIndexCache, workerCode, asOfDate) {
+  const dateKey = format(asOfDate, 'yyyy-MM-dd')
+  const asOf = startOfDay(asOfDate)
+  const assignments = assignmentsCache.get(dateKey) || []
+  const contactIndex = contactIndexCache.get(dateKey)
+
+  for (const assignment of assignments) {
+    const deployDay = startOfDay(assignment.deployDate)
+    if (deployDay > asOf) continue
+
+    if (assignmentMatchesWorker(assignment, workerCode)) return assignment
+
+    const vehicleKey = vehiclePartitionKey(assignment.vehicleNumber)
+    if (vehicleKey && contactIndex && contactIndexMatches(contactIndex, vehicleKey, assignment.riderId, workerCode)) {
+      return assignment
+    }
+  }
+
+  return null
+}
+
+function metricIdentityKeys(row) {
+  const keys = new Set()
+  const worker = (row.worker_code ?? '').toString().trim()
+  if (worker) keys.add(normalizeRiderIdKey(worker))
+  const phone = normalizePhone(row.mob_number)
+  if (phone) keys.add(`phone:${phone}`)
+  return keys
+}
+
+function metricEvTypeFromRow(row) {
+  if (isIcRiderRow(row)) return 'NON-EV'
+  return classifyRiderEvType(row.type1, row.type2)
 }
 
 /** Parse pasted lines: "29/05/2026\tCHN129-R0829" or space-separated. */
@@ -52,75 +170,104 @@ export function buildRiderEvIndex(riderRows) {
   const index = new Map()
 
   for (const row of riderRows || []) {
-    const worker = (row.worker_code ?? '').toString().trim()
-    if (!worker) continue
     const date = parseFleetDate(row.date_record)
     if (!date) continue
 
-    const key = `${formatMetricDateKey(date)}|${normalizeRiderIdKey(worker)}`
-    index.set(key, classifyRiderEvType(row.type1, row.type2))
+    const dateKey = formatMetricDateKey(date)
+    const evType = metricEvTypeFromRow(row)
+    for (const identityKey of metricIdentityKeys(row)) {
+      index.set(`${dateKey}|${identityKey}`, evType)
+    }
   }
 
   return index
 }
 
-/** Per worker, metrics rows sorted newest → oldest (for date fallback). */
+/** Per worker ID or phone, metrics rows sorted newest → oldest (for date fallback). */
 export function buildRiderEvHistoryByWorker(riderRows) {
-  const byWorker = new Map()
+  const byIdentity = new Map()
 
   for (const row of riderRows || []) {
-    const worker = (row.worker_code ?? '').toString().trim()
-    if (!worker) continue
     const date = parseFleetDate(row.date_record)
     if (!date) continue
 
-    const workerKey = normalizeRiderIdKey(worker)
-    if (!byWorker.has(workerKey)) byWorker.set(workerKey, [])
-    byWorker.get(workerKey).push({
+    const record = {
       date,
       dateKey: formatMetricDateKey(date),
-      evType: classifyRiderEvType(row.type1, row.type2),
-    })
+      evType: metricEvTypeFromRow(row),
+      row,
+    }
+
+    for (const identityKey of metricIdentityKeys(row)) {
+      if (!byIdentity.has(identityKey)) byIdentity.set(identityKey, [])
+      byIdentity.get(identityKey).push(record)
+    }
   }
 
-  for (const records of byWorker.values()) {
+  for (const records of byIdentity.values()) {
     records.sort((a, b) => b.date - a.date)
   }
 
-  return byWorker
+  return byIdentity
 }
 
-function findEvTypeOnOrBefore(byWorker, workerKey, asOfDate) {
-  const records = byWorker.get(workerKey)
-  if (!records?.length) return null
+export function findEvTypeOnOrBefore(byIdentity, lookupKeys, asOfDate) {
+  let best = null
 
-  for (const record of records) {
-    if (record.date <= asOfDate) {
-      return record
+  for (const key of lookupKeys) {
+    const records = byIdentity.get(key)
+    if (!records?.length) continue
+
+    for (const record of records) {
+      if (record.date <= asOfDate && (!best || record.date > best.date)) {
+        best = record
+      }
     }
   }
 
-  return null
+  return best
 }
 
-export function lookupRiderEvTypes(pasteText, riderRows) {
+function lookupIdentityKeys(workerCode) {
+  return [...riderKeysForLookup(workerCode)]
+}
+
+/**
+ * EV if rider has a fleet vehicle deployed as of the lookup date; else rider_metrics; else NON-EV.
+ */
+export function lookupRiderEvTypes(pasteText, riderRows, fleetRows = []) {
   const parsed = parseDateWorkerPaste(pasteText)
   const index = buildRiderEvIndex(riderRows)
   const byWorker = buildRiderEvHistoryByWorker(riderRows)
+  const uniqueDates = [...new Map(parsed.map((r) => [format(r.date, 'yyyy-MM-dd'), r.date])).values()]
+  const { assignmentsCache, contactIndexCache } = buildFleetLookupCaches(fleetRows, uniqueDates)
 
   return parsed.map((row) => {
-    const key = `${row.dateKey}|${row.workerKey}`
+    const identityKeys = lookupIdentityKeys(row.workerCode)
 
-    if (index.has(key)) {
+    const fleetAssignment = findFleetDeployment(assignmentsCache, contactIndexCache, row.workerCode, row.date)
+    if (fleetAssignment) {
       return {
         ...row,
-        evType: index.get(key),
-        matchedDateKey: row.dateKey,
-        status: 'exact',
+        evType: 'EV',
+        matchedDateKey: formatMetricDateKey(fleetAssignment.deployDate),
+        status: 'fleet',
       }
     }
 
-    const fallback = findEvTypeOnOrBefore(byWorker, row.workerKey, row.date)
+    for (const identityKey of identityKeys) {
+      const exactKey = `${row.dateKey}|${identityKey}`
+      if (index.has(exactKey)) {
+        return {
+          ...row,
+          evType: index.get(exactKey),
+          matchedDateKey: row.dateKey,
+          status: 'exact',
+        }
+      }
+    }
+
+    const fallback = findEvTypeOnOrBefore(byWorker, identityKeys, row.date)
     if (fallback) {
       return {
         ...row,
@@ -145,28 +292,33 @@ export function evLookupToCsv(results) {
     return `"${str.replace(/"/g, '""')}"`
   }
 
-  const headers = ['Date', 'WorkerCode', 'Type', 'From metrics', 'Match status']
+  const headers = ['Date', 'WorkerCode', 'Type', 'Source', 'Match status']
   const lines = [headers.map(escapeCsv).join(',')]
 
   for (const row of results) {
-    const matchedDate = row.status === 'not found'
-      ? ''
-      : row.status === 'fallback'
-        ? row.matchedDateKey
-        : row.dateDisplay
-    const matchStatus = row.status === 'exact'
-      ? 'Exact date'
-      : row.status === 'fallback'
-        ? 'Fallback date'
-        : 'Not found'
+    const matchedDate =
+      row.status === 'not found'
+        ? ''
+        : row.status === 'fleet'
+          ? row.matchedDateKey
+          : row.status === 'fallback'
+            ? row.matchedDateKey
+            : row.dateDisplay
 
-    lines.push([
-      row.dateDisplay,
-      row.workerCode,
-      row.evType,
-      matchedDate,
-      matchStatus,
-    ].map(escapeCsv).join(','))
+    const matchStatus =
+      row.status === 'fleet'
+        ? 'Fleet deploy'
+        : row.status === 'exact'
+          ? 'Exact date'
+          : row.status === 'fallback'
+            ? 'Fallback date'
+            : 'Not found'
+
+    lines.push(
+      [row.dateDisplay, row.workerCode, row.evType, row.status === 'fleet' ? 'Fleet' : 'Metrics', matchStatus]
+        .map(escapeCsv)
+        .join(',')
+    )
   }
 
   return lines.join('\n')
@@ -178,9 +330,11 @@ export function evLookupTypesOnly(results) {
 }
 
 export function evLookupToTsv(results) {
-  const lines = ['Date\tWorkerCode\tType\tMatchedDate']
+  const lines = ['Date\tWorkerCode\tType\tMatchedDate\tStatus']
   for (const row of results) {
-    lines.push(`${row.dateDisplay}\t${row.workerCode}\t${row.evType}\t${row.matchedDateKey || ''}`)
+    lines.push(
+      `${row.dateDisplay}\t${row.workerCode}\t${row.evType}\t${row.matchedDateKey || ''}\t${row.status}`
+    )
   }
   return lines.join('\n')
 }

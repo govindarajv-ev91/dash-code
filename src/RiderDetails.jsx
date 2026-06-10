@@ -47,6 +47,35 @@ const formatDateToDDMMYYYY = (dateStr) => {
     return cleanStr;
 };
 
+const pickExportValue = (...vals) => {
+    for (const v of vals) {
+        if (v === null || v === undefined) continue;
+        const s = String(v).trim();
+        if (s && s.toLowerCase() !== 'n/a' && s.toLowerCase() !== 'null' && s.toLowerCase() !== 'undefined') {
+            return s;
+        }
+    }
+    return 'N/A';
+};
+
+const getLatestFleetRecord = (fleetInfo) => {
+    if (!Array.isArray(fleetInfo) || fleetInfo.length === 0) return null;
+    return fleetInfo[fleetInfo.length - 1];
+};
+
+const getRiderKycExportFields = (rider) => {
+    const kyc = rider.kycInfo;
+    const onboarding = rider.onboardingInfo;
+    const fleet = getLatestFleetRecord(rider.fleetInfo);
+
+    return {
+        dob: formatDateToDDMMYYYY(pickExportValue(kyc?.rider_dob, onboarding?.rider_dob, onboarding?.date_of_birth)),
+        aadhar: pickExportValue(kyc?.aadhar_number, onboarding?.aadhar_number),
+        pan: pickExportValue(kyc?.pan_number, onboarding?.pan_number),
+        ifsc: pickExportValue(kyc?.ifsc_code, fleet?.bank_ifsc_code_sd_refund_request),
+    };
+};
+
 const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedRider, setSelectedRider] = useState(null);
@@ -183,19 +212,25 @@ const RiderDetails = ({ fleetData, kycData, onboardingData, riderData, loading }
     }, [searchTerm, filterCity, pageSize]);
 
     const handleExport = () => {
-        const exportData = filteredData.map(r => ({
-            'Rider ID': r.id,
-            'Rider Name': r.name,
-            'Mobile Number': r.mobile,
-            'Date of Birth': formatDateToDDMMYYYY(r.kycInfo?.rider_dob),
-            'Age': r.kycInfo?.rider_age || 'N/A',
-            'City': r.city,
-            'Client': r.client,
-            'Sources': Array.from(r.sources).join(', '),
-            'KYC Status': r.kycInfo ? 'Done' : 'Pending',
-            'Onboarding Status': r.onboardingInfo ? 'Done' : 'Pending',
-            'Fleet Records': r.fleetInfo.length
-        }));
+        const exportData = filteredData.map(r => {
+            const kycFields = getRiderKycExportFields(r);
+            return {
+                'Rider ID': r.id,
+                'Rider Name': r.name,
+                'Mobile Number': r.mobile,
+                'DATE OF BIRTH': kycFields.dob,
+                'AADHAR': kycFields.aadhar,
+                'PAN': kycFields.pan,
+                'IFSC CODE': kycFields.ifsc,
+                'Age': r.kycInfo?.rider_age || 'N/A',
+                'City': r.city,
+                'Client': r.client,
+                'Sources': Array.from(r.sources).join(', '),
+                'KYC Status': r.kycInfo ? 'Done' : 'Pending',
+                'Onboarding Status': r.onboardingInfo ? 'Done' : 'Pending',
+                'Fleet Records': r.fleetInfo.length
+            };
+        });
 
         const ws = XLSX.utils.json_to_sheet(exportData);
         const wb = XLSX.utils.book_new();

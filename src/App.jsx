@@ -11,6 +11,7 @@ const VehicleTracking = lazy(() => import('./VehicleTracking'))
 const OnboardingAnalytics = lazy(() => import('./OnboardingAnalytics'))
 const ErrorFinder = lazy(() => import('./ErrorFinder'))
 const InactiveRiderMailer = lazy(() => import('./InactiveRiderMailer'))
+const RiderAttritionMailer = lazy(() => import('./RiderAttritionMailer'))
 const VehicleInventory = lazy(() => import('./VehicleInventory'))
 const FleetDataViewer = lazy(() => import('./FleetDataViewer'))
 const RiderPerformance = lazy(() => import('./RiderPerformance'))
@@ -23,7 +24,7 @@ import {
   FLEET_FULL_PAGE_SIZE,
 } from './lib/fleetDataConfig'
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity, TrendingDown } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -401,6 +402,13 @@ function App() {
             Inactive Mailer
           </button>
           <button 
+            className={`nav-item ${activePage === 'attritionmailer' ? 'active' : ''}`}
+            onClick={() => setActivePage('attritionmailer')}
+          >
+            <TrendingDown size={20} />
+            Rider Attrition
+          </button>
+          <button 
             className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetdata')}
           >
@@ -497,6 +505,13 @@ function App() {
             fleetData={fleetData}
             onboardingData={onboardingData}
             inventoryData={vehicleInventoryData}
+            loading={loading}
+          />
+        ) : activePage === 'attritionmailer' ? (
+          <RiderAttritionMailer
+            riderData={riderData}
+            fleetData={fleetData}
+            onboardingData={onboardingData}
             loading={loading}
           />
         ) : activePage === 'fleetdata' ? (

@@ -558,7 +558,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     const sendMail = async (rider) => {
         setSendingIds(prev => new Set(prev).add(rider.worker_code + '_mail'));
         try {
-            const SCRIPT_URL = import.meta.env.VITE_MAILER_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbwbFWVeiez8kQyI0J0mcQURda6tNit8TN8Vzch1B5W5U_EmPM-4VaxVFwUtv9gkmgIRFw/exec';
+            const SCRIPT_URL = import.meta.env.VITE_MAILER_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyDWrOipQzyd7wTbIUpMYvW0MfyNgk5y2EV8coNmRAuQy7aN1m3ViGcGcypSwppSUAP/exec';
             const queryParams = new URLSearchParams({
                 email: rider.email,
                 name: rider.worker_name,
@@ -611,7 +611,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
             cityGroups[r.city].push(r);
         });
 
-        const SCRIPT_URL = import.meta.env.VITE_MAILER_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbwbFWVeiez8kQyI0J0mcQURda6tNit8TN8Vzch1B5W5U_EmPM-4VaxVFwUtv9gkmgIRFw/exec';
+        const SCRIPT_URL = import.meta.env.VITE_MAILER_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyDWrOipQzyd7wTbIUpMYvW0MfyNgk5y2EV8coNmRAuQy7aN1m3ViGcGcypSwppSUAP/exec';
 
         for (const city in cityGroups) {
             const groupRiders = cityGroups[city];

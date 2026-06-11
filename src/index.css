@@ -242,6 +242,18 @@ body {
   margin-bottom: 2rem;
 }
 
+/* Rider Attrition — filter dropdowns float above table */
+.ram-filter-bar {
+  position: relative;
+  z-index: 40;
+  overflow: visible;
+}
+
+.ram-multiselect {
+  position: relative;
+  z-index: 41;
+}
+
 .table-header {
   padding: 1.5rem;
   border-bottom: 1px solid var(--border-color);

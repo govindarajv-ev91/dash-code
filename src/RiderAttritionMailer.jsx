@@ -36,7 +36,7 @@ import {
 
 const ROWS_PER_PAGE = 100
 const LEADERSHIP_MAIL_TO =
-  'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com,leadership@ev91riderz.com'
+  'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com'
 
 const MAILER_URL =
   import.meta.env.VITE_MAILER_SCRIPT_URL ||

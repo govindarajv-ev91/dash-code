@@ -34,5 +34,33 @@ export const FLEET_SLIM_COLUMNS = [
   'bike_return_date_sd_refund_request',
 ].join(',')
 
+/** Fleet columns for payment history SD lookup only (~12 fields vs 100+). */
+export const FLEET_SD_COLUMNS = [
+  'id',
+  'date_record',
+  'vehicle_number',
+  'vehicle_status',
+  'rider_id',
+  'rider_name',
+  'rider_contact_number',
+  'city_locations',
+  'city',
+  'client_name',
+  'security_deposit_total_deployee',
+  'security_deposit_paid_deployee',
+  'security_deposit_pending_deployee',
+  'sd_paid_utr_deployee',
+].join(',')
+
+/** Fleet columns for payment history rider vehicle/phone lookup. */
+export const FLEET_RIDER_LOOKUP_COLUMNS = [
+  'id',
+  'date_record',
+  'vehicle_number',
+  'vehicle_status',
+  'rider_id',
+  'rider_contact_number',
+].join(',')
+
 export const FLEET_SLIM_PAGE_SIZE = 1000
 export const FLEET_FULL_PAGE_SIZE = 250

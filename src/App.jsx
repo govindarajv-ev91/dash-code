@@ -15,6 +15,9 @@ const RiderAttritionMailer = lazy(() => import('./RiderAttritionMailer'))
 const VehicleInventory = lazy(() => import('./VehicleInventory'))
 const FleetDataViewer = lazy(() => import('./FleetDataViewer'))
 const RiderPerformance = lazy(() => import('./RiderPerformance'))
+const RiderPaymentUpload = lazy(() => import('./RiderPaymentUpload'))
+const PaymentHistory = lazy(() => import('./PaymentHistory'))
+const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -24,7 +27,7 @@ import {
   FLEET_FULL_PAGE_SIZE,
 } from './lib/fleetDataConfig'
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity, TrendingDown } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -409,6 +412,27 @@ function App() {
             Rider Attrition
           </button>
           <button 
+            className={`nav-item ${activePage === 'paymentupload' ? 'active' : ''}`}
+            onClick={() => setActivePage('paymentupload')}
+          >
+            <Wallet size={20} />
+            Payment Upload
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'paymenthistory' ? 'active' : ''}`}
+            onClick={() => setActivePage('paymenthistory')}
+          >
+            <History size={20} />
+            Payment History
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'sdpayment' ? 'active' : ''}`}
+            onClick={() => setActivePage('sdpayment')}
+          >
+            <Shield size={20} />
+            SD & EV Rent
+          </button>
+          <button 
             className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetdata')}
           >
@@ -514,6 +538,12 @@ function App() {
             onboardingData={onboardingData}
             loading={loading}
           />
+        ) : activePage === 'paymentupload' ? (
+          <RiderPaymentUpload />
+        ) : activePage === 'paymenthistory' ? (
+          <PaymentHistory />
+        ) : activePage === 'sdpayment' ? (
+          <SdPaymentViewer />
         ) : activePage === 'fleetdata' ? (
           <FleetDataViewer
             fleetData={displayFleetData}

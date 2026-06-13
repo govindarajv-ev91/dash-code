@@ -422,6 +422,7 @@ select {
   outline: none;
   min-width: 180px;
   cursor: pointer;
+  color-scheme: dark;
 }
 
 select option {
@@ -1202,6 +1203,18 @@ select option {
 .fsr-select option {
   background-color: var(--bg-dark);
   color: #fff;
+}
+
+.rpu-reset-select {
+  min-width: 170px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  color-scheme: dark;
+}
+
+.rpu-reset-select option {
+  background-color: #0f172a;
+  color: #f8fafc;
 }
 
 .fsr-export-btn {

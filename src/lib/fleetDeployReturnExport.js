@@ -67,9 +67,18 @@ export function vehiclePartitionKey(value) {
 
 export function normalizeDeployReturnStatus(value) {
   const t = (value ?? '').toString().trim().toLowerCase()
-  if (t === 'deployee') return 'Deployee'
-  if (t === 'return') return 'Return'
+  if (t === 'deployee' || t === 'deployed' || t === 'deploy') return 'Deployee'
+  if (t.includes('deploy') && !t.includes('return')) return 'Deployee'
+  if (t === 'return' || t === 'returned') return 'Return'
+  if (t.includes('return')) return 'Return'
   return null
+}
+
+/** Alias used across fleet dashboards — returns raw value when not deploy/return. */
+export function normalizeFleetStatus(value) {
+  const normalized = normalizeDeployReturnStatus(value)
+  if (normalized) return normalized
+  return (value ?? '').toString().trim()
 }
 
 function formatIsoDate(d) {

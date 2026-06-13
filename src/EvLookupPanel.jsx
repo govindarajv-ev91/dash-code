@@ -1,31 +1,58 @@
 import React, { useMemo, useState, useDeferredValue } from 'react'
 import { format } from 'date-fns'
 import { ClipboardPaste, Copy, Download } from 'lucide-react'
-import { lookupRiderEvTypes, evLookupToCsv, evLookupTypesOnly } from './lib/riderEvLookup'
+import {
+  lookupRiderEvTypes,
+  lookupRiderByVehicle,
+  evLookupToCsv,
+  evLookupTypesOnly,
+  vehicleRiderLookupToCsv,
+  vehicleRiderLookupWorkerCodesOnly,
+} from './lib/riderEvLookup'
+import { countFleetSources } from './lib/fleetInsightIndex'
 
 export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen = true }) {
+  const [activeTab, setActiveTab] = useState('worker')
   const [evPasteText, setEvPasteText] = useState('')
+  const [vehiclePasteText, setVehiclePasteText] = useState('')
   const [showEvLookup, setShowEvLookup] = useState(defaultOpen)
-  const deferredPaste = useDeferredValue(evPasteText)
+  const deferredWorkerPaste = useDeferredValue(evPasteText)
+  const deferredVehiclePaste = useDeferredValue(vehiclePasteText)
+
+  const fleetSourceCounts = useMemo(() => countFleetSources(fleetData), [fleetData])
 
   const evLookupResults = useMemo(() => {
-    if (!deferredPaste.trim()) return []
-    return lookupRiderEvTypes(deferredPaste, riderData, fleetData)
-  }, [deferredPaste, riderData, fleetData])
+    if (!deferredWorkerPaste.trim()) return []
+    return lookupRiderEvTypes(deferredWorkerPaste, riderData, fleetData)
+  }, [deferredWorkerPaste, riderData, fleetData])
 
-  const copyEvTypes = () => {
-    if (!evLookupResults.length) return
-    navigator.clipboard.writeText(evLookupTypesOnly(evLookupResults))
+  const vehicleLookupResults = useMemo(() => {
+    if (!deferredVehiclePaste.trim()) return []
+    return lookupRiderByVehicle(deferredVehiclePaste, fleetData)
+  }, [deferredVehiclePaste, fleetData])
+
+  const activeResults = activeTab === 'worker' ? evLookupResults : vehicleLookupResults
+
+  const copyResults = () => {
+    if (!activeResults.length) return
+    const text = activeTab === 'worker'
+      ? evLookupTypesOnly(evLookupResults)
+      : vehicleRiderLookupWorkerCodesOnly(vehicleLookupResults)
+    navigator.clipboard.writeText(text)
   }
 
-  const exportEvDetails = () => {
-    if (!evLookupResults.length) return
-    const csv = evLookupToCsv(evLookupResults)
+  const exportDetails = () => {
+    if (!activeResults.length) return
+    const csv = activeTab === 'worker'
+      ? evLookupToCsv(evLookupResults)
+      : vehicleRiderLookupToCsv(vehicleLookupResults)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `ev_non_ev_lookup_${format(new Date(), 'yyyy-MM-dd')}.csv`
+    a.download = activeTab === 'worker'
+      ? `ev_non_ev_lookup_${format(new Date(), 'yyyy-MM-dd')}.csv`
+      : `vehicle_rider_lookup_${format(new Date(), 'yyyy-MM-dd')}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -36,8 +63,10 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
         <div>
           <h3><ClipboardPaste size={18} /> EV / NON-EV Lookup</h3>
           <p>
-            Paste <strong>Date</strong> and <strong>WorkerCode</strong> (tab or space). Returns{' '}
-            <strong>EV</strong> if a fleet vehicle is deployed on that date, else from rider_metrics (with earlier-date fallback).
+            Paste rows to lookup fleet data — by <strong>WorkerCode</strong> (EV/NON-EV type) or by{' '}
+            <strong>Vehicle Number</strong> (which rider had the bike on that date).
+            {' '}Fleet loaded: {fleetSourceCounts.total.toLocaleString()} rows
+            ({fleetSourceCounts.legacy.toLocaleString()} Database + {fleetSourceCounts.form.toLocaleString()} New Fleet Data).
           </p>
         </div>
         <button type="button" className="fdv-col-toggle-btn" onClick={() => setShowEvLookup((v) => !v)}>
@@ -47,36 +76,93 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
 
       {showEvLookup && (
         <>
-          <textarea
-            className="rp-ev-paste"
-            placeholder={'29/05/2026\tCHN129-R0829\n29/05/2026\tCHN46-R2952\n29/05/2026\tWGC01-R3605'}
-            value={evPasteText}
-            onChange={(e) => setEvPasteText(e.target.value)}
-            rows={6}
-          />
+          <div className="fdv-tabs" style={{ marginBottom: '0.25rem' }}>
+            <button
+              type="button"
+              className={`fdv-tab ${activeTab === 'worker' ? 'fdv-tab-active' : ''}`}
+              onClick={() => setActiveTab('worker')}
+            >
+              Date + WorkerCode
+            </button>
+            <button
+              type="button"
+              className={`fdv-tab ${activeTab === 'vehicle' ? 'fdv-tab-active' : ''}`}
+              onClick={() => setActiveTab('vehicle')}
+            >
+              Date + Vehicle Number
+            </button>
+          </div>
+
+          {activeTab === 'worker' ? (
+            <>
+              <p className="rp-ev-tab-hint">
+                Paste <strong>Date</strong> and <strong>WorkerCode</strong> (tab or space). Returns EV if a fleet
+                vehicle is deployed on that date, else from rider_metrics.
+              </p>
+              <textarea
+                className="rp-ev-paste"
+                placeholder={'29/05/2026\tCHN129-R0829\n29/05/2026\tCHN46-R2952\n29/05/2026\tWGC01-R3605'}
+                value={evPasteText}
+                onChange={(e) => setEvPasteText(e.target.value)}
+                rows={6}
+              />
+            </>
+          ) : (
+            <>
+              <p className="rp-ev-tab-hint">
+                Paste <strong>Date</strong> and <strong>Vehicle Number</strong> (tab or space). Returns the rider
+                (WorkerCode) who had that vehicle deployed on that date.
+              </p>
+              <textarea
+                className="rp-ev-paste"
+                placeholder={'29/05/2026\tDL4SDX8338\n29/05/2026\tTN12AB1234\n30/05/2026\tKA01AB5678'}
+                value={vehiclePasteText}
+                onChange={(e) => setVehiclePasteText(e.target.value)}
+                rows={6}
+              />
+            </>
+          )}
+
           <div className="rp-ev-actions">
             <span className="rp-ev-count">
-              {evLookupResults.length > 0
-                ? `${evLookupResults.length} rows · ${evLookupResults.filter((r) => r.evType === 'EV').length} EV · ${evLookupResults.filter((r) => r.evType === 'NON-EV').length} NON-EV · ${evLookupResults.filter((r) => r.status === 'fleet').length} from fleet`
-                : 'Paste rows above to lookup'}
+              {activeTab === 'worker' ? (
+                evLookupResults.length > 0
+                  ? `${evLookupResults.length} rows · ${evLookupResults.filter((r) => r.evType === 'EV').length} EV · ${evLookupResults.filter((r) => r.evType === 'NON-EV').length} NON-EV · ${evLookupResults.filter((r) => r.status === 'fleet').length} from fleet`
+                  : 'Paste rows above to lookup'
+              ) : vehicleLookupResults.length > 0 ? (
+                `${vehicleLookupResults.length} rows · ${vehicleLookupResults.filter((r) => r.status === 'deployed').length} matched · ${vehicleLookupResults.filter((r) => r.status === 'not found').length} not found`
+              ) : (
+                'Paste rows above to lookup'
+              )}
             </span>
             <div className="rp-ev-action-buttons">
-              <button type="button" className="fsr-export-btn" onClick={copyEvTypes} disabled={!evLookupResults.length}>
-                <Copy size={14} /> Copy type only
+              <button
+                type="button"
+                className="fsr-export-btn"
+                onClick={copyResults}
+                disabled={!activeResults.length}
+              >
+                <Copy size={14} /> {activeTab === 'worker' ? 'Copy type only' : 'Copy WorkerCode'}
               </button>
-              <button type="button" className="fsr-export-btn" onClick={exportEvDetails} disabled={!evLookupResults.length}>
+              <button
+                type="button"
+                className="fsr-export-btn"
+                onClick={exportDetails}
+                disabled={!activeResults.length}
+              >
                 <Download size={14} /> Export details
               </button>
             </div>
           </div>
 
-          {evLookupResults.length > 0 && (
+          {activeTab === 'worker' && evLookupResults.length > 0 && (
             <div className="rp-ev-table-scroll">
               <table className="rp-ev-table">
                 <thead>
                   <tr>
                     <th>Date</th>
                     <th>WorkerCode</th>
+                    <th>Vehicle Number</th>
                     <th>Type</th>
                     <th>Matched from</th>
                   </tr>
@@ -86,6 +172,7 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                     <tr key={`${row.dateKey}-${row.workerKey}-${idx}`}>
                       <td>{row.dateDisplay}</td>
                       <td>{row.workerCode}</td>
+                      <td>{row.vehicleNumber || '—'}</td>
                       <td>
                         <span className={`rp-ev-badge rp-ev-badge-${row.evType === 'EV' ? 'ev' : 'non-ev'}`}>
                           {row.evType}
@@ -99,6 +186,39 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                             : row.status === 'fallback'
                               ? row.matchedDateKey
                               : row.dateDisplay}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeTab === 'vehicle' && vehicleLookupResults.length > 0 && (
+            <div className="rp-ev-table-scroll">
+              <table className="rp-ev-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Vehicle Number</th>
+                    <th>WorkerCode</th>
+                    <th>Rider Name</th>
+                    <th>Deploy Date</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vehicleLookupResults.map((row, idx) => (
+                    <tr key={`${row.dateKey}-${row.vehicleKey}-${idx}`}>
+                      <td>{row.dateDisplay}</td>
+                      <td>{row.vehicleNumber}</td>
+                      <td>{row.workerCode || '—'}</td>
+                      <td>{row.riderName || '—'}</td>
+                      <td className="rp-ev-matched-date">{row.deployDateKey || '—'}</td>
+                      <td>
+                        <span className={`rp-ev-badge rp-ev-badge-${row.status === 'deployed' ? 'ev' : 'non-ev'}`}>
+                          {row.status === 'deployed' ? 'Deployed' : 'Not found'}
+                        </span>
                       </td>
                     </tr>
                   ))}

@@ -6,7 +6,7 @@ import {
   startOfWeek,
   subDays,
 } from 'date-fns'
-import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport.js'
+import { parseFleetDate, vehiclePartitionKey, normalizeFleetStatus } from './fleetDeployReturnExport.js'
 
 export const HIDDEN_RIDER_PERFORMANCE_COLUMNS = new Set([
   'Current Week Expected Earnings',
@@ -116,9 +116,11 @@ function normalizeWorkerCode(value) {
   return (value ?? '').toString().trim()
 }
 
-/** Treat CHN61_R0196 and CHN61-R0196 as the same rider ID. */
+/** Treat CHN61_R0196 and CHN61-R0196 as the same rider ID. Excel ids like 899696.0 → 899696. */
 export function normalizeRiderIdKey(value) {
-  return normalizeWorkerCode(value).toUpperCase().replace(/[_\s-]+/g, '-')
+  let s = normalizeWorkerCode(value).toUpperCase().replace(/[_\s-]+/g, '-')
+  if (/^\d+\.0+$/.test(s)) s = s.split('.')[0]
+  return s
 }
 
 function normalizeName(value) {
@@ -149,15 +151,15 @@ export function buildVehicleAllotmentMap(fleetRows, asOfDate) {
   const byVehicle = new Map()
 
   for (const row of fleetRows || []) {
-    const status = (row.vehicle_status || '').toString().trim().toLowerCase()
-    if (status !== 'deployee' && status !== 'return') continue
+    const status = normalizeFleetStatus(row.vehicle_status)
+    if (status !== 'Deployee' && status !== 'Return') continue
     const date = parseFleetDate(row.date_record)
     const vehicleKey = vehiclePartitionKey(row.vehicle_number)
     if (!date || !vehicleKey) continue
 
     if (!byVehicle.has(vehicleKey)) byVehicle.set(vehicleKey, [])
     byVehicle.get(vehicleKey).push({
-      status: status === 'deployee' ? 'Deployee' : 'Return',
+      status,
       date,
       row,
     })

@@ -1,6 +1,124 @@
-import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
+import { format, startOfDay } from 'date-fns'
+import { parseFleetDate, vehiclePartitionKey, normalizeFleetStatus } from './fleetDeployReturnExport'
 import { extractFleetSource, normalizeRiderIdKey } from './riderPerformanceReport'
 import { FLEET_FORM_SOURCE } from './fleetDataConfig'
+
+function sortFleetEvents(a, b) {
+  const diff = a.date - b.date
+  if (diff !== 0) return diff
+  if (a.status === 'Return' && b.status === 'Deployee') return -1
+  if (a.status === 'Deployee' && b.status === 'Return') return 1
+  return 0
+}
+
+function pushAssignmentInterval(map, key, deployEvent, returnDate) {
+  if (!key) return
+  if (!map.has(key)) map.set(key, [])
+  map.get(key).push({
+    from: deployEvent.date,
+    to: returnDate,
+    vehicleNumber: (deployEvent.row.vehicle_number || '').toString().trim(),
+    mobile: (deployEvent.row.rider_contact_number || '').toString().trim(),
+    riderId: (deployEvent.row.rider_id || '').toString().trim(),
+    deployDate: deployEvent.date,
+  })
+}
+
+/** Rider → deploy intervals (merged fleet, both Database + New Fleet Data). */
+export function buildRiderVehicleAssignmentIndex(preparedFleetRows) {
+  const byVehicle = new Map()
+
+  for (const row of preparedFleetRows || []) {
+    const status = normalizeFleetStatus(row.vehicle_status)
+    if (status !== 'Deployee' && status !== 'Return') continue
+    const date = parseFleetDate(row.date_record)
+    const vehicleKey = vehiclePartitionKey(row.vehicle_number)
+    if (!date || !vehicleKey) continue
+    if (!byVehicle.has(vehicleKey)) byVehicle.set(vehicleKey, [])
+    byVehicle.get(vehicleKey).push({ status, date, row })
+  }
+
+  const riderAssignments = new Map()
+
+  for (const [, events] of byVehicle) {
+    events.sort(sortFleetEvents)
+    let openDeploy = null
+    for (const event of events) {
+      if (event.status === 'Deployee') {
+        openDeploy = event
+      } else if (event.status === 'Return' && openDeploy) {
+        const idKey = normalizeRiderIdKey(openDeploy.row.rider_id)
+        const phone = normalizePhone(openDeploy.row.rider_contact_number)
+        pushAssignmentInterval(riderAssignments, idKey, openDeploy, event.date)
+        if (phone) pushAssignmentInterval(riderAssignments, `phone:${phone}`, openDeploy, event.date)
+        openDeploy = null
+      }
+    }
+    if (openDeploy) {
+      const idKey = normalizeRiderIdKey(openDeploy.row.rider_id)
+      const phone = normalizePhone(openDeploy.row.rider_contact_number)
+      pushAssignmentInterval(riderAssignments, idKey, openDeploy, null)
+      if (phone) pushAssignmentInterval(riderAssignments, `phone:${phone}`, openDeploy, null)
+    }
+  }
+
+  return riderAssignments
+}
+
+export function findRiderVehicleOnDate(riderAssignments, identityKeys, asOfDate) {
+  if (!riderAssignments || !asOfDate) return null
+  const asOf = startOfDay(asOfDate).getTime()
+  let best = null
+
+  for (const key of identityKeys) {
+    const intervals = riderAssignments.get(key)
+    if (!intervals?.length) continue
+
+    for (const interval of intervals) {
+      const from = startOfDay(interval.from).getTime()
+      const to = interval.to ? startOfDay(interval.to).getTime() : Number.MAX_SAFE_INTEGER
+      // Include return day — rider still had the vehicle on the date it was returned.
+      if (from <= asOf && to >= asOf) {
+        if (!best || interval.from > best.from) best = interval
+      }
+    }
+  }
+
+  return best
+}
+
+function fleetRowIdentityKeys(row) {
+  const keys = new Set()
+  const idKey = normalizeRiderIdKey(row.rider_id)
+  if (idKey) keys.add(idKey)
+  const digits = (row.rider_id ?? '').toString().replace(/\D/g, '')
+  if (digits && digits !== idKey) keys.add(digits)
+  const phone = normalizePhone(row.rider_contact_number)
+  if (phone.length >= 10) keys.add(`phone:${phone}`)
+  return keys
+}
+
+/** Any fleet row (deploy or return) on the exact calendar date for this rider. */
+export function findVehicleOnExactFleetDate(preparedFleetRows, identityKeys, asOfDate) {
+  if (!preparedFleetRows?.length || !asOfDate) return ''
+  const targetKey = format(startOfDay(asOfDate), 'dd/MM/yyyy')
+  let vehicle = ''
+
+  for (const row of preparedFleetRows) {
+    const date = parseFleetDate(row.date_record)
+    if (!date || format(startOfDay(date), 'dd/MM/yyyy') !== targetKey) continue
+    const status = normalizeFleetStatus(row.vehicle_status)
+    if (status !== 'Deployee' && status !== 'Return') continue
+
+    const rowKeys = fleetRowIdentityKeys(row)
+    if (![...identityKeys].some((key) => rowKeys.has(key))) continue
+
+    const candidate = (row.vehicle_number || '').toString().trim()
+    if (candidate) vehicle = candidate
+  }
+
+  return vehicle
+}
 
 function normalizePhone(value) {
   const digits = (value ?? '').toString().replace(/\D/g, '')
@@ -12,12 +130,7 @@ function normalizeName(value) {
   return (value ?? '').toString().trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
-export function normalizeFleetStatus(value) {
-  const status = (value ?? '').toString().trim().toLowerCase()
-  if (status === 'deployee') return 'Deployee'
-  if (status === 'return') return 'Return'
-  return (value ?? '').toString().trim()
-}
+export { normalizeFleetStatus } from './fleetDeployReturnExport'
 
 /** Same merged fleet rows used on Fleet Data page — dedupe overlapping deploy/return events. */
 export function prepareMergedFleetRows(fleetRows) {

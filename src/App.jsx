@@ -112,7 +112,9 @@ async function fetchSlimFleetTables() {
   }
   const [fleetRes, formFleetRes] = await Promise.all([
     fetchAllData(FLEET_LEGACY_TABLE, FLEET_SLIM_COLUMNS, 'id', fleetOpts),
-    fetchAllData(FLEET_FORM_TABLE, FLEET_SLIM_COLUMNS, 'id', fleetOpts),
+    fetchAllData(FLEET_FORM_TABLE, FLEET_SLIM_COLUMNS, 'id', {
+      pageSize: FLEET_SLIM_PAGE_SIZE,
+    }),
   ])
   return { fleetRes, formFleetRes }
 }
@@ -316,7 +318,7 @@ function App() {
     fetchData()
   }, [fetchData])
 
-  const fleetPagesNeedingFull = new Set(['fleetdata'])
+  const fleetPagesNeedingFull = new Set(['fleetdata', 'errorfinder'])
   useEffect(() => {
     if (fleetPagesNeedingFull.has(activePage) && !fleetDataFull && !fleetFullLoading) {
       loadFullFleet()
@@ -498,7 +500,7 @@ function App() {
           />
         ) : activePage === 'errorfinder' ? (
           <ErrorFinder
-            fleetData={fleetData}
+            fleetData={displayFleetData}
             riderData={riderData}
             loading={loading}
           />

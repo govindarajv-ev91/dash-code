@@ -2,6 +2,12 @@ import { format, startOfDay } from 'date-fns'
 import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
 import { getCurrentlyDeployedAssignments, normalizeRiderIdKey } from './riderPerformanceReport'
 import { isIcRiderRow } from './fleetMasterSheet'
+import {
+  prepareMergedFleetRows,
+  buildRiderVehicleAssignmentIndex,
+  findRiderVehicleOnDate,
+  findVehicleOnExactFleetDate,
+} from './fleetInsightIndex'
 
 export function classifyRiderEvType(type1, type2) {
   const check = (value) => {
@@ -26,8 +32,10 @@ function riderKeysForLookup(workerCode) {
   const keys = new Set()
   const idKey = normalizeRiderIdKey(workerCode)
   if (idKey) keys.add(idKey)
+  const digits = (workerCode ?? '').toString().replace(/\D/g, '')
+  if (digits && digits !== idKey) keys.add(digits)
   const phone = normalizePhone(workerCode)
-  if (phone) keys.add(`phone:${phone}`)
+  if (phone.length >= 10) keys.add(`phone:${phone}`)
   return keys
 }
 
@@ -86,16 +94,27 @@ function contactIndexMatches(contactIndex, vehicleKey, deployRiderId, workerCode
 }
 
 /** Cache deployed riders + contact index per lookup date in the batch. */
-function buildFleetLookupCaches(fleetRows, dates) {
+function buildFleetLookupCaches(preparedFleetRows, dates) {
   const assignmentsCache = new Map()
   const contactIndexCache = new Map()
   for (const date of dates) {
     const dateKey = format(date, 'yyyy-MM-dd')
     if (assignmentsCache.has(dateKey)) continue
-    assignmentsCache.set(dateKey, getCurrentlyDeployedAssignments(fleetRows, date))
-    contactIndexCache.set(dateKey, buildVehicleRiderContactIndex(fleetRows, date))
+    assignmentsCache.set(dateKey, getCurrentlyDeployedAssignments(preparedFleetRows, date))
+    contactIndexCache.set(dateKey, buildVehicleRiderContactIndex(preparedFleetRows, date))
   }
   return { assignmentsCache, contactIndexCache }
+}
+
+function resolveVehicleForRider(preparedFleet, vehicleIndex, identityKeys, asOfDate, fleetAssignment) {
+  const fromAssignment = (fleetAssignment?.vehicleNumber || '').toString().trim()
+  if (fromAssignment) return fromAssignment
+
+  const interval = findRiderVehicleOnDate(vehicleIndex, identityKeys, startOfDay(asOfDate))
+  const fromInterval = (interval?.vehicleNumber || '').toString().trim()
+  if (fromInterval) return fromInterval
+
+  return findVehicleOnExactFleetDate(preparedFleet, identityKeys, asOfDate)
 }
 
 function findFleetDeployment(assignmentsCache, contactIndexCache, workerCode, asOfDate) {
@@ -164,6 +183,94 @@ export function parseDateWorkerPaste(text) {
   }
 
   return rows
+}
+
+/** Parse pasted lines: "29/05/2026\tDL4SDX8338" — date + vehicle number. */
+export function parseDateVehiclePaste(text) {
+  const rows = []
+  const lines = (text || '').split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line) continue
+
+    const parts = line.includes('\t')
+      ? line.split('\t').map((p) => p.trim()).filter(Boolean)
+      : line.split(/\s{2,}|\s+/).map((p) => p.trim()).filter(Boolean)
+
+    if (parts.length < 2) continue
+    if (/^date$/i.test(parts[0]) && /^vehicle|vehiclenumber|v\s*no/i.test(parts[1])) continue
+
+    const date = parseFleetDate(parts[0])
+    const vehicleNumber = parts[1]
+    if (!date || !vehicleNumber) continue
+
+    rows.push({
+      line: i + 1,
+      date,
+      dateDisplay: parts[0],
+      dateKey: formatMetricDateKey(date),
+      vehicleNumber: vehicleNumber.toString().trim(),
+      vehicleKey: vehiclePartitionKey(vehicleNumber),
+    })
+  }
+
+  return rows
+}
+
+/** Find which rider had a vehicle deployed on each pasted date. */
+export function lookupRiderByVehicle(pasteText, fleetRows = []) {
+  const parsed = parseDateVehiclePaste(pasteText)
+  const preparedFleet = prepareMergedFleetRows(fleetRows)
+  const uniqueDates = [...new Map(parsed.map((r) => [format(r.date, 'yyyy-MM-dd'), r.date])).values()]
+  const { assignmentsCache } = buildFleetLookupCaches(preparedFleet, uniqueDates)
+
+  return parsed.map((row) => {
+    const dateKey = format(row.date, 'yyyy-MM-dd')
+    const assignments = assignmentsCache.get(dateKey) || []
+    const match = assignments.find(
+      (assignment) => vehiclePartitionKey(assignment.vehicleNumber) === row.vehicleKey
+    )
+
+    if (match) {
+      return {
+        ...row,
+        workerCode: (match.riderId || '').toString().trim(),
+        riderName: (match.riderName || '').toString().trim(),
+        mobile: (match.mobile || '').toString().trim(),
+        deployDateKey: formatMetricDateKey(match.deployDate),
+        status: 'deployed',
+      }
+    }
+
+    // Return-day rows: rider still linked to vehicle on that calendar date.
+    for (const fleetRow of preparedFleet) {
+      const date = parseFleetDate(fleetRow.date_record)
+      if (!date || format(startOfDay(date), 'yyyy-MM-dd') !== dateKey) continue
+      if (vehiclePartitionKey(fleetRow.vehicle_number) !== row.vehicleKey) continue
+      const status = (fleetRow.vehicle_status || '').toString().trim()
+      if (!/deployee|return|deploy/i.test(status)) continue
+      const riderId = (fleetRow.rider_id || '').toString().trim()
+      if (!riderId) continue
+      return {
+        ...row,
+        workerCode: riderId,
+        riderName: (fleetRow.rider_name || '').toString().trim(),
+        mobile: (fleetRow.rider_contact_number || '').toString().trim(),
+        deployDateKey: formatMetricDateKey(date),
+        status: 'deployed',
+      }
+    }
+
+    return {
+      ...row,
+      workerCode: '',
+      riderName: '',
+      mobile: '',
+      deployDateKey: '',
+      status: 'not found',
+    }
+  })
 }
 
 export function buildRiderEvIndex(riderRows) {
@@ -239,18 +346,31 @@ export function lookupRiderEvTypes(pasteText, riderRows, fleetRows = []) {
   const parsed = parseDateWorkerPaste(pasteText)
   const index = buildRiderEvIndex(riderRows)
   const byWorker = buildRiderEvHistoryByWorker(riderRows)
+  const preparedFleet = prepareMergedFleetRows(fleetRows)
+  const vehicleIndex = buildRiderVehicleAssignmentIndex(preparedFleet)
   const uniqueDates = [...new Map(parsed.map((r) => [format(r.date, 'yyyy-MM-dd'), r.date])).values()]
-  const { assignmentsCache, contactIndexCache } = buildFleetLookupCaches(fleetRows, uniqueDates)
+  const { assignmentsCache, contactIndexCache } = buildFleetLookupCaches(preparedFleet, uniqueDates)
 
   return parsed.map((row) => {
     const identityKeys = lookupIdentityKeys(row.workerCode)
 
     const fleetAssignment = findFleetDeployment(assignmentsCache, contactIndexCache, row.workerCode, row.date)
-    if (fleetAssignment) {
+    const vehicleNumber = resolveVehicleForRider(
+      preparedFleet,
+      vehicleIndex,
+      identityKeys,
+      row.date,
+      fleetAssignment
+    )
+
+    if (fleetAssignment || vehicleNumber) {
       return {
         ...row,
         evType: 'EV',
-        matchedDateKey: formatMetricDateKey(fleetAssignment.deployDate),
+        vehicleNumber,
+        matchedDateKey: fleetAssignment
+          ? formatMetricDateKey(fleetAssignment.deployDate)
+          : formatMetricDateKey(row.date),
         status: 'fleet',
       }
     }
@@ -261,6 +381,7 @@ export function lookupRiderEvTypes(pasteText, riderRows, fleetRows = []) {
         return {
           ...row,
           evType: index.get(exactKey),
+          vehicleNumber,
           matchedDateKey: row.dateKey,
           status: 'exact',
         }
@@ -272,6 +393,7 @@ export function lookupRiderEvTypes(pasteText, riderRows, fleetRows = []) {
       return {
         ...row,
         evType: fallback.evType,
+        vehicleNumber,
         matchedDateKey: fallback.dateKey,
         status: fallback.dateKey === row.dateKey ? 'exact' : 'fallback',
       }
@@ -280,6 +402,7 @@ export function lookupRiderEvTypes(pasteText, riderRows, fleetRows = []) {
     return {
       ...row,
       evType: 'NON-EV',
+      vehicleNumber,
       matchedDateKey: null,
       status: 'not found',
     }
@@ -292,19 +415,10 @@ export function evLookupToCsv(results) {
     return `"${str.replace(/"/g, '""')}"`
   }
 
-  const headers = ['Date', 'WorkerCode', 'Type', 'Source', 'Match status']
+  const headers = ['Date', 'WorkerCode', 'Vehicle Number', 'Type', 'Source', 'Match status']
   const lines = [headers.map(escapeCsv).join(',')]
 
   for (const row of results) {
-    const matchedDate =
-      row.status === 'not found'
-        ? ''
-        : row.status === 'fleet'
-          ? row.matchedDateKey
-          : row.status === 'fallback'
-            ? row.matchedDateKey
-            : row.dateDisplay
-
     const matchStatus =
       row.status === 'fleet'
         ? 'Fleet deploy'
@@ -315,7 +429,14 @@ export function evLookupToCsv(results) {
             : 'Not found'
 
     lines.push(
-      [row.dateDisplay, row.workerCode, row.evType, row.status === 'fleet' ? 'Fleet' : 'Metrics', matchStatus]
+      [
+        row.dateDisplay,
+        row.workerCode,
+        row.vehicleNumber || '',
+        row.evType,
+        row.status === 'fleet' ? 'Fleet' : 'Metrics',
+        matchStatus,
+      ]
         .map(escapeCsv)
         .join(',')
     )
@@ -324,16 +445,49 @@ export function evLookupToCsv(results) {
   return lines.join('\n')
 }
 
+export function vehicleRiderLookupToCsv(results) {
+  const escapeCsv = (val) => {
+    const str = (val ?? '').toString()
+    return `"${str.replace(/"/g, '""')}"`
+  }
+
+  const headers = ['Date', 'Vehicle Number', 'WorkerCode', 'Rider Name', 'Mobile', 'Deploy Date', 'Status']
+  const lines = [headers.map(escapeCsv).join(',')]
+
+  for (const row of results) {
+    lines.push(
+      [
+        row.dateDisplay,
+        row.vehicleNumber,
+        row.workerCode,
+        row.riderName,
+        row.mobile,
+        row.deployDateKey || '',
+        row.status === 'deployed' ? 'Deployed' : 'Not found',
+      ]
+        .map(escapeCsv)
+        .join(',')
+    )
+  }
+
+  return lines.join('\n')
+}
+
+/** One worker code per line — for paste-back into sheets. */
+export function vehicleRiderLookupWorkerCodesOnly(results) {
+  return results.map((row) => row.workerCode || '').join('\n')
+}
+
 /** One type per line — for paste-back into sheets (Type column only). */
 export function evLookupTypesOnly(results) {
   return results.map((row) => row.evType).join('\n')
 }
 
 export function evLookupToTsv(results) {
-  const lines = ['Date\tWorkerCode\tType\tMatchedDate\tStatus']
+  const lines = ['Date\tWorkerCode\tVehicle Number\tType\tMatchedDate\tStatus']
   for (const row of results) {
     lines.push(
-      `${row.dateDisplay}\t${row.workerCode}\t${row.evType}\t${row.matchedDateKey || ''}\t${row.status}`
+      `${row.dateDisplay}\t${row.workerCode}\t${row.vehicleNumber || ''}\t${row.evType}\t${row.matchedDateKey || ''}\t${row.status}`
     )
   }
   return lines.join('\n')

@@ -318,7 +318,7 @@ function App() {
     fetchData()
   }, [fetchData])
 
-  const fleetPagesNeedingFull = new Set(['fleetdata', 'errorfinder'])
+  const fleetPagesNeedingFull = new Set(['fleetdata'])
   useEffect(() => {
     if (fleetPagesNeedingFull.has(activePage) && !fleetDataFull && !fleetFullLoading) {
       loadFullFleet()
@@ -500,7 +500,7 @@ function App() {
           />
         ) : activePage === 'errorfinder' ? (
           <ErrorFinder
-            fleetData={displayFleetData}
+            fleetData={fleetData}
             riderData={riderData}
             loading={loading}
           />

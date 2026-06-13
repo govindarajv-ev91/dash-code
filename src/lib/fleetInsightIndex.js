@@ -20,12 +20,27 @@ function pushAssignmentInterval(map, key, deployEvent, returnDate) {
     vehicleNumber: (deployEvent.row.vehicle_number || '').toString().trim(),
     mobile: (deployEvent.row.rider_contact_number || '').toString().trim(),
     riderId: (deployEvent.row.rider_id || '').toString().trim(),
+    riderName: (deployEvent.row.rider_name || '').toString().trim(),
     deployDate: deployEvent.date,
   })
 }
 
-/** Rider → deploy intervals (merged fleet, both Database + New Fleet Data). */
-export function buildRiderVehicleAssignmentIndex(preparedFleetRows) {
+function pushVehicleInterval(map, vehicleKey, deployEvent, returnDate) {
+  if (!vehicleKey) return
+  if (!map.has(vehicleKey)) map.set(vehicleKey, [])
+  map.get(vehicleKey).push({
+    from: deployEvent.date,
+    to: returnDate,
+    vehicleNumber: (deployEvent.row.vehicle_number || '').toString().trim(),
+    riderId: (deployEvent.row.rider_id || '').toString().trim(),
+    riderName: (deployEvent.row.rider_name || '').toString().trim(),
+    mobile: (deployEvent.row.rider_contact_number || '').toString().trim(),
+    deployDate: deployEvent.date,
+  })
+}
+
+/** Single pass: rider intervals + vehicle intervals for fast EV lookup. */
+export function buildFleetIntervalIndexes(preparedFleetRows) {
   const byVehicle = new Map()
 
   for (const row of preparedFleetRows || []) {
@@ -39,8 +54,9 @@ export function buildRiderVehicleAssignmentIndex(preparedFleetRows) {
   }
 
   const riderAssignments = new Map()
+  const vehicleIntervals = new Map()
 
-  for (const [, events] of byVehicle) {
+  for (const [vehicleKey, events] of byVehicle) {
     events.sort(sortFleetEvents)
     let openDeploy = null
     for (const event of events) {
@@ -51,6 +67,7 @@ export function buildRiderVehicleAssignmentIndex(preparedFleetRows) {
         const phone = normalizePhone(openDeploy.row.rider_contact_number)
         pushAssignmentInterval(riderAssignments, idKey, openDeploy, event.date)
         if (phone) pushAssignmentInterval(riderAssignments, `phone:${phone}`, openDeploy, event.date)
+        pushVehicleInterval(vehicleIntervals, vehicleKey, openDeploy, event.date)
         openDeploy = null
       }
     }
@@ -59,10 +76,35 @@ export function buildRiderVehicleAssignmentIndex(preparedFleetRows) {
       const phone = normalizePhone(openDeploy.row.rider_contact_number)
       pushAssignmentInterval(riderAssignments, idKey, openDeploy, null)
       if (phone) pushAssignmentInterval(riderAssignments, `phone:${phone}`, openDeploy, null)
+      pushVehicleInterval(vehicleIntervals, vehicleKey, openDeploy, null)
     }
   }
 
-  return riderAssignments
+  return { riderAssignments, vehicleIntervals }
+}
+
+/** Rider → deploy intervals (merged fleet, both Database + New Fleet Data). */
+export function buildRiderVehicleAssignmentIndex(preparedFleetRows) {
+  return buildFleetIntervalIndexes(preparedFleetRows).riderAssignments
+}
+
+export function findRiderForVehicleOnDate(vehicleIntervals, vehicleKey, asOfDate) {
+  if (!vehicleIntervals || !vehicleKey || !asOfDate) return null
+  const intervals = vehicleIntervals.get(vehicleKey)
+  if (!intervals?.length) return null
+
+  const asOf = startOfDay(asOfDate).getTime()
+  let best = null
+
+  for (const interval of intervals) {
+    const from = startOfDay(interval.from).getTime()
+    const to = interval.to ? startOfDay(interval.to).getTime() : Number.MAX_SAFE_INTEGER
+    if (from <= asOf && to >= asOf) {
+      if (!best || interval.from > best.from) best = interval
+    }
+  }
+
+  return best
 }
 
 export function findRiderVehicleOnDate(riderAssignments, identityKeys, asOfDate) {
@@ -98,26 +140,38 @@ function fleetRowIdentityKeys(row) {
   return keys
 }
 
-/** Any fleet row (deploy or return) on the exact calendar date for this rider. */
-export function findVehicleOnExactFleetDate(preparedFleetRows, identityKeys, asOfDate) {
-  if (!preparedFleetRows?.length || !asOfDate) return ''
-  const targetKey = format(startOfDay(asOfDate), 'dd/MM/yyyy')
-  let vehicle = ''
+/** O(1) exact date + rider → vehicle (deploy/return rows on that day). */
+export function buildExactFleetVehicleIndex(preparedFleetRows) {
+  const index = new Map()
 
-  for (const row of preparedFleetRows) {
+  for (const row of preparedFleetRows || []) {
     const date = parseFleetDate(row.date_record)
-    if (!date || format(startOfDay(date), 'dd/MM/yyyy') !== targetKey) continue
+    if (!date) continue
     const status = normalizeFleetStatus(row.vehicle_status)
     if (status !== 'Deployee' && status !== 'Return') continue
 
-    const rowKeys = fleetRowIdentityKeys(row)
-    if (![...identityKeys].some((key) => rowKeys.has(key))) continue
+    const dateKey = format(startOfDay(date), 'dd/MM/yyyy')
+    const vehicle = (row.vehicle_number || '').toString().trim()
+    if (!vehicle) continue
 
-    const candidate = (row.vehicle_number || '').toString().trim()
-    if (candidate) vehicle = candidate
+    for (const key of fleetRowIdentityKeys(row)) {
+      index.set(`${dateKey}|${key}`, vehicle)
+    }
   }
 
-  return vehicle
+  return index
+}
+
+export function findVehicleOnExactFleetDate(exactVehicleIndex, identityKeys, asOfDate) {
+  if (!exactVehicleIndex || !asOfDate) return ''
+  const dateKey = format(startOfDay(asOfDate), 'dd/MM/yyyy')
+
+  for (const key of identityKeys) {
+    const vehicle = exactVehicleIndex.get(`${dateKey}|${key}`)
+    if (vehicle) return vehicle
+  }
+
+  return ''
 }
 
 function normalizePhone(value) {

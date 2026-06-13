@@ -1,9 +1,10 @@
-import React, { useMemo, useState, useDeferredValue } from 'react'
+import React, { useMemo, useState, useEffect } from 'react'
 import { format } from 'date-fns'
-import { ClipboardPaste, Copy, Download } from 'lucide-react'
+import { ClipboardPaste, Copy, Download, Loader } from 'lucide-react'
 import {
-  lookupRiderEvTypes,
-  lookupRiderByVehicle,
+  buildEvLookupContext,
+  lookupRiderEvTypesWithContext,
+  lookupRiderByVehicleWithContext,
   evLookupToCsv,
   evLookupTypesOnly,
   vehicleRiderLookupToCsv,
@@ -11,27 +12,66 @@ import {
 } from './lib/riderEvLookup'
 import { countFleetSources } from './lib/fleetInsightIndex'
 
-export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen = true }) {
+const LOOKUP_DEBOUNCE_MS = 400
+const MAX_TABLE_ROWS = 500
+
+export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen = false }) {
   const [activeTab, setActiveTab] = useState('worker')
   const [evPasteText, setEvPasteText] = useState('')
   const [vehiclePasteText, setVehiclePasteText] = useState('')
   const [showEvLookup, setShowEvLookup] = useState(defaultOpen)
-  const deferredWorkerPaste = useDeferredValue(evPasteText)
-  const deferredVehiclePaste = useDeferredValue(vehiclePasteText)
+  const [workerResults, setWorkerResults] = useState([])
+  const [vehicleResults, setVehicleResults] = useState([])
+  const [lookupBusy, setLookupBusy] = useState(false)
 
   const fleetSourceCounts = useMemo(() => countFleetSources(fleetData), [fleetData])
 
-  const evLookupResults = useMemo(() => {
-    if (!deferredWorkerPaste.trim()) return []
-    return lookupRiderEvTypes(deferredWorkerPaste, riderData, fleetData)
-  }, [deferredWorkerPaste, riderData, fleetData])
+  const evContext = useMemo(() => {
+    if (!showEvLookup || !fleetData?.length) return null
+    return buildEvLookupContext(riderData, fleetData)
+  }, [showEvLookup, riderData, fleetData])
 
-  const vehicleLookupResults = useMemo(() => {
-    if (!deferredVehiclePaste.trim()) return []
-    return lookupRiderByVehicle(deferredVehiclePaste, fleetData)
-  }, [deferredVehiclePaste, fleetData])
+  useEffect(() => {
+    if (!showEvLookup || activeTab !== 'worker') return
+    if (!evPasteText.trim()) {
+      setWorkerResults([])
+      setLookupBusy(false)
+      return
+    }
+    if (!evContext) return
 
+    setLookupBusy(true)
+    const timer = setTimeout(() => {
+      setWorkerResults(lookupRiderEvTypesWithContext(evPasteText, evContext))
+      setLookupBusy(false)
+    }, LOOKUP_DEBOUNCE_MS)
+
+    return () => clearTimeout(timer)
+  }, [evPasteText, evContext, showEvLookup, activeTab])
+
+  useEffect(() => {
+    if (!showEvLookup || activeTab !== 'vehicle') return
+    if (!vehiclePasteText.trim()) {
+      setVehicleResults([])
+      setLookupBusy(false)
+      return
+    }
+    if (!evContext) return
+
+    setLookupBusy(true)
+    const timer = setTimeout(() => {
+      setVehicleResults(lookupRiderByVehicleWithContext(vehiclePasteText, evContext))
+      setLookupBusy(false)
+    }, LOOKUP_DEBOUNCE_MS)
+
+    return () => clearTimeout(timer)
+  }, [vehiclePasteText, evContext, showEvLookup, activeTab])
+
+  const evLookupResults = workerResults
+  const vehicleLookupResults = vehicleResults
   const activeResults = activeTab === 'worker' ? evLookupResults : vehicleLookupResults
+  const displayedWorkerRows = evLookupResults.slice(0, MAX_TABLE_ROWS)
+  const displayedVehicleRows = vehicleLookupResults.slice(0, MAX_TABLE_ROWS)
 
   const copyResults = () => {
     if (!activeResults.length) return
@@ -65,8 +105,12 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
           <p>
             Paste rows to lookup fleet data — by <strong>WorkerCode</strong> (EV/NON-EV type) or by{' '}
             <strong>Vehicle Number</strong> (which rider had the bike on that date).
-            {' '}Fleet loaded: {fleetSourceCounts.total.toLocaleString()} rows
-            ({fleetSourceCounts.legacy.toLocaleString()} Database + {fleetSourceCounts.form.toLocaleString()} New Fleet Data).
+            {showEvLookup && evContext ? (
+              <>
+                {' '}Fleet loaded: {fleetSourceCounts.total.toLocaleString()} rows
+                ({fleetSourceCounts.legacy.toLocaleString()} Database + {fleetSourceCounts.form.toLocaleString()} New Fleet Data).
+              </>
+            ) : null}
           </p>
         </div>
         <button type="button" className="fdv-col-toggle-btn" onClick={() => setShowEvLookup((v) => !v)}>
@@ -76,6 +120,12 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
 
       {showEvLookup && (
         <>
+          {!evContext && (
+            <p className="rp-ev-tab-hint" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Loader size={14} className="spin" /> Preparing fleet indexes…
+            </p>
+          )}
+
           <div className="fdv-tabs" style={{ marginBottom: '0.25rem' }}>
             <button
               type="button"
@@ -105,6 +155,7 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                 value={evPasteText}
                 onChange={(e) => setEvPasteText(e.target.value)}
                 rows={6}
+                disabled={!evContext}
               />
             </>
           ) : (
@@ -119,13 +170,18 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                 value={vehiclePasteText}
                 onChange={(e) => setVehiclePasteText(e.target.value)}
                 rows={6}
+                disabled={!evContext}
               />
             </>
           )}
 
           <div className="rp-ev-actions">
             <span className="rp-ev-count">
-              {activeTab === 'worker' ? (
+              {lookupBusy ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <Loader size={14} className="spin" /> Looking up…
+                </span>
+              ) : activeTab === 'worker' ? (
                 evLookupResults.length > 0
                   ? `${evLookupResults.length} rows · ${evLookupResults.filter((r) => r.evType === 'EV').length} EV · ${evLookupResults.filter((r) => r.evType === 'NON-EV').length} NON-EV · ${evLookupResults.filter((r) => r.status === 'fleet').length} from fleet`
                   : 'Paste rows above to lookup'
@@ -140,7 +196,7 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                 type="button"
                 className="fsr-export-btn"
                 onClick={copyResults}
-                disabled={!activeResults.length}
+                disabled={!activeResults.length || lookupBusy}
               >
                 <Copy size={14} /> {activeTab === 'worker' ? 'Copy type only' : 'Copy WorkerCode'}
               </button>
@@ -148,15 +204,20 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                 type="button"
                 className="fsr-export-btn"
                 onClick={exportDetails}
-                disabled={!activeResults.length}
+                disabled={!activeResults.length || lookupBusy}
               >
                 <Download size={14} /> Export details
               </button>
             </div>
           </div>
 
-          {activeTab === 'worker' && evLookupResults.length > 0 && (
+          {activeTab === 'worker' && displayedWorkerRows.length > 0 && (
             <div className="rp-ev-table-scroll">
+              {evLookupResults.length > MAX_TABLE_ROWS && (
+                <p className="rp-ev-tab-hint" style={{ marginBottom: '0.5rem' }}>
+                  Showing first {MAX_TABLE_ROWS} of {evLookupResults.length} rows. Export for full list.
+                </p>
+              )}
               <table className="rp-ev-table">
                 <thead>
                   <tr>
@@ -168,7 +229,7 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                   </tr>
                 </thead>
                 <tbody>
-                  {evLookupResults.map((row, idx) => (
+                  {displayedWorkerRows.map((row, idx) => (
                     <tr key={`${row.dateKey}-${row.workerKey}-${idx}`}>
                       <td>{row.dateDisplay}</td>
                       <td>{row.workerCode}</td>
@@ -194,8 +255,13 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
             </div>
           )}
 
-          {activeTab === 'vehicle' && vehicleLookupResults.length > 0 && (
+          {activeTab === 'vehicle' && displayedVehicleRows.length > 0 && (
             <div className="rp-ev-table-scroll">
+              {vehicleLookupResults.length > MAX_TABLE_ROWS && (
+                <p className="rp-ev-tab-hint" style={{ marginBottom: '0.5rem' }}>
+                  Showing first {MAX_TABLE_ROWS} of {vehicleLookupResults.length} rows. Export for full list.
+                </p>
+              )}
               <table className="rp-ev-table">
                 <thead>
                   <tr>
@@ -208,7 +274,7 @@ export default function EvLookupPanel({ riderData, fleetData = [], defaultOpen =
                   </tr>
                 </thead>
                 <tbody>
-                  {vehicleLookupResults.map((row, idx) => (
+                  {displayedVehicleRows.map((row, idx) => (
                     <tr key={`${row.dateKey}-${row.vehicleKey}-${idx}`}>
                       <td>{row.dateDisplay}</td>
                       <td>{row.vehicleNumber}</td>

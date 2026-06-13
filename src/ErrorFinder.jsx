@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Search } from 'lucide-react';
 import { differenceInDays, format } from 'date-fns';
+import { parseFleetDate } from './lib/fleetDeployReturnExport';
 import EvLookupPanel from './EvLookupPanel';
 
 const ErrorFinder = ({ fleetData, riderData, loading }) => {
@@ -96,21 +97,7 @@ const ErrorFinder = ({ fleetData, riderData, loading }) => {
             const s = dateStr.toString().trim();
             if (!s) return null;
             if (dateCache.has(s)) return dateCache.get(s);
-
-            let d = null;
-            if (/^\d{5}(\.\d+)?$/.test(s)) {
-                d = new Date((parseFloat(s) - 25569) * 86400 * 1000);
-            } else if (s.includes('/')) {
-                const parts = s.split(' ')[0].split('/');
-                if (parts.length === 3) {
-                    const dd = parseInt(parts[0], 10);
-                    const mm = parseInt(parts[1], 10) - 1;
-                    let yyyy = parts[2];
-                    if (yyyy.length === 2) yyyy = `20${yyyy}`;
-                    d = new Date(parseInt(yyyy, 10), mm, dd);
-                }
-            }
-            if (!d || isNaN(d.getTime())) d = new Date(s);
+            const d = parseFleetDate(s);
             const out = d && !isNaN(d.getTime()) ? d : null;
             dateCache.set(s, out);
             return out;
@@ -118,6 +105,8 @@ const ErrorFinder = ({ fleetData, riderData, loading }) => {
 
         const byRider = new Map();
         (fleetData || []).forEach(rec => {
+            const status = (rec.vehicle_status || '').toString().trim().toLowerCase();
+            if (status !== 'deployee' && status !== 'return') return;
             const riderKey = (rec.rider_id || '').toString().trim().toUpperCase();
             if (!riderKey) return;
             if (!byRider.has(riderKey)) byRider.set(riderKey, []);

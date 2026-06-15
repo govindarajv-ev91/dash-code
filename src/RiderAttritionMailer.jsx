@@ -30,8 +30,8 @@ import {
   getMailConfigForCityKey,
   listCityKeyOptions,
   parseCityMailConfigCsv,
-  parseMailRecipients,
   resolveCityKey,
+  resolveCityMailRecipients,
 } from './lib/cityMailConfig'
 
 const ROWS_PER_PAGE = 100
@@ -452,10 +452,10 @@ export default function RiderAttritionMailer({
       const groupRiders = cityKeyGroups[cityKey]
       if (!groupRiders.length) continue
       const config = getMailConfigForCityKey(cityKey, cityMailConfig.mailByCityKey)
-      const cityTo = config.to && config.to !== '<Email>' ? config.to : ''
-      // City manager emails from sheet (column C). Skip rider/source onboarding emails.
-      const primaryRecipients =
-        parseMailRecipients(cityTo, config.cc) || LEADERSHIP_MAIL_TO
+      const { to: toRecipients, cc: ccRecipients } = resolveCityMailRecipients(config, {
+        userCc: ccEmail,
+        leadershipFallback: LEADERSHIP_MAIL_TO,
+      })
 
       try {
         await fetch(MAILER_URL, {
@@ -464,8 +464,8 @@ export default function RiderAttritionMailer({
           headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify({
             isAttritionGrouped: true,
-            email: primaryRecipients,
-            ccEmail,
+            email: toRecipients,
+            ccEmail: ccRecipients,
             city: cityKey,
             asOfDate: report.asOfDateKey,
             minDaysNotWorking,

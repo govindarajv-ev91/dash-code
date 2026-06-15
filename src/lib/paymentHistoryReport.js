@@ -217,6 +217,55 @@ function buildFleetSdIndex(fleetRows) {
   return byRider
 }
 
+/** Map rider → sourcer name from rider_onboarding (rider_id_details + source_name). */
+export function buildOnboardingSourceIndex(onboardingRows) {
+  const byRider = new Map()
+
+  for (const row of onboardingRows || []) {
+    const source = pickText(row.source_name)
+    if (!source) continue
+
+    const rawRider = pickText(row.rider_id_details)
+    if (!rawRider) continue
+
+    const keys = new Set()
+    const normalized = normalizeRiderIdKey(rawRider)
+    if (normalized) keys.add(normalized)
+    const digits = rawRider.replace(/\D/g, '')
+    if (digits) keys.add(digits)
+    keys.add(rawRider.toUpperCase())
+
+    for (const key of keys) {
+      byRider.set(key, source)
+    }
+  }
+
+  return { byRider }
+}
+
+/** @deprecated use buildOnboardingSourceIndex */
+export function buildRiderSourceIndex(onboardingRows) {
+  return buildOnboardingSourceIndex(onboardingRows)
+}
+
+function resolveRiderSource(sourceIndex, _month, riderId) {
+  if (!sourceIndex?.byRider) return 'Unknown'
+  const raw = pickText(riderId)
+  if (!raw) return 'Unknown'
+
+  const candidates = [
+    normalizeRiderIdKey(raw),
+    raw.replace(/\D/g, ''),
+    raw.toUpperCase(),
+  ].filter(Boolean)
+
+  for (const key of candidates) {
+    if (sourceIndex.byRider.has(key)) return sourceIndex.byRider.get(key)
+  }
+
+  return 'Unknown'
+}
+
 function lookupFleetSd(fleetSd, riderId, phone) {
   const id = normalizeRiderIdKey(riderId)
   const p = normalizePhone(phone)
@@ -225,7 +274,7 @@ function lookupFleetSd(fleetSd, riderId, phone) {
   return null
 }
 
-function buildPaymentDetailRow(row, fleetRiders, fleetLookupIndex) {
+function buildPaymentDetailRow(row, fleetRiders, fleetLookupIndex, sourceIndex) {
   const asOfFleet = lookupRiderFleetAsOf(fleetLookupIndex, row.rider_id, row.payment_date)
   const fleetFallback = lookupFleetRider(fleetRiders, row.rider_id)
   const tds = num(row.tds)
@@ -243,17 +292,21 @@ function buildPaymentDetailRow(row, fleetRiders, fleetLookupIndex) {
   const codRecovery = num(row.cod_recovery)
   const grossPayout = num(row.gross_payout)
   const moneyIn = grossPayout
+  const month = pickText(row.month)
+  const riderId = pickText(row.rider_id)
 
   return {
     rowKey: `payment-${row.id}`,
     rowType: 'payment',
-    riderId: pickText(row.rider_id),
+    riderId,
     riderName: pickText(row.rider_name) || 'N/A',
     city: normalizeSummaryCity(pickText(row.city)) || 'Unknown',
     client: normalizeSummaryClient(pickText(row.client_name)) || 'Unknown',
-    month: pickText(row.month),
+    source: resolveRiderSource(sourceIndex, month, riderId),
+    month,
     week: pickText(row.week),
     type: pickText(row.type),
+    orders: num(row.orders),
     grossPayout,
     payout1: num(row.payout_1),
     payout2: num(row.payout_2),
@@ -337,14 +390,20 @@ function buildCollationDetailRow(row, fleetSd) {
   }
 }
 
-export function buildPaymentHistoryReport(paymentRows = [], _collationRows = [], fleetRows = []) {
+export function buildPaymentHistoryReport(
+  paymentRows = [],
+  _collationRows = [],
+  fleetRows = [],
+  onboardingRows = []
+) {
   const fleetRiders = fleetRows?.length ? buildFleetRiderIndex(fleetRows) : null
   const fleetLookupIndex = getRiderFleetLookupIndex(fleetRows)
+  const sourceIndex = onboardingRows?.length ? buildOnboardingSourceIndex(onboardingRows) : null
   const rows = []
 
   for (const row of paymentRows) {
     if (!pickText(row.rider_id) && !pickText(row.rider_name)) continue
-    rows.push(buildPaymentDetailRow(row, fleetRiders, fleetLookupIndex))
+    rows.push(buildPaymentDetailRow(row, fleetRiders, fleetLookupIndex, sourceIndex))
   }
 
   rows.sort((a, b) => {
@@ -390,6 +449,284 @@ export function summarizePaymentHistory(rows, field) {
   return [...map.values()]
     .map((s) => ({ ...s, riders: s.riders.size }))
     .sort((a, b) => b.rows - a.rows || a.name.localeCompare(b.name))
+}
+
+/** Source-wise revenue for a month (optional city filter). */
+export function buildSourceRevenueReport(rows, { month = '', city = '' } = {}) {
+  if (!month) {
+    return { groups: [], totals: { riders: 0, orders: 0, grossPayout: 0, paymentRows: 0, groups: 0 } }
+  }
+
+  const map = new Map()
+  const grandRiders = new Set()
+  let grandOrders = 0
+  let grandGrossPayout = 0
+  let grandPaymentRows = 0
+
+  for (const r of rows) {
+    if (r.rowType !== 'payment') continue
+    if (r.month !== month) continue
+    if (city && r.city !== city) continue
+
+    const groupCity = r.city || 'Unknown'
+    const source = r.source || 'Unknown'
+    const key = `${groupCity}|${source}`
+
+    if (!map.has(key)) {
+      map.set(key, {
+        city: groupCity,
+        source,
+        riders: new Set(),
+        orders: 0,
+        grossPayout: 0,
+        paymentRows: 0,
+      })
+    }
+
+    const bucket = map.get(key)
+    if (r.riderId) {
+      bucket.riders.add(r.riderId)
+      grandRiders.add(r.riderId)
+    }
+    bucket.orders += num(r.orders)
+    bucket.grossPayout += num(r.grossPayout)
+    bucket.paymentRows += 1
+    grandOrders += num(r.orders)
+    grandGrossPayout += num(r.grossPayout)
+    grandPaymentRows += 1
+  }
+
+  const groups = [...map.values()]
+    .map((b) => ({
+      city: b.city,
+      source: b.source,
+      riders: b.riders.size,
+      orders: b.orders,
+      grossPayout: b.grossPayout,
+      paymentRows: b.paymentRows,
+    }))
+    .sort((a, b) => b.grossPayout - a.grossPayout || a.city.localeCompare(b.city) || a.source.localeCompare(b.source))
+
+  return {
+    groups,
+    totals: {
+      riders: grandRiders.size,
+      orders: grandOrders,
+      grossPayout: grandGrossPayout,
+      paymentRows: grandPaymentRows,
+      groups: groups.length,
+    },
+  }
+}
+
+function filterPaymentRowsForSource(rows, { month, city }) {
+  return (rows || []).filter((r) => {
+    if (r.rowType !== 'payment') return false
+    if (month && r.month !== month) return false
+    if (city && r.city !== city) return false
+    return true
+  })
+}
+
+function emptyCell() {
+  return ['-', '-', '-']
+}
+
+function cellValues(bucket) {
+  if (!bucket || (!bucket.orders && !bucket.riders.size && !bucket.grossPayout)) {
+    return emptyCell()
+  }
+  return [bucket.orders, bucket.riders.size, bucket.grossPayout]
+}
+
+/** Source × Client pivot (Orders, Riders, Gross Payout) for one city + month. */
+export function buildSourceClientPivot(rows, { month = '', city = '' } = {}) {
+  const filtered = filterPaymentRowsForSource(rows, { month, city })
+  const cells = new Map()
+  const sources = new Set()
+  const clients = new Set()
+
+  for (const r of filtered) {
+    const source = r.source || 'Unknown'
+    const client = r.client || 'Unknown'
+    sources.add(source)
+    clients.add(client)
+    const key = `${source}|${client}`
+    if (!cells.has(key)) {
+      cells.set(key, { riders: new Set(), orders: 0, grossPayout: 0 })
+    }
+    const bucket = cells.get(key)
+    if (r.riderId) bucket.riders.add(r.riderId)
+    bucket.orders += num(r.orders)
+    bucket.grossPayout += num(r.grossPayout)
+  }
+
+  const sourceList = [...sources].sort((a, b) => a.localeCompare(b))
+  const clientList = [...clients].sort((a, b) => a.localeCompare(b))
+
+  const rowTotals = new Map()
+  for (const source of sourceList) {
+    const riders = new Set()
+    let orders = 0
+    let grossPayout = 0
+    for (const client of clientList) {
+      const bucket = cells.get(`${source}|${client}`)
+      if (!bucket) continue
+      bucket.riders.forEach((id) => riders.add(id))
+      orders += bucket.orders
+      grossPayout += bucket.grossPayout
+    }
+    rowTotals.set(source, { riders: riders.size, orders, grossPayout })
+  }
+
+  const colTotals = new Map()
+  const grandRiders = new Set()
+  let grandOrders = 0
+  let grandGrossPayout = 0
+
+  for (const client of clientList) {
+    const riders = new Set()
+    let orders = 0
+    let grossPayout = 0
+    for (const source of sourceList) {
+      const bucket = cells.get(`${source}|${client}`)
+      if (!bucket) continue
+      bucket.riders.forEach((id) => {
+        riders.add(id)
+        grandRiders.add(id)
+      })
+      orders += bucket.orders
+      grossPayout += bucket.grossPayout
+    }
+    colTotals.set(client, { riders: riders.size, orders, grossPayout })
+    grandOrders += orders
+    grandGrossPayout += grossPayout
+  }
+
+  return {
+    month,
+    city: city || 'All Cities',
+    sourceList,
+    clientList,
+    cells,
+    rowTotals,
+    colTotals,
+    grandTotal: {
+      riders: grandRiders.size,
+      orders: grandOrders,
+      grossPayout: grandGrossPayout,
+    },
+  }
+}
+
+export function listSourcePivotCities(rows, month) {
+  const cities = new Set()
+  for (const r of filterPaymentRowsForSource(rows, { month })) {
+    cities.add(r.city || 'Unknown')
+  }
+  return [...cities].sort((a, b) => a.localeCompare(b))
+}
+
+/** Excel sheet rows + merges for Source × Client summary (like client-wise pivot). */
+export function buildSourceClientPivotSheet(pivot) {
+  const { month, city, sourceList, clientList, cells, rowTotals, colTotals, grandTotal } = pivot
+  const aoa = []
+  const merges = []
+  const metricCols = clientList.length * 3 + 3
+  const totalCols = 1 + metricCols
+
+  aoa.push([`Key City: ${city} | Month: ${month} | Source Name × Client Wise Summary`])
+  merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } })
+
+  const header1 = ['Source Name']
+  const header2 = ['']
+  let col = 1
+  for (const client of clientList) {
+    header1.push(client, '', '')
+    header2.push('Orders', 'Riders', 'Gross Payout')
+    merges.push({ s: { r: 1, c: col }, e: { r: 1, c: col + 2 } })
+    col += 3
+  }
+  header1.push('TOTAL', '', '')
+  header2.push('Orders', 'Riders', 'Gross Payout')
+  merges.push({ s: { r: 1, c: col }, e: { r: 1, c: col + 2 } })
+  aoa.push(header1, header2)
+
+  for (const source of sourceList) {
+    const row = [source]
+    for (const client of clientList) {
+      row.push(...cellValues(cells.get(`${source}|${client}`)))
+    }
+    const rt = rowTotals.get(source) || { orders: 0, riders: 0, grossPayout: 0 }
+    row.push(rt.orders, rt.riders, rt.grossPayout)
+    aoa.push(row)
+  }
+
+  const totalRow = ['Client Total']
+  for (const client of clientList) {
+    const ct = colTotals.get(client) || { orders: 0, riders: 0, grossPayout: 0 }
+    totalRow.push(ct.orders, ct.riders, ct.grossPayout)
+  }
+  totalRow.push(grandTotal.orders, grandTotal.riders, grandTotal.grossPayout)
+  aoa.push(totalRow)
+
+  const sheetName = `${city}`.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Summary'
+
+  return { aoa, merges, sheetName }
+}
+
+/** One sheet per city when city filter is empty. */
+export function buildSourceClientPivotSheets(rows, { month = '', city = '' } = {}) {
+  if (!month) return []
+  const cities = city ? [city] : listSourcePivotCities(rows, month)
+  return cities.map((cityName) => {
+    const pivot = buildSourceClientPivot(rows, { month, city: cityName })
+    return buildSourceClientPivotSheet(pivot)
+  })
+}
+
+/** Flat source revenue rows for export (city + source summary). */
+export function buildSourceRevenueFlatRows(rows, { month = '', city = '' } = {}) {
+  const { groups } = buildSourceRevenueReport(rows, { month, city })
+  return groups.map((r) => ({
+    Month: month,
+    City: r.city,
+    Source: r.source,
+    'Unique Riders': r.riders,
+    Orders: r.orders,
+    'Gross Payout': r.grossPayout,
+    'Payment Rows': r.paymentRows,
+  }))
+}
+
+/** Rider-level detail rows with sourcer name for export. */
+export function buildSourceDetailExportRows(rows, { month = '', city = '' } = {}) {
+  return filterPaymentRowsForSource(rows, { month, city })
+    .map((r) => ({
+      Month: r.month,
+      City: r.city,
+      Source: r.source || 'Unknown',
+      'Rider ID': r.riderId,
+      'Rider Name': r.riderName,
+      Phone: r.riderPhone || '',
+      Client: r.client,
+      Orders: r.orders,
+      'Gross Payout': r.grossPayout,
+      'Net Payout': r.finalNetPayout,
+      Week: r.week || '',
+      Type: r.type || '',
+      Vehicle: r.vehicleNumber || '',
+      'Payment Status': r.paymentStatus || '',
+      'Payment Date': r.paymentDate || '',
+      UTR: r.utr || '',
+    }))
+    .sort((a, b) => {
+      const src = (a.Source || '').localeCompare(b.Source || '')
+      if (src) return src
+      const cty = (a.City || '').localeCompare(b.City || '')
+      if (cty) return cty
+      return (a['Rider Name'] || '').localeCompare(b['Rider Name'] || '')
+    })
 }
 
 export function filterPaymentHistory(

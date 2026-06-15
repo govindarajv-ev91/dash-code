@@ -123,3 +123,28 @@ export function parseMailRecipients(...parts) {
     .filter((e) => e && e !== '<Email>')
     .join(',')
 }
+
+/**
+ * Sheet layout: City, City Key, CC Mail Id, To.
+ * To is often "<Email>" — city managers then live in CC Mail Id and must be primary To.
+ */
+export function resolveCityMailRecipients(config, { userCc = '', leadershipFallback = '' } = {}) {
+  const sheetTo = parseMailRecipients(config?.to && config.to !== '<Email>' ? config.to : '')
+  const sheetCc = parseMailRecipients(config?.cc && config.cc !== '<Email>' ? config.cc : '')
+  const manualCc = parseMailRecipients(userCc)
+
+  let to = sheetTo
+  let cc = manualCc
+
+  if (!to && sheetCc) {
+    to = sheetCc
+  } else if (to && sheetCc) {
+    cc = parseMailRecipients(manualCc, sheetCc)
+  }
+
+  if (!to && leadershipFallback) {
+    to = leadershipFallback
+  }
+
+  return { to, cc }
+}

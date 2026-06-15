@@ -543,7 +543,7 @@ function App() {
         ) : activePage === 'paymentupload' ? (
           <RiderPaymentUpload />
         ) : activePage === 'paymenthistory' ? (
-          <PaymentHistory />
+          <PaymentHistory onboardingData={onboardingData} />
         ) : activePage === 'sdpayment' ? (
           <SdPaymentViewer />
         ) : activePage === 'fleetdata' ? (

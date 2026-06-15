@@ -18,7 +18,7 @@
 var MAIL_FROM_NAME = 'FleetPro Alerts';
 var TEST_MAIL_TO = 'govindaraj.v@ev91riderz.com';
 var FIXED_CC =
-  'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com,leadership@ev91riderz.com';
+  'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com';
 var ATTRITION_BUCKETS = [3, 5, 7, 10, 15];
 var ATTRITION_BUCKET_COLORS = ['#c8b4e8', '#ffff99', '#f2c4e0', '#ffff99', '#f2c4e0'];
 var ATTRITION_EV_NONEV_BG = '#92d050';
@@ -62,15 +62,10 @@ function sendAttritionGroupedEmail_(data) {
     return String(r.deployStatus || '').toLowerCase() !== 'return';
   });
   var to = parseEmails_(data.email);
-  var cc = mergeCcEmails_(data.ccEmail);
-
-  // Fallback: leadership CC if dashboard sent empty TO (e.g. city sheet To = <Email>)
   if (!to.length) {
-    to = parseEmails_(FIXED_CC);
+    return jsonResponse_({ ok: false, error: 'No To recipient for ' + city + ' — check city mail sheet' });
   }
-  if (!to.length) {
-    return jsonResponse_({ ok: false, error: 'No recipient email for ' + city });
-  }
+  var cc = mergeCcEmails_(data.ccEmail, to);
   if (!riders.length) {
     return jsonResponse_({ ok: false, error: 'No mail-eligible riders for ' + city + ' (Return status excluded)' });
   }
@@ -466,7 +461,7 @@ function sendInactiveGroupedEmail_(data) {
   var daysThreshold = Number(data.daysThreshold) || 5;
   var riders = Array.isArray(data.riders) ? data.riders : [];
   var to = parseEmails_(data.email);
-  var cc = mergeCcEmails_(data.ccEmail);
+  var cc = mergeCcEmails_(data.ccEmail, to);
 
   if (!to.length) {
     return jsonResponse_({ ok: false, error: 'No recipient email for ' + city });
@@ -562,9 +557,12 @@ function parseEmails_(value) {
 }
 
 /** Always CC leadership team; merges with optional extra CC from dashboard. */
-function mergeCcEmails_(extra) {
+function mergeCcEmails_(extra, excludeTo) {
   var seen = {};
   var merged = [];
+  (excludeTo || []).forEach(function (email) {
+    seen[String(email).toLowerCase()] = true;
+  });
   parseEmails_([FIXED_CC, extra].filter(Boolean).join(',')).forEach(function (email) {
     var key = email.toLowerCase();
     if (seen[key]) return;

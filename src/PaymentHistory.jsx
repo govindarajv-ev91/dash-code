@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, memo } from 'react'
-import { History, MapPin, Briefcase, Search, Download, ArrowDownLeft, Wallet, Receipt, MinusCircle, Zap, Shield } from 'lucide-react'
+import { History, MapPin, Briefcase, Search, Download, ArrowDownLeft, Wallet, Receipt, MinusCircle, Zap, Shield, Users } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { fetchAllRiderPayments } from './lib/riderPaymentDb'
 import { fetchFleetRiderLookupRows } from './lib/fleetSdFetch'
@@ -9,6 +9,10 @@ import {
   formatInr,
   PAYMENT_DEDUCTION_COLUMNS,
   summarizePaymentHistory,
+  buildSourceRevenueReport,
+  buildSourceClientPivotSheets,
+  buildSourceRevenueFlatRows,
+  buildSourceDetailExportRows,
 } from './lib/paymentHistoryReport'
 
 const ROWS_PER_PAGE = 100
@@ -103,7 +107,8 @@ function SummaryTable({ title, rows, icon: Icon }) {
   )
 }
 
-export default function PaymentHistory() {
+export default function PaymentHistory({ onboardingData = [] }) {
+  const [activeTab, setActiveTab] = useState('payments')
   const [paymentRows, setPaymentRows] = useState([])
   const [fleetLookupRows, setFleetLookupRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -111,9 +116,12 @@ export default function PaymentHistory() {
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const deferredFleetLookup = useDeferredValue(fleetLookupRows)
+  const deferredOnboarding = useDeferredValue(onboardingData)
   const [selectedCities, setSelectedCities] = useState([])
   const [selectedClients, setSelectedClients] = useState([])
   const [selectedMonths, setSelectedMonths] = useState([])
+  const [sourceMonth, setSourceMonth] = useState('')
+  const [sourceCity, setSourceCity] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const deferredCities = useDeferredValue(selectedCities)
   const deferredClients = useDeferredValue(selectedClients)
@@ -153,8 +161,8 @@ export default function PaymentHistory() {
 
   const report = useMemo(() => {
     if (!paymentRows.length) return { rows: [] }
-    return buildPaymentHistoryReport(paymentRows, [], deferredFleetLookup)
-  }, [paymentRows, deferredFleetLookup])
+    return buildPaymentHistoryReport(paymentRows, [], deferredFleetLookup, deferredOnboarding)
+  }, [paymentRows, deferredFleetLookup, deferredOnboarding])
 
   const filterOptions = useMemo(() => {
     const cities = new Set()
@@ -190,6 +198,20 @@ export default function PaymentHistory() {
   const clientOptions = filterOptions.clients
   const monthOptions = filterOptions.months
 
+  useEffect(() => {
+    if (!sourceMonth && monthOptions.length) {
+      setSourceMonth(monthOptions[0])
+    }
+  }, [monthOptions, sourceMonth])
+
+  const sourceReport = useMemo(
+    () => buildSourceRevenueReport(report.rows, { month: sourceMonth, city: sourceCity }),
+    [report.rows, sourceMonth, sourceCity]
+  )
+
+  const sourceRevenueRows = sourceReport.groups
+  const sourceTotals = sourceReport.totals
+
   const totals = useMemo(() => {
     let moneyIn = 0
     let netPayout = 0
@@ -222,7 +244,7 @@ export default function PaymentHistory() {
     setCurrentPage(1)
   }, [search, selectedCities, selectedClients, selectedMonths])
 
-  const exportExcel = useCallback(() => {
+  const exportPaymentRows = useCallback(() => {
     const rows = filtered.map((r) => {
       const base = {
         Type: r.type || 'Payment',
@@ -257,6 +279,65 @@ export default function PaymentHistory() {
     XLSX.writeFile(wb, `Payment_History_${new Date().toISOString().slice(0, 10)}.xlsx`)
   }, [filtered])
 
+  const sourceExportFilters = useCallback(() => {
+    if (!sourceMonth) {
+      window.alert('Please select a month before exporting.')
+      return null
+    }
+    return { month: sourceMonth, city: sourceCity }
+  }, [sourceMonth, sourceCity])
+
+  const sourceFileSuffix = useCallback(() => {
+    const cityPart = sourceCity ? sourceCity.replace(/\s+/g, '_') : 'All_Cities'
+    return `${sourceMonth}_${cityPart}_${new Date().toISOString().slice(0, 10)}`
+  }, [sourceMonth, sourceCity])
+
+  const exportSourceRevenue = useCallback(() => {
+    const filters = sourceExportFilters()
+    if (!filters) return
+    const rows = buildSourceRevenueFlatRows(report.rows, filters)
+    if (!rows.length) {
+      window.alert('No payment data to export for the selected month and city.')
+      return
+    }
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Source Revenue')
+    XLSX.writeFile(wb, `Source_Revenue_${sourceFileSuffix()}.xlsx`)
+  }, [report.rows, sourceExportFilters, sourceFileSuffix])
+
+  const exportSourceClientSummary = useCallback(() => {
+    const filters = sourceExportFilters()
+    if (!filters) return
+    const sheets = buildSourceClientPivotSheets(report.rows, filters)
+    if (!sheets.length) {
+      window.alert('No payment data to export for the selected month and city.')
+      return
+    }
+    const wb = XLSX.utils.book_new()
+    for (const { aoa, merges, sheetName } of sheets) {
+      const ws = XLSX.utils.aoa_to_sheet(aoa)
+      if (merges?.length) ws['!merges'] = merges
+      const safeName = sheetName.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Summary'
+      XLSX.utils.book_append_sheet(wb, ws, safeName)
+    }
+    XLSX.writeFile(wb, `Source_Client_Summary_${sourceFileSuffix()}.xlsx`)
+  }, [report.rows, sourceExportFilters, sourceFileSuffix])
+
+  const exportSourceDetail = useCallback(() => {
+    const filters = sourceExportFilters()
+    if (!filters) return
+    const rows = buildSourceDetailExportRows(report.rows, filters)
+    if (!rows.length) {
+      window.alert('No payment data to export for the selected month and city.')
+      return
+    }
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Rider Detail')
+    XLSX.writeFile(wb, `Source_Rider_Detail_${sourceFileSuffix()}.xlsx`)
+  }, [report.rows, sourceExportFilters, sourceFileSuffix])
+
   if (loading) {
     return (
       <div className="loading-container">
@@ -274,17 +355,38 @@ export default function PaymentHistory() {
             <div>
               <h1 style={{ margin: 0 }}>Payment History</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-                Rider payment history
+                Rider payment history & source-wise revenue
               </p>
             </div>
           </div>
-          <button type="button" onClick={exportExcel} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
-            <Download size={18} />
-            Export Excel
-          </button>
+          {activeTab === 'payments' ? (
+            <button type="button" onClick={exportPaymentRows} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
+              <Download size={18} />
+              Export Excel
+            </button>
+          ) : null}
         </div>
       </header>
 
+      <div className="fdv-tabs" style={{ marginBottom: '1rem' }}>
+        <button
+          type="button"
+          className={`fdv-tab ${activeTab === 'payments' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveTab('payments')}
+        >
+          Payment rows
+        </button>
+        <button
+          type="button"
+          className={`fdv-tab ${activeTab === 'source' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveTab('source')}
+        >
+          Source revenue
+        </button>
+      </div>
+
+      {activeTab === 'payments' ? (
+        <>
       <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
         <StatCard label="Money In" value={formatInr(totals.moneyIn)} icon={ArrowDownLeft} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
         <StatCard label="Net Payout" value={formatInr(totals.netPayout)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
@@ -408,6 +510,117 @@ export default function PaymentHistory() {
           </div>
         </div>
       </div>
+        </>
+      ) : (
+        <>
+          <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
+            <StatCard label="Unique Riders" value={sourceTotals.riders.toLocaleString()} icon={Users} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
+            <StatCard label="Total Orders" value={sourceTotals.orders.toLocaleString()} icon={Receipt} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
+            <StatCard label="Gross Payout" value={formatInr(sourceTotals.grossPayout)} icon={ArrowDownLeft} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
+            <StatCard label="Source groups" value={sourceTotals.groups.toLocaleString()} icon={Briefcase} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
+          </section>
+
+          <div className="filter-bar glass" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', padding: '0.75rem', marginBottom: '1rem', alignItems: 'center' }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              Month
+              <select
+                className="fsr-select"
+                value={sourceMonth}
+                onChange={(e) => setSourceMonth(e.target.value)}
+                style={{ minWidth: '150px' }}
+              >
+                <option value="">Select month</option>
+                {monthOptions.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              City
+              <select
+                className="fsr-select"
+                value={sourceCity}
+                onChange={(e) => setSourceCity(e.target.value)}
+                style={{ minWidth: '150px' }}
+              >
+                <option value="">All cities</option>
+                {cityOptions.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+            <div className="rp-ev-action-buttons" style={{ marginLeft: 'auto', alignSelf: 'flex-end' }}>
+              <button type="button" className="fsr-export-btn" onClick={exportSourceRevenue} disabled={!sourceMonth}>
+                <Download size={14} /> Source revenue
+              </button>
+              <button type="button" className="fsr-export-btn" onClick={exportSourceClientSummary} disabled={!sourceMonth}>
+                <Download size={14} /> Source × Client
+              </button>
+              <button type="button" className="fsr-export-btn" onClick={exportSourceDetail} disabled={!sourceMonth}>
+                <Download size={14} /> Rider detail
+              </button>
+            </div>
+          </div>
+
+          <div className="table-card glass">
+            <div className="table-container" style={{ maxHeight: 'calc(100vh - 380px)' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>City</th>
+                    <th>Source</th>
+                    <th>Unique Riders</th>
+                    <th>Orders</th>
+                    <th>Gross Payout</th>
+                    <th>Payment Rows</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!sourceMonth ? (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                        Select a month to view source-wise revenue.
+                      </td>
+                    </tr>
+                  ) : sourceRevenueRows.length ? (
+                    sourceRevenueRows.map((row) => (
+                      <tr key={`${row.city}-${row.source}`}>
+                        <td>{row.city}</td>
+                        <td>{row.source}</td>
+                        <td>{row.riders.toLocaleString()}</td>
+                        <td>{row.orders.toLocaleString()}</td>
+                        <td style={{ color: 'var(--accent-green)', fontWeight: 600 }}>{formatInr(row.grossPayout)}</td>
+                        <td>{row.paymentRows.toLocaleString()}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                        No payment data for this month{cityLabel(sourceCity)}.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                {sourceRevenueRows.length > 0 && (
+                  <tfoot>
+                    <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border-color)' }}>
+                      <td colSpan={2}>Total</td>
+                      <td>{sourceTotals.riders.toLocaleString()}</td>
+                      <td>{sourceTotals.orders.toLocaleString()}</td>
+                      <td style={{ color: 'var(--accent-green)' }}>{formatInr(sourceTotals.grossPayout)}</td>
+                      <td>{sourceTotals.paymentRows.toLocaleString()}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
+}
+
+function cityLabel(city) {
+  return city ? ` in ${city}` : ''
 }

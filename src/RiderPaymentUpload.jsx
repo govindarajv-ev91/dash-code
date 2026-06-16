@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle } from 'lucide-react'
+import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle, CircleDollarSign } from 'lucide-react'
 import {
   parseRiderPaymentFile,
   parseManualCollationFile,
+  parseRentalPendingFile,
   RIDER_PAYMENT_HEADER_LABELS,
   MANUAL_COLLATION_HEADER_LABELS,
+  RENTAL_PENDING_HEADER_LABELS,
 } from './lib/paymentUploadParse'
 import {
   loadRiderPaymentSummary,
@@ -23,6 +25,14 @@ import {
   getManualCollationDbSetupMessage,
   isMissingManualCollationTable,
 } from './lib/manualCollationDb'
+import {
+  loadRentalPendingSummary,
+  saveRentalPendingRows,
+  clearRentalPendingData,
+  clearRentalPendingDataByMonth,
+  getRentalPendingDbSetupMessage,
+  isMissingRentalPendingTable,
+} from './lib/rentalPendingDb'
 
 function ResetConfirmModal({ open, title, message, confirming, onCancel, onConfirm }) {
   if (!open) return null
@@ -258,19 +268,27 @@ export default function RiderPaymentUpload() {
   const [collationPreview, setCollationPreview] = useState([])
   const [collationMonths, setCollationMonths] = useState([])
   const [collationResetMonth, setCollationResetMonth] = useState('')
+  const [rentalCount, setRentalCount] = useState(0)
+  const [rentalPreview, setRentalPreview] = useState([])
+  const [rentalMonths, setRentalMonths] = useState([])
+  const [rentalResetMonth, setRentalResetMonth] = useState('')
   const [loading, setLoading] = useState(true)
   const [paymentUploading, setPaymentUploading] = useState(false)
   const [paymentResetting, setPaymentResetting] = useState(false)
   const [collationUploading, setCollationUploading] = useState(false)
   const [collationResetting, setCollationResetting] = useState(false)
+  const [rentalUploading, setRentalUploading] = useState(false)
+  const [rentalResetting, setRentalResetting] = useState(false)
   const [paymentMessage, setPaymentMessage] = useState(null)
   const [collationMessage, setCollationMessage] = useState(null)
+  const [rentalMessage, setRentalMessage] = useState(null)
   const [resetConfirm, setResetConfirm] = useState(null)
 
   const refreshSummaries = useCallback(async () => {
-    const [payment, collation] = await Promise.all([
+    const [payment, collation, rental] = await Promise.all([
       loadRiderPaymentSummary(),
       loadManualCollationSummary(),
+      loadRentalPendingSummary(),
     ])
     setPaymentCount(payment.count)
     setPaymentPreview(payment.preview)
@@ -278,9 +296,13 @@ export default function RiderPaymentUpload() {
     setCollationCount(collation.count)
     setCollationPreview(collation.preview)
     setCollationMonths(collation.months || [])
+    setRentalCount(rental.count)
+    setRentalPreview(rental.preview)
+    setRentalMonths(rental.months || [])
     setPaymentResetMonth((prev) => ((payment.months || []).includes(prev) ? prev : ''))
     setCollationResetMonth((prev) => ((collation.months || []).includes(prev) ? prev : ''))
-    return { payment, collation }
+    setRentalResetMonth((prev) => ((rental.months || []).includes(prev) ? prev : ''))
+    return { payment, collation, rental }
   }, [])
 
   useEffect(() => {
@@ -429,10 +451,82 @@ export default function RiderPaymentUpload() {
     }
   }
 
+  const handleRentalUpload = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+
+    setRentalUploading(true)
+    setRentalMessage(null)
+    try {
+      const buffer = await file.arrayBuffer()
+      const { rows, sheetName } = parseRentalPendingFile(buffer)
+      if (!rows.length) {
+        setRentalMessage({ type: 'error', text: 'No valid rental pending rows found. Check column headers.' })
+        return
+      }
+      const inserted = await saveRentalPendingRows(rows, { replace: true })
+      await refreshSummaries()
+      setRentalMessage({
+        type: 'success',
+        text: `Saved ${inserted.toLocaleString()} rental pending row(s) from ${sheetName || file.name}.`,
+      })
+    } catch (err) {
+      const text = isMissingRentalPendingTable(err)
+        ? getRentalPendingDbSetupMessage()
+        : err?.message || 'Upload failed.'
+      setRentalMessage({ type: 'error', text })
+    } finally {
+      setRentalUploading(false)
+    }
+  }
+
+  const handleRentalReset = () => {
+    const monthLabel = rentalResetMonth.trim()
+    setResetConfirm({
+      type: 'rental',
+      month: monthLabel,
+      title: monthLabel ? `Reset ${monthLabel}?` : 'Reset all rental pending data?',
+      message: monthLabel
+        ? `Clear rental pending data for month "${monthLabel}" only from the database.`
+        : 'Clear ALL rental pending amount data from the database.',
+    })
+  }
+
+  const runRentalReset = async (monthLabel) => {
+    setRentalResetting(true)
+    setRentalMessage(null)
+    try {
+      if (monthLabel) {
+        await clearRentalPendingDataByMonth(monthLabel)
+      } else {
+        await clearRentalPendingData()
+      }
+      setRentalResetMonth('')
+      await refreshSummaries()
+      setRentalMessage({
+        type: 'success',
+        text: monthLabel
+          ? `Rental pending data cleared for ${monthLabel}.`
+          : 'All rental pending data cleared.',
+      })
+    } catch (err) {
+      const text = isMissingRentalPendingTable(err)
+        ? getRentalPendingDbSetupMessage()
+        : err?.message || 'Reset failed.'
+      setRentalMessage({ type: 'error', text })
+    } finally {
+      setRentalResetting(false)
+      setResetConfirm(null)
+    }
+  }
+
   const handleResetConfirm = async () => {
     if (!resetConfirm) return
     if (resetConfirm.type === 'payment') {
       await runPaymentReset(resetConfirm.month)
+    } else if (resetConfirm.type === 'rental') {
+      await runRentalReset(resetConfirm.month)
     } else {
       await runCollationReset(resetConfirm.month)
     }
@@ -454,7 +548,7 @@ export default function RiderPaymentUpload() {
           <div>
             <h1 style={{ margin: 0 }}>Rider Payment Upload</h1>
             <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-              Upload rider payout files and manual bank collation data to Supabase
+              Upload rider payout, manual bank collation, and rental pending amount files to Supabase
             </p>
           </div>
         </div>
@@ -519,13 +613,40 @@ export default function RiderPaymentUpload() {
         onReset={handleCollationReset}
       />
 
+      <UploadSection
+        title="Rental Pending Amount"
+        icon={CircleDollarSign}
+        iconColor="#f59e0b"
+        headerLabels={RENTAL_PENDING_HEADER_LABELS}
+        count={rentalCount}
+        preview={rentalPreview}
+        previewColumns={[
+          { key: 'rider_id', label: 'Rider ID' },
+          { key: 'rider_name', label: 'Rider Name' },
+          { key: 'client_name', label: 'Client' },
+          { key: 'city', label: 'City' },
+          { key: 'vehicle_number', label: 'Vehicle' },
+          { key: 'week_end_date', label: 'Week End' },
+          { key: 'actual_pending_for_week_after_sd', label: 'Pending After SD' },
+          { key: 'month', label: 'Month' },
+        ]}
+        message={rentalMessage}
+        uploading={rentalUploading}
+        resetting={rentalResetting}
+        resetMonths={rentalMonths}
+        resetMonth={rentalResetMonth}
+        onResetMonthChange={setRentalResetMonth}
+        onUpload={handleRentalUpload}
+        onReset={handleRentalReset}
+      />
+
       <ResetConfirmModal
         open={Boolean(resetConfirm)}
         title={resetConfirm?.title || ''}
         message={resetConfirm?.message || ''}
-        confirming={paymentResetting || collationResetting}
+        confirming={paymentResetting || collationResetting || rentalResetting}
         onCancel={() => {
-          if (!paymentResetting && !collationResetting) setResetConfirm(null)
+          if (!paymentResetting && !collationResetting && !rentalResetting) setResetConfirm(null)
         }}
         onConfirm={handleResetConfirm}
       />

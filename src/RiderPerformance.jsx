@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useDeferredValue, useCallback } from 'react'
+import React, { useMemo, useState, useDeferredValue, useCallback, useEffect } from 'react'
 import { format } from 'date-fns'
 import {
   Activity,
@@ -16,6 +16,8 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  IndianRupee,
+  Receipt,
 } from 'lucide-react'
 import {
   getRiderPerformanceHeaders,
@@ -25,8 +27,14 @@ import {
   filterReportRowsForExcelExport,
   filterRiderPerformanceRows,
   summarizeRiderPerformanceRows,
+  summarizeRentalPendingRows,
 } from './lib/riderPerformanceReport'
 import { downloadRiderPerformanceSummaryExcel } from './lib/riderPerformanceExcelExport'
+import {
+  fetchAllRentalPending,
+  buildRentalPendingByRiderIndex,
+  lookupRentalPendingAmount,
+} from './lib/rentalPendingDb'
 
 export default function RiderPerformance({
   fleetData,
@@ -41,6 +49,9 @@ export default function RiderPerformance({
   const [cityFilter, setCityFilter] = useState('All')
   const [clientFilter, setClientFilter] = useState('All')
   const [sourceFilter, setSourceFilter] = useState('All')
+  const [rentalPendingRows, setRentalPendingRows] = useState([])
+  const [rentalPendingLoading, setRentalPendingLoading] = useState(true)
+  const [includeNegativeRental, setIncludeNegativeRental] = useState(false)
   const today = useMemo(() => new Date(), [])
   const reportDate = format(today, 'yyyy-MM-dd')
   const tableHeaders = useMemo(() => getRiderPerformanceHeaders(today), [today])
@@ -49,10 +60,34 @@ export default function RiderPerformance({
   const deferredFleet = useDeferredValue(fleetData)
   const deferredRider = useDeferredValue(riderData)
 
+  const loadRentalPending = useCallback((force = false) => {
+    setRentalPendingLoading(true)
+    return fetchAllRentalPending({ force })
+      .then((data) => setRentalPendingRows(data || []))
+      .catch((err) => {
+        console.warn('Rental pending load failed:', err)
+        setRentalPendingRows([])
+      })
+      .finally(() => setRentalPendingLoading(false))
+  }, [])
+
+  useEffect(() => {
+    loadRentalPending()
+  }, [loadRentalPending])
+
+  const rentalPendingIndex = useMemo(
+    () => buildRentalPendingByRiderIndex(rentalPendingRows),
+    [rentalPendingRows]
+  )
+
   const reportRows = useMemo(() => {
     if (!deferredFleet?.length) return []
-    return buildRiderPerformanceReport(deferredFleet, deferredRider, today)
-  }, [deferredFleet, deferredRider, today])
+    const base = buildRiderPerformanceReport(deferredFleet, deferredRider, today)
+    return base.map((row) => ({
+      ...row,
+      'Rental Pending Amount': lookupRentalPendingAmount(rentalPendingIndex, row.ID) ?? '',
+    }))
+  }, [deferredFleet, deferredRider, today, rentalPendingIndex])
 
   const cities = useMemo(() => {
     const set = new Set(reportRows.map((r) => r.City).filter(Boolean))
@@ -81,6 +116,20 @@ export default function RiderPerformance({
   )
 
   const stats = useMemo(() => summarizeRiderPerformanceRows(filteredRows), [filteredRows])
+  const rentalStats = useMemo(
+    () => summarizeRentalPendingRows(filteredRows, { includeNegative: includeNegativeRental }),
+    [filteredRows, includeNegativeRental]
+  )
+
+  const rentalTotalDisplay = useMemo(
+    () =>
+      rentalStats.totalDue.toLocaleString('en-IN', {
+        style: 'currency',
+        currency: 'INR',
+        maximumFractionDigits: 0,
+      }),
+    [rentalStats.totalDue]
+  )
 
   const displayRows = useDeferredValue(filteredRows)
   const isReportStale = displayRows !== filteredRows
@@ -88,8 +137,11 @@ export default function RiderPerformance({
   const [exportingSummary, setExportingSummary] = useState(false)
 
   const handleRefresh = useCallback(() => {
-    if (refreshData && !refreshing) refreshData()
-  }, [refreshData, refreshing])
+    if (refreshData && !refreshing) {
+      refreshData()
+      loadRentalPending(true)
+    }
+  }, [refreshData, refreshing, loadRentalPending])
 
   const exportCsv = () => {
     const csv = rowsToPerformanceCsv(filteredRows, tableHeaders)
@@ -150,6 +202,14 @@ export default function RiderPerformance({
             <h1>Rider Performance</h1>
             <p style={{ color: 'var(--text-dim)', margin: 0, fontSize: '0.9rem' }}>
               Currently deployed riders only · date-wise deploy order
+              {rentalPendingRows.length > 0 && (
+                <span style={{ marginLeft: 8 }}>
+                  · Rental pending for {rentalPendingRows.length.toLocaleString()} rider rows
+                </span>
+              )}
+              {rentalPendingLoading && (
+                <span style={{ marginLeft: 8 }}>· Loading rental pending…</span>
+              )}
               {dataUpdatedAt && !fleetLoading && !refreshing && (
                 <span style={{ marginLeft: 8 }}>
                   · Updated {format(dataUpdatedAt, 'dd/MM/yyyy HH:mm')}
@@ -228,6 +288,17 @@ export default function RiderPerformance({
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        <div className="rp-filter rp-filter-toggle">
+          <label>Rental pending stats</label>
+          <label className="rp-toggle-check">
+            <input
+              type="checkbox"
+              checked={includeNegativeRental}
+              onChange={(e) => setIncludeNegativeRental(e.target.checked)}
+            />
+            Include -ve amount
+          </label>
+        </div>
       </div>
 
       <div className="rp-stats-grid">
@@ -285,6 +356,32 @@ export default function RiderPerformance({
           <div className="rp-stat-body">
             <span className="rp-stat-label">Low / 0 Orders</span>
             <span className="rp-stat-value">{(stats.effLow + stats.effZero).toLocaleString()}</span>
+          </div>
+        </div>
+        <div className="rp-stat-card glass rp-stat-rental-card">
+          <div className="rp-stat-icon rp-stat-rental"><Receipt size={22} /></div>
+          <div className="rp-stat-body">
+            <span className="rp-stat-label">Rental due riders</span>
+            <span className="rp-stat-value">
+              {rentalPendingLoading ? '…' : rentalStats.dueRiders.toLocaleString()}
+            </span>
+            <span className="rp-stat-sub">
+              {includeNegativeRental ? 'Pending amount ≠ 0' : 'Pending amount > 0'}
+            </span>
+          </div>
+        </div>
+        <div className="rp-stat-card glass rp-stat-rental-card">
+          <div className="rp-stat-icon rp-stat-rental-total"><IndianRupee size={22} /></div>
+          <div className="rp-stat-body">
+            <span className="rp-stat-label">Rental pending total</span>
+            <span className="rp-stat-value rp-stat-value-currency">
+              {rentalPendingLoading ? '…' : rentalTotalDisplay}
+            </span>
+            <span className="rp-stat-sub">
+              {includeNegativeRental
+                ? 'Sum for riders with pending ≠ 0'
+                : 'Sum for riders with pending > 0'}
+            </span>
           </div>
         </div>
       </div>

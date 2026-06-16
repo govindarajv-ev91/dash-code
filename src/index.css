@@ -2093,6 +2093,16 @@ select option {
 .rp-stat-high { background: rgba(74, 222, 128, 0.12); color: #4ade80; }
 .rp-stat-mid { background: rgba(56, 189, 248, 0.12); color: #38bdf8; }
 .rp-stat-low { background: rgba(251, 113, 133, 0.12); color: #fb7185; }
+.rp-stat-rental { background: rgba(250, 204, 21, 0.14); color: #facc15; }
+.rp-stat-rental-total { background: rgba(244, 63, 94, 0.14); color: #fb7185; }
+
+.rp-stat-value-currency {
+  font-size: 1.15rem;
+}
+
+.rp-stat-rental-card {
+  min-width: 0;
+}
 
 .rp-stat-body {
   display: flex;
@@ -2167,6 +2177,25 @@ select option {
 
 .rp-filter-search {
   grid-column: span 1;
+}
+
+.rp-filter-toggle {
+  justify-content: flex-end;
+}
+
+.rp-toggle-check {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem !important;
+  text-transform: none !important;
+  color: var(--text-main) !important;
+}
+
+.rp-toggle-check input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary);
 }
 
 .rp-meta {

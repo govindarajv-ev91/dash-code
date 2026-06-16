@@ -1,0 +1,207 @@
+import { supabase } from './supabaseClient'
+import { fetchAllData } from './supabaseFetch'
+import { collectMonthsFromRows, mergeMonthLists } from './paymentMonthList'
+import { normalizeRiderIdKey } from './riderPerformanceReport'
+import { parseFleetDate } from './fleetDeployReturnExport.js'
+
+export const RENTAL_PENDING_TABLE = 'rental_pending_data'
+export const RENTAL_PENDING_COLUMNS = '*'
+
+export function isMissingRentalPendingTable(error) {
+  const msg = (error?.message || '').toLowerCase()
+  return msg.includes('rental_pending_data') && (msg.includes('does not exist') || msg.includes('schema cache'))
+}
+
+export async function fetchRentalPendingCount() {
+  const probe = await supabase.from(RENTAL_PENDING_TABLE).select('id', { count: 'exact', head: true })
+  if (probe.error) throw probe.error
+  return probe.count ?? 0
+}
+
+export async function fetchRentalPendingPreview(limit = 50) {
+  const { data, error } = await supabase
+    .from(RENTAL_PENDING_TABLE)
+    .select('*')
+    .order('id', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
+export async function clearRentalPendingData() {
+  const { error } = await supabase.from(RENTAL_PENDING_TABLE).delete().neq('id', 0)
+  if (error) throw error
+  clearRentalPendingCache()
+}
+
+export async function clearRentalPendingDataByMonth(month) {
+  const label = (month ?? '').toString().trim()
+  if (!label) return clearRentalPendingData()
+  const { error } = await supabase.from(RENTAL_PENDING_TABLE).delete().eq('month', label)
+  if (error) throw error
+  clearRentalPendingCache()
+}
+
+export async function fetchRentalPendingMonths() {
+  const probe = await supabase.from(RENTAL_PENDING_TABLE).select('id').limit(1)
+  if (probe.error) throw probe.error
+
+  const { data: rpcData, error: rpcError } = await supabase.rpc('distinct_rental_pending_months')
+  if (!rpcError && Array.isArray(rpcData) && rpcData.length) {
+    const labels = rpcData.map((row) => (typeof row === 'string' ? row : row?.month))
+    return mergeMonthLists(labels)
+  }
+
+  const { data } = await fetchAllData(RENTAL_PENDING_TABLE, 'month,id', 'id', { useKeyset: true })
+  return collectMonthsFromRows(data)
+}
+
+export async function saveRentalPendingRows(rows, { replace = true } = {}) {
+  if (!rows?.length) return 0
+
+  if (replace) {
+    await clearRentalPendingData()
+  }
+
+  const chunkSize = 500
+  let inserted = 0
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize)
+    const { error } = await supabase.from(RENTAL_PENDING_TABLE).insert(chunk)
+    if (error) throw error
+    inserted += chunk.length
+  }
+  clearRentalPendingCache()
+  return inserted
+}
+
+let cachedRentalPending = null
+let rentalPendingInflight = null
+
+export async function fetchAllRentalPending({ force = false } = {}) {
+  if (!force && cachedRentalPending) return cachedRentalPending
+  if (!force && rentalPendingInflight) return rentalPendingInflight
+
+  rentalPendingInflight = (async () => {
+    const probe = await supabase.from(RENTAL_PENDING_TABLE).select('id').limit(1)
+    if (probe.error) throw probe.error
+    const { data } = await fetchAllData(RENTAL_PENDING_TABLE, RENTAL_PENDING_COLUMNS, 'id', { useKeyset: true })
+    cachedRentalPending = data || []
+    return cachedRentalPending
+  })().finally(() => {
+    rentalPendingInflight = null
+  })
+
+  return rentalPendingInflight
+}
+
+export function clearRentalPendingCache() {
+  cachedRentalPending = null
+  rentalPendingInflight = null
+}
+
+export async function loadRentalPendingSummary() {
+  try {
+    const [count, preview] = await Promise.all([
+      fetchRentalPendingCount(),
+      fetchRentalPendingCount().then((n) => (n > 0 ? fetchRentalPendingPreview(25) : [])),
+    ])
+    let months = []
+    try {
+      months = await fetchRentalPendingMonths()
+    } catch {
+      months = collectMonthsFromRows(preview)
+    }
+    months = mergeMonthLists(months, collectMonthsFromRows(preview))
+    return { count, preview, months, fromDb: true }
+  } catch (err) {
+    if (isMissingRentalPendingTable(err)) {
+      return { count: 0, preview: [], months: [], fromDb: false, missingTable: true }
+    }
+    throw err
+  }
+}
+
+export function getRentalPendingDbSetupMessage() {
+  return 'Database table missing. Run sql/create_rider_payment_tables.sql in Supabase SQL Editor, then upload again.'
+}
+
+function isNumericWorkerCode(raw) {
+  const s = (raw ?? '').toString().trim()
+  return /^[\d.\s-]+$/.test(s) && /\d/.test(s)
+}
+
+/** Aliases for rental_pending_data.rider_id ↔ fleet performance ID (FE6516583, 6516583, etc.). */
+function rentalRiderAliases(value) {
+  const aliases = new Set()
+  const raw = (value ?? '').toString().trim()
+  if (!raw) return aliases
+
+  const idKey = normalizeRiderIdKey(raw)
+  if (idKey) aliases.add(idKey)
+
+  const prefixMatch = idKey.match(/^([A-Z]{2,5})(\d+)$/i)
+  if (prefixMatch?.[2]?.length >= 5) {
+    aliases.add(prefixMatch[2])
+    aliases.add(`${prefixMatch[1]}${prefixMatch[2]}`)
+  }
+
+  const embeddedFe = idKey.match(/FE(\d{5,})/i)
+  if (embeddedFe) {
+    aliases.add(`FE${embeddedFe[1]}`)
+    aliases.add(embeddedFe[1])
+  }
+
+  if (isNumericWorkerCode(raw)) {
+    const digits = raw.replace(/\D/g, '')
+    if (digits) aliases.add(digits)
+  }
+
+  return aliases
+}
+
+function rentalRowWeekEnd(row) {
+  return parseFleetDate(row?.week_end_date) || null
+}
+
+function preferRentalRow(next, prev) {
+  const nextWeek = rentalRowWeekEnd(next)
+  const prevWeek = rentalRowWeekEnd(prev)
+  if (nextWeek && prevWeek) return nextWeek >= prevWeek
+  if (nextWeek && !prevWeek) return true
+  if (!nextWeek && prevWeek) return false
+  return (next.id ?? 0) >= (prev.id ?? 0)
+}
+
+/** Map rider ID aliases → latest rental pending row (by week end date). */
+export function buildRentalPendingByRiderIndex(rentalRows) {
+  const byAlias = new Map()
+
+  for (const row of rentalRows || []) {
+    const riderId = (row?.rider_id ?? '').toString().trim()
+    if (!riderId) continue
+
+    for (const alias of rentalRiderAliases(riderId)) {
+      const prev = byAlias.get(alias)
+      if (!prev || preferRentalRow(row, prev)) {
+        byAlias.set(alias, row)
+      }
+    }
+  }
+
+  return byAlias
+}
+
+/** Actual pending for week after SD for a fleet / performance rider ID. */
+export function lookupRentalPendingAmount(index, riderId) {
+  if (!index || !riderId) return null
+
+  for (const alias of rentalRiderAliases(riderId)) {
+    const row = index.get(alias)
+    if (!row) continue
+    const amount = row.actual_pending_for_week_after_sd
+    if (amount != null && amount !== '') return amount
+  }
+
+  return null
+}

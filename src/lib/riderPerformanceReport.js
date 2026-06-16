@@ -39,6 +39,7 @@ const BASE_RIDER_PERFORMANCE_HEADERS = [
   'Last week orders',
   'LWD',
   'IAD',
+  'Rental Pending Amount',
 ]
 
 /** @deprecated use getRiderPerformanceHeaders */
@@ -642,6 +643,29 @@ export function summarizeRiderPerformanceRows(rows) {
   return summary
 }
 
+export function parseRentalPendingAmount(value) {
+  if (value === '' || value == null) return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Rental pending stats for visible rows. */
+export function summarizeRentalPendingRows(rows, { includeNegative = false } = {}) {
+  let dueRiders = 0
+  let totalDue = 0
+
+  for (const row of rows || []) {
+    const amount = parseRentalPendingAmount(row['Rental Pending Amount'])
+    if (amount == null) continue
+    if (amount > 0 || (includeNegative && amount < 0)) {
+      dueRiders++
+      totalDue += amount
+    }
+  }
+
+  return { dueRiders, totalDue }
+}
+
 export function rowsToPerformanceCsv(rows, headers) {
   const cols = headers || getRiderPerformanceHeaders()
   const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
@@ -653,6 +677,15 @@ export function rowsToPerformanceCsv(rows, headers) {
 }
 
 export function getCellValue(row, header, asOfDate = new Date()) {
+  if (header === 'Rental Pending Amount') {
+    const v = row[header]
+    if (v === '' || v == null) return ''
+    const n = Number(v)
+    if (!Number.isNaN(n)) {
+      return n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+    }
+    return v
+  }
   if (row[header] !== undefined) return row[header]
   const asOf = startOfDay(asOfDate)
   for (let n = 1; n <= 4; n++) {

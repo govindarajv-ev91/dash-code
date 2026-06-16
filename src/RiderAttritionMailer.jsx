@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef, useDeferredValue } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'framer-motion'
 import { format } from 'date-fns'
 import {
   Mail,
@@ -26,7 +25,6 @@ import {
 } from './lib/riderAttritionReport'
 import {
   CITY_MAIL_CONFIG_URL,
-  citiesForCityKeys,
   getMailConfigForCityKey,
   listCityKeyOptions,
   parseCityMailConfigCsv,
@@ -247,7 +245,7 @@ export default function RiderAttritionMailer({
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
-    searchDebounceRef.current = setTimeout(() => setDebouncedSearch(searchTerm), 250)
+    searchDebounceRef.current = setTimeout(() => setDebouncedSearch(searchTerm), 400)
     return () => {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
     }
@@ -269,11 +267,6 @@ export default function RiderAttritionMailer({
     }
     fetchCityConfigs()
   }, [])
-
-  const scopedCities = useMemo(() => {
-    if (!selectedCityKeys.length) return []
-    return citiesForCityKeys(selectedCityKeys, cityMailConfig.sheetRows)
-  }, [selectedCityKeys, cityMailConfig.sheetRows])
 
   const emailByWorker = useMemo(() => {
     const map = new Map()
@@ -302,23 +295,13 @@ export default function RiderAttritionMailer({
       }
     }
 
-    for (const f of fleetData || []) {
-      const ids = [(f.rider_id || '').toString().trim().toLowerCase()].filter(Boolean)
-      const phone = (f.rider_contact_number || '').toString().trim()
-      link(ids, '', phone)
-    }
-
     return map
-  }, [onboardingData, fleetData])
+  }, [onboardingData])
 
   const report = useMemo(() => {
     if (!deferredRiderData?.length) return null
-    return buildAttritionReport(deferredRiderData, deferredFleetData, {
-      minDaysNotWorking,
-      cities: scopedCities,
-      clients: selectedClients,
-    })
-  }, [deferredRiderData, deferredFleetData, minDaysNotWorking, scopedCities, selectedClients])
+    return buildAttritionReport(deferredRiderData, deferredFleetData)
+  }, [deferredRiderData, deferredFleetData])
 
   const enrichedRiders = useMemo(() => {
     if (!report?.riders) return []
@@ -336,36 +319,23 @@ export default function RiderAttritionMailer({
     })
   }, [report, emailByWorker, cityMailConfig.cityKeyByLookup])
 
-  const filtered = useMemo(
-    () =>
-      filterAttritionRiders(enrichedRiders, {
-        search: debouncedSearch,
-        cityKeys: selectedCityKeys,
-        clients: selectedClients,
-        firstOrderMonths: selectedFirstOrderMonths,
-        minDaysNotWorking,
-      }),
-    [
-      enrichedRiders,
-      debouncedSearch,
-      selectedCityKeys,
-      selectedClients,
-      selectedFirstOrderMonths,
+  const filterOpts = useMemo(
+    () => ({
+      cityKeys: selectedCityKeys,
+      clients: selectedClients,
+      firstOrderMonths: selectedFirstOrderMonths,
       minDaysNotWorking,
-    ]
+    }),
+    [selectedCityKeys, selectedClients, selectedFirstOrderMonths, minDaysNotWorking]
   )
 
-  const summaryRiders = useMemo(
-    () =>
-      filterAttritionRiders(enrichedRiders, {
-        search: '',
-        cityKeys: selectedCityKeys,
-        clients: selectedClients,
-        firstOrderMonths: selectedFirstOrderMonths,
-        minDaysNotWorking,
-      }),
-    [enrichedRiders, selectedCityKeys, selectedClients, selectedFirstOrderMonths, minDaysNotWorking]
-  )
+  const { filtered, summaryRiders } = useMemo(() => {
+    const summaryRiders = filterAttritionRiders(enrichedRiders, filterOpts)
+    const filtered = debouncedSearch
+      ? filterAttritionRiders(enrichedRiders, { ...filterOpts, search: debouncedSearch })
+      : summaryRiders
+    return { filtered, summaryRiders }
+  }, [enrichedRiders, filterOpts, debouncedSearch])
 
   const citySummary = useMemo(
     () => summarizeAttrition(summaryRiders, 'cityKey'),
@@ -522,7 +492,7 @@ export default function RiderAttritionMailer({
   const asOfLabel = report ? format(report.asOfDay, 'EEEE, dd/MM/yyyy') : '—'
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="dashboard-container">
+    <div className="dashboard-container">
       <header className="header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '1rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
@@ -772,6 +742,6 @@ export default function RiderAttritionMailer({
           </div>
         </div>
       </div>
-    </motion.div>
+    </div>
   )
 }

@@ -8,7 +8,7 @@ import {
 } from './fleetInsightIndex'
 import { normalizeSummaryCity } from './citySummaryAliases'
 import { normalizeSummaryClient } from './clientSummaryClients'
-import { normalizeRiderIdKey, getCurrentlyDeployedAssignments } from './riderPerformanceReport'
+import { normalizeRiderIdKey, getCurrentlyDeployedAssignments, parseRentalPendingAmount } from './riderPerformanceReport'
 
 function normalizePhone(value) {
   const digits = (value ?? '').toString().replace(/\D/g, '')
@@ -511,14 +511,32 @@ export function buildAttritionReport(riderRows, fleetRows = []) {
 
 export function summarizeAttrition(riders, field) {
   const counts = new Map()
+  const rentals = new Map()
   for (const rider of riders) {
     const key = rider[field] || 'Unknown'
     counts.set(key, (counts.get(key) || 0) + 1)
+    const amount = parseRentalPendingAmount(rider.rentalPendingAmount)
+    if (amount != null) {
+      rentals.set(key, (rentals.get(key) || 0) + amount)
+    }
   }
 
   return [...counts.entries()]
-    .map(([name, count]) => ({ name, count }))
+    .map(([name, count]) => ({
+      name,
+      count,
+      rentalPending: rentals.get(name) || 0,
+    }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+}
+
+export function sumAttritionRentalPending(riders) {
+  let total = 0
+  for (const rider of riders || []) {
+    const amount = parseRentalPendingAmount(rider.rentalPendingAmount)
+    if (amount != null) total += amount
+  }
+  return total
 }
 
 export function filterAttritionRiders(
@@ -575,6 +593,7 @@ export function attritionRidersToExcelRows(riders) {
     'Last Working Date': r.lastWorkingDate,
     'Days Not Working': r.daysNotWorking,
     'As Of Date': r.asOfDate,
+    'Rental Pending Amount': r.rentalPendingAmount ?? '',
   }))
 }
 

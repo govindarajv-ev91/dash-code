@@ -7,6 +7,31 @@ import {
     ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { fetchPublishedCsv } from './lib/fleetSheetMerge';
+import {
+    CITY_MAIL_CONFIG_URL,
+    parseCityMailConfigCsv,
+    resolveCityKey,
+    getMailConfigForCityKey,
+    resolveCityMailRecipients,
+    parseMailRecipients,
+} from './lib/cityMailConfig';
+import {
+    fetchAllRentalPending,
+    buildRentalPendingByRiderIndex,
+    lookupRentalPendingAmount,
+} from './lib/rentalPendingDb';
+import { parseRentalPendingAmount } from './lib/riderPerformanceReport';
+import {
+    buildInactiveGroupedMail,
+    mapRidersToMailPayload,
+} from './lib/inactiveRiderMailerEmail';
+
+const LEADERSHIP_MAIL_TO =
+    'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com';
+
+const INACTIVE_MAILER_URL =
+    import.meta.env.VITE_INACTIVE_MAILER_SCRIPT_URL ||
+    'https://script.google.com/macros/s/AKfycbwbFWVeiez8kQyI0J0mcQURda6tNit8TN8Vzch1B5W5U_EmPM-4VaxVFwUtv9gkmgIRFw/exec';
 
 
 const normalizeCity = (city) => {
@@ -43,6 +68,12 @@ const parseDate = (str) => {
 };
 
 const ROWS_PER_PAGE = 100;
+
+const formatRentalPendingDisplay = (value) => {
+    const n = parseRentalPendingAmount(value);
+    if (n == null) return '-';
+    return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+};
 
 const MultiSelect = ({ label, options, selected, onChange, icon: Icon, color, placeholder = "Search..." }) => {
     const [isOpen, setIsOpen] = useState(false);
@@ -192,49 +223,39 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     const [selectedClients, setSelectedClients] = useState([]);
     const [ccEmail, setCcEmail] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
-    const [cityConfigs, setCityConfigs] = useState({});
+    const [cityMailConfig, setCityMailConfig] = useState({ cityKeyByLookup: new Map(), mailByCityKey: new Map() });
+    const [rentalPendingRows, setRentalPendingRows] = useState([]);
+    const [rentalPendingLoading, setRentalPendingLoading] = useState(true);
     const debounceRef = useRef(null);
 
     // Fetch City Mail Config
     useEffect(() => {
         const fetchCityConfigs = async () => {
             try {
-                const csv = await fetchPublishedCsv('https://docs.google.com/spreadsheets/d/e/2PACX-1vSHj8-2m6CG_yHk83DHIfWNuTLL4sO0vqY2xuFGjiUwdyI0BYMhry9nDkQLezfqmfm25E73XoACm2GG/pub?gid=0&single=true&output=csv');
-                const rows = csv.split('\n').slice(1);
-                const config = {};
-                rows.forEach(row => {
-                    if (!row.trim()) return;
-                    // Robust CSV splitting handling quotes and multiple columns for 'To'
-                    const parts = [];
-                    let current = '';
-                    let inQuotes = false;
-                    for (let i = 0; i < row.length; i++) {
-                        const char = row[i];
-                        if (char === '"') inQuotes = !inQuotes;
-                        else if (char === ',' && !inQuotes) {
-                            parts.push(current.trim());
-                            current = '';
-                        } else {
-                            current += char;
-                        }
-                    }
-                    parts.push(current.trim().replace(/\r/g, ''));
-
-                    if (parts.length >= 4) {
-                        const city = parts[0].trim().replace(/\r/g, '');
-                        const cc = parts[2].trim().replace(/\r/g, '');
-                        // Take everything from column 3 onwards as 'To'
-                        const to = parts.slice(3).join(',').trim().replace(/\r/g, '');
-                        config[city.toLowerCase()] = { to, cc };
-                    }
-                });
-                setCityConfigs(config);
+                const csv = await fetchPublishedCsv(CITY_MAIL_CONFIG_URL);
+                setCityMailConfig(parseCityMailConfigCsv(csv));
             } catch (err) {
                 console.error('Failed to fetch city configs:', err);
             }
         };
         fetchCityConfigs();
     }, []);
+
+    useEffect(() => {
+        setRentalPendingLoading(true);
+        fetchAllRentalPending()
+            .then((data) => setRentalPendingRows(data || []))
+            .catch((err) => {
+                console.warn('Rental pending load failed:', err);
+                setRentalPendingRows([]);
+            })
+            .finally(() => setRentalPendingLoading(false));
+    }, []);
+
+    const rentalPendingIndex = useMemo(
+        () => buildRentalPendingByRiderIndex(rentalPendingRows),
+        [rentalPendingRows]
+    );
 
     // Debounce search input — waits 300ms after user stops typing
     const handleSearchChange = useCallback((e) => {
@@ -452,6 +473,10 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                 : 'N/A';
 
             const isDeployed = (assignment.vehicleStatus || '').toLowerCase().includes('deploy');
+            const lookupId = assignment?.riderId || info.riderId || info.worker_code;
+            const rentalPendingAmount =
+                lookupRentalPendingAmount(rentalPendingIndex, lookupId) ??
+                lookupRentalPendingAmount(rentalPendingIndex, info.worker_code);
 
             inactive.push({
                 ...info,
@@ -461,6 +486,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                 sdOverall: assignment.sdOverall || '0',
                 model: assignment.model || 'N/A',
                 daysSinceActive,
+                rentalPendingAmount,
                 canSend: info.email && info.email !== 'N/A' && info.email.includes('@') && assignment.vehicle && assignment.vehicle !== 'N/A' && isDeployed
             });
         });
@@ -470,7 +496,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
             const db = typeof b.daysSinceActive === 'number' ? b.daysSinceActive : 9999;
             return db - da;
         });
-    }, [riderData, infoMap, inactiveDays]);
+    }, [riderData, infoMap, inactiveDays, rentalPendingIndex]);
 
     const availableFilters = useMemo(() => {
         const months = new Set();
@@ -558,7 +584,6 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     const sendMail = async (rider) => {
         setSendingIds(prev => new Set(prev).add(rider.worker_code + '_mail'));
         try {
-            const SCRIPT_URL = import.meta.env.VITE_MAILER_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyDWrOipQzyd7wTbIUpMYvW0MfyNgk5y2EV8coNmRAuQy7aN1m3ViGcGcypSwppSUAP/exec';
             const queryParams = new URLSearchParams({
                 email: rider.email,
                 name: rider.worker_name,
@@ -569,7 +594,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                 ccEmail: ccEmail
             });
 
-            await fetch(`${SCRIPT_URL}?${queryParams.toString()}`, {
+            await fetch(`${INACTIVE_MAILER_URL}?${queryParams.toString()}`, {
                 method: 'POST',
                 mode: 'no-cors',
                 body: JSON.stringify({
@@ -579,6 +604,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                     workerCode: rider.worker_code,
                     daysInactive: rider.daysSinceActive,
                     source: rider.source || 'Team',
+                    rentalPendingAmount: rider.rentalPendingAmount ?? '',
                     ccEmail: ccEmail
                 })
             });
@@ -606,71 +632,69 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     const sendGroupedMails = async () => {
         setSendingAll(true);
         const cityGroups = {};
-        filtered.forEach(r => {
-            if (!cityGroups[r.city]) cityGroups[r.city] = [];
-            cityGroups[r.city].push(r);
+
+        ridersWithEmail.forEach((r) => {
+            const cityKey = resolveCityKey(r.city, cityMailConfig.cityKeyByLookup);
+            if (!cityGroups[cityKey]) {
+                cityGroups[cityKey] = { cityKey, cityLabel: r.city, riders: [] };
+            }
+            cityGroups[cityKey].riders.push(r);
         });
 
-        const SCRIPT_URL = import.meta.env.VITE_MAILER_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyDWrOipQzyd7wTbIUpMYvW0MfyNgk5y2EV8coNmRAuQy7aN1m3ViGcGcypSwppSUAP/exec';
+        for (const group of Object.values(cityGroups)) {
+            const { cityKey, cityLabel, riders } = group;
+            const config = getMailConfigForCityKey(cityKey, cityMailConfig.mailByCityKey);
+            const { to: cityTo } = resolveCityMailRecipients(config, {
+                userCc: ccEmail,
+                leadershipFallback: LEADERSHIP_MAIL_TO,
+            });
 
-        for (const city in cityGroups) {
-            const groupRiders = cityGroups[city];
-            const config = cityConfigs[city.toLowerCase()] || {};
-            
-            // Collect all unique emails from the riders in this city to ensure all source managers are notified
-            const allRiderEmails = [...new Set(groupRiders.map(r => r.email))].filter(Boolean);
-            const cityTo = (config.to && config.to !== '<Email>') ? config.to : '';
-            const cityCc = config.cc || '';
-            
-            // Combine city-config emails and ALL unique rider/source emails from the dashboard
-            const primaryRecipients = [cityTo, ...allRiderEmails, cityCc]
-                .filter(Boolean)
-                .join(',')
-                .split(',')
-                .map(e => e.trim())
-                .filter(e => e && e !== '<Email>')
-                .join(',');
-            
-            // Only manual CC from UI remains in the CC parameter
-            const finalCc = ccEmail;
+            const sourceEmails = [
+                ...new Set(riders.map((r) => r.email).filter((e) => e && e !== 'N/A' && e.includes('@'))),
+            ];
+            const toRecipients = parseMailRecipients(cityTo, sourceEmails.join(','));
+
+            if (!toRecipients) continue;
+
+            const mailRiders = mapRidersToMailPayload(riders);
+            const { subject, htmlBody } = buildInactiveGroupedMail({
+                city: cityKey || cityLabel,
+                daysThreshold: inactiveDays,
+                riders: mailRiders,
+            });
 
             try {
-                await fetch(SCRIPT_URL, {
+                await fetch(INACTIVE_MAILER_URL, {
                     method: 'POST',
                     mode: 'no-cors',
                     headers: { 'Content-Type': 'text/plain' },
                     body: JSON.stringify({
                         isGrouped: true,
-                        email: primaryRecipients,
-                        ccEmail: finalCc,
-                        city: city,
-                        source: groupRiders[0]?.source || 'Team',
+                        email: toRecipients,
+                        ccEmail: ccEmail,
+                        city: cityKey || cityLabel,
                         daysThreshold: inactiveDays,
-                        riders: groupRiders.map(r => ({
-                            name: r.worker_name,
-                            riderId: r.riderId,
-                            workerCode: r.worker_code,
-                            phone: r.mob_number,
-                            city: r.city,
-                            lastActive: r.lastActiveDate,
-                            client: r.client,
-                            daysInactive: r.daysSinceActive,
-                            vehicle: r.vehicle,
-                            source: r.source || 'Team'
-                        })).sort((a, b) => (a.source || '').localeCompare(b.source || ''))
-                    })
+                        subject,
+                        htmlBody,
+                        mailTemplateVersion: 2,
+                        riders: mailRiders,
+                    }),
                 });
-                groupRiders.forEach(r => setSentIds(prev => new Set(prev).add(r.worker_code + '_mail')));
-            } catch (err) { console.error(err); }
+                riders.forEach((r) => setSentIds((prev) => new Set(prev).add(r.worker_code + '_mail')));
+            } catch (err) {
+                console.error(err);
+            }
         }
         setSendingAll(false);
     };
 
     const exportCSV = () => {
-        const headers = ['Phone', 'Name', 'Rider ID', 'Worker Code', 'City', 'Hub', 'Client', 'Vehicle', 'Model', 'Status', 'SD', 'Email', 'Days Inactive', 'Last Active'];
+        const headers = ['Phone', 'Name', 'Rider ID', 'Worker Code', 'City', 'Hub', 'Client', 'Vehicle', 'Model', 'Status', 'SD', 'Rental Pending Amount', 'Email', 'Days Inactive', 'Last Active'];
         const rows = filtered.map(r => [
             r.mob_number, r.worker_name, r.riderId, r.worker_code, r.city, r.hubLocation, 
-            r.client, r.vehicle, r.model, r.vehicleStatus, r.sdOverall, r.email, 
+            r.client, r.vehicle, r.model, r.vehicleStatus, r.sdOverall,
+            r.rentalPendingAmount ?? '',
+            r.email, 
             r.daysSinceActive, r.lastActiveDate || 'Never'
         ]);
         const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
@@ -794,6 +818,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                             <th style={{ padding: '0.75rem', textAlign: 'left' }}>Client</th>
                             <th style={{ padding: '0.75rem', textAlign: 'left' }}>Vehicle / Model</th>
                             <th style={{ padding: '0.75rem', textAlign: 'left' }}>Status / SD</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'right' }}>Rental Pending</th>
                             <th style={{ padding: '0.75rem', textAlign: 'left' }}>Contact</th>
                             <th style={{ padding: '0.75rem', textAlign: 'center' }}>Inactive Days</th>
                             <th style={{ padding: '0.75rem', textAlign: 'center' }}>Action</th>
@@ -825,6 +850,18 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                                     </div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--accent-green)', fontWeight: 600 }}>SD: ₹{r.sdOverall}</div>
                                 </td>
+                                <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right' }}>
+                                    {rentalPendingLoading ? (
+                                        <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>…</span>
+                                    ) : (
+                                        <span style={{
+                                            fontWeight: 600,
+                                            color: parseRentalPendingAmount(r.rentalPendingAmount) > 0 ? '#f59e0b' : 'var(--text-dim)',
+                                        }}>
+                                            {formatRentalPendingDisplay(r.rentalPendingAmount)}
+                                        </span>
+                                    )}
+                                </td>
                                 <td style={{ padding: '0.6rem 0.75rem' }}>
                                     <div>{r.mob_number}</div>
                                     <div style={{ fontSize: '0.7rem', color: r.canSend ? '#22c55e' : '#ef4444', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email}</div>
@@ -842,7 +879,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                             </tr>
                         )) : (
                             <tr>
-                                <td colSpan="12" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-dim)' }}>
+                                <td colSpan="11" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-dim)' }}>
                                     No inactive riders found for the selected criteria.
                                 </td>
                             </tr>

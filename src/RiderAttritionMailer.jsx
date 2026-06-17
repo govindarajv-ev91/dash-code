@@ -22,7 +22,15 @@ import {
   filterAttritionRiders,
   attritionRidersToExcelRows,
   summarizeAttrition,
+  sumAttritionRentalPending,
 } from './lib/riderAttritionReport'
+import {
+  fetchAllRentalPending,
+  buildRentalPendingByRiderIndex,
+  lookupRentalPendingAmount,
+} from './lib/rentalPendingDb'
+import { parseRentalPendingAmount } from './lib/riderPerformanceReport'
+import { formatInactiveMailRental } from './lib/inactiveRiderMailerEmail'
 import {
   CITY_MAIL_CONFIG_URL,
   getMailConfigForCityKey,
@@ -36,7 +44,8 @@ const ROWS_PER_PAGE = 100
 const LEADERSHIP_MAIL_TO =
   'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com'
 
-const MAILER_URL =
+const ATTRITION_MAILER_URL =
+  import.meta.env.VITE_ATTRITION_MAILER_SCRIPT_URL ||
   import.meta.env.VITE_MAILER_SCRIPT_URL ||
   'https://script.google.com/macros/s/AKfycbyDWrOipQzyd7wTbIUpMYvW0MfyNgk5y2EV8coNmRAuQy7aN1m3ViGcGcypSwppSUAP/exec'
 
@@ -180,8 +189,9 @@ function MultiSelect({ label, options, selected, onChange, icon: Icon, color, fo
   )
 }
 
-function SummaryTable({ title, rows, icon: Icon }) {
+function SummaryTable({ title, rows, icon: Icon, showRental = false }) {
   const total = rows.reduce((sum, r) => sum + r.count, 0)
+  const rentalTotal = showRental ? rows.reduce((sum, r) => sum + (r.rentalPending || 0), 0) : 0
   return (
     <div className="glass" style={{ padding: '1rem', flex: 1, minWidth: '280px' }}>
       <h3 style={{ margin: '0 0 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1rem' }}>
@@ -190,6 +200,11 @@ function SummaryTable({ title, rows, icon: Icon }) {
         <span className="status-badge" style={{ marginLeft: 'auto', background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>
           {total}
         </span>
+        {showRental && rentalTotal > 0 && (
+          <span className="status-badge" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b' }}>
+            {formatInactiveMailRental(rentalTotal)}
+          </span>
+        )}
       </h3>
       <div className="table-container" style={{ maxHeight: '320px' }}>
         <table>
@@ -197,6 +212,7 @@ function SummaryTable({ title, rows, icon: Icon }) {
             <tr>
               <th>Name</th>
               <th style={{ textAlign: 'right' }}>Riders</th>
+              {showRental && <th style={{ textAlign: 'right' }}>Rental Pending</th>}
             </tr>
           </thead>
           <tbody>
@@ -205,11 +221,16 @@ function SummaryTable({ title, rows, icon: Icon }) {
                 <tr key={row.name}>
                   <td>{row.name}</td>
                   <td style={{ textAlign: 'right', fontWeight: 700, color: '#ef4444' }}>{row.count}</td>
+                  {showRental && (
+                    <td style={{ textAlign: 'right', fontWeight: 600, color: row.rentalPending > 0 ? '#f59e0b' : 'var(--text-dim)' }}>
+                      {formatInactiveMailRental(row.rentalPending)}
+                    </td>
+                  )}
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={2} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '1.5rem' }}>
+                <td colSpan={showRental ? 3 : 2} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '1.5rem' }}>
                   No attrition riders
                 </td>
               </tr>
@@ -242,6 +263,8 @@ export default function RiderAttritionMailer({
     mailByCityKey: new Map(),
     sheetRows: [],
   })
+  const [rentalPendingRows, setRentalPendingRows] = useState([])
+  const [rentalPendingLoading, setRentalPendingLoading] = useState(true)
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
@@ -267,6 +290,22 @@ export default function RiderAttritionMailer({
     }
     fetchCityConfigs()
   }, [])
+
+  useEffect(() => {
+    setRentalPendingLoading(true)
+    fetchAllRentalPending()
+      .then((data) => setRentalPendingRows(data || []))
+      .catch((err) => {
+        console.warn('Rental pending load failed:', err)
+        setRentalPendingRows([])
+      })
+      .finally(() => setRentalPendingLoading(false))
+  }, [])
+
+  const rentalPendingIndex = useMemo(
+    () => buildRentalPendingByRiderIndex(rentalPendingRows),
+    [rentalPendingRows]
+  )
 
   const emailByWorker = useMemo(() => {
     const map = new Map()
@@ -315,9 +354,11 @@ export default function RiderAttritionMailer({
         if (info?.phone && info.phone !== 'N/A') phone = info.phone
       }
       const cityKey = resolveCityKey(r.city, cityMailConfig.cityKeyByLookup)
-      return { ...r, email, mobNumber: phone, cityKey }
+      const rentalPendingAmount =
+        lookupRentalPendingAmount(rentalPendingIndex, r.workerCode) ?? ''
+      return { ...r, email, mobNumber: phone, cityKey, rentalPendingAmount }
     })
-  }, [report, emailByWorker, cityMailConfig.cityKeyByLookup])
+  }, [report, emailByWorker, cityMailConfig.cityKeyByLookup, rentalPendingIndex])
 
   const filterOpts = useMemo(
     () => ({
@@ -355,6 +396,11 @@ export default function RiderAttritionMailer({
     }
     return { ev, nonEv }
   }, [filtered])
+
+  const filteredRentalTotal = useMemo(
+    () => sumAttritionRentalPending(filtered),
+    [filtered]
+  )
 
   const cityKeyOptions = useMemo(() => {
     const riderKeys = report?.riders?.map((r) => resolveCityKey(r.city, cityMailConfig.cityKeyByLookup)) || []
@@ -428,7 +474,7 @@ export default function RiderAttritionMailer({
       })
 
       try {
-        await fetch(MAILER_URL, {
+        await fetch(ATTRITION_MAILER_URL, {
           method: 'POST',
           mode: 'no-cors',
           headers: { 'Content-Type': 'text/plain' },
@@ -455,6 +501,7 @@ export default function RiderAttritionMailer({
               deployVehicle: r.deployVehicle,
               deployStatus: r.deployStatus,
               deployDate: r.deployDate,
+              rentalPendingAmount: r.rentalPendingAmount ?? '',
             })),
           }),
         })
@@ -564,6 +611,9 @@ export default function RiderAttritionMailer({
           <div className="status-badge non-ev" style={{ padding: '0.35rem 0.8rem' }}>
             {typeCounts.nonEv} NON-EV
           </div>
+          <div className="status-badge" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', padding: '0.35rem 0.8rem' }}>
+            {rentalPendingLoading ? 'Rental…' : `Rental ${formatInactiveMailRental(filteredRentalTotal)}`}
+          </div>
           {isReportStale && (
             <div className="status-badge" style={{ padding: '0.35rem 0.8rem', color: 'var(--text-dim)' }}>
               Updating…
@@ -604,8 +654,8 @@ export default function RiderAttritionMailer({
       </div>
 
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-        <SummaryTable title="City Key wise attrition" rows={citySummary} icon={MapPin} />
-        <SummaryTable title="Client wise attrition" rows={clientSummary} icon={Briefcase} />
+        <SummaryTable title="City Key wise attrition" rows={citySummary} icon={MapPin} showRental />
+        <SummaryTable title="Client wise attrition" rows={clientSummary} icon={Briefcase} showRental />
       </div>
 
       <div
@@ -638,6 +688,7 @@ export default function RiderAttritionMailer({
                 <th>First order date</th>
                 <th>Last working date</th>
                 <th>Days not working</th>
+                <th>Rental pending</th>
                 <th>Hub / Source</th>
                 <th>Contact</th>
                 <th></th>
@@ -692,6 +743,15 @@ export default function RiderAttritionMailer({
                       >
                         {r.daysNotWorking} day{r.daysNotWorking !== 1 ? 's' : ''}
                       </span>
+                    </td>
+                    <td>
+                      {rentalPendingLoading ? (
+                        <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>…</span>
+                      ) : (
+                        <span style={{ fontWeight: 600, color: parseRentalPendingAmount(r.rentalPendingAmount) > 0 ? '#f59e0b' : 'var(--text-dim)' }}>
+                          {formatInactiveMailRental(r.rentalPendingAmount)}
+                        </span>
+                      )}
                     </td>
                     <td>
                       <div>{r.hub}</div>

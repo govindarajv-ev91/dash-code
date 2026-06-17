@@ -1,5 +1,5 @@
 /**
- * FleetPro mailer — Google Apps Script
+ * Rider Attrition Mailer — Google Apps Script (separate from Inactive Rider Mailer)
  *
  * Deploy: Extensions → Apps Script → paste this file → Deploy → New deployment
  *   Type: Web app
@@ -7,12 +7,13 @@
  *   Who has access: Anyone
  *
  * Set in .env:
- *   VITE_MAILER_SCRIPT_URL=https://script.google.com/macros/s/YOUR_ID/exec
+ *   VITE_ATTRITION_MAILER_SCRIPT_URL=https://script.google.com/macros/s/YOUR_ATTRITION_ID/exec
+ *   (falls back to VITE_MAILER_SCRIPT_URL)
+ *
+ * Inactive Rider Mailer uses scripts/inactive-rider-mailer-appscript.gs (different deployment).
  *
  * Handles:
  *   - isAttritionGrouped: true  → Rider Attrition Mailer (city-wise from dashboard)
- *   - isGrouped: true           → Inactive Rider Mailer (existing)
- *   - single rider (GET/POST)   → legacy inactive single mail
  */
 
 var MAIL_FROM_NAME = 'FleetPro Alerts';
@@ -42,11 +43,7 @@ function doPost(e) {
       return sendAttritionGroupedEmail_(data);
     }
 
-    if (data.isGrouped === true) {
-      return sendInactiveGroupedEmail_(data);
-    }
-
-    return sendInactiveSingleEmail_(data);
+    return jsonResponse_({ ok: false, error: 'Unknown request — use isAttritionGrouped for Rider Attrition Mailer' });
   } catch (err) {
     return jsonResponse_({ ok: false, error: String(err) });
   }
@@ -128,21 +125,45 @@ function isEvRider_(r) {
   return String(r.vType || '').toUpperCase() === 'EV';
 }
 
+function parseAttritionRentalAmount_(value) {
+  if (value === '' || value == null || value === '-') return 0;
+  var n = Number(value);
+  return isNaN(n) ? 0 : n;
+}
+
+function formatAttritionRental_(value) {
+  if (value === '' || value == null) return '-';
+  var n = Number(value);
+  if (isNaN(n)) return String(value);
+  return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
 function summarizeAttritionRiders_(riders) {
   var byClient = {};
   var ev = 0;
   var nonEv = 0;
+  var rentalPendingTotal = 0;
   var matrixTotals = emptyBucketCounts_();
 
   riders.forEach(function (r) {
     var client = safe_(r.client, 'Unknown');
     var days = Number(r.daysNotWorking) || 0;
     var riderIsEv = isEvRider_(r);
+    var pending = parseAttritionRentalAmount_(r.rentalPendingAmount);
+    rentalPendingTotal += pending;
 
     if (!byClient[client]) {
-      byClient[client] = { client: client, count: 0, ev: 0, nonEv: 0, buckets: emptyBucketCounts_() };
+      byClient[client] = {
+        client: client,
+        count: 0,
+        ev: 0,
+        nonEv: 0,
+        rentalPending: 0,
+        buckets: emptyBucketCounts_(),
+      };
     }
     byClient[client].count++;
+    byClient[client].rentalPending += pending;
     if (riderIsEv) {
       ev++;
       byClient[client].ev++;
@@ -178,11 +199,12 @@ function summarizeAttritionRiders_(riders) {
     total: riders.length,
     ev: ev,
     nonEv: nonEv,
+    rentalPendingTotal: rentalPendingTotal,
     byClient: clientRows,
     matrix: {
       clients: clientRows,
       totals: matrixTotals,
-      overall: { ev: ev, nonEv: nonEv, grandTotal: riders.length },
+      overall: { ev: ev, nonEv: nonEv, grandTotal: riders.length, rentalPending: rentalPendingTotal },
     },
   };
 }
@@ -194,6 +216,7 @@ function buildAttritionSummaryTable_(stats) {
     cell_('Total attrition', stats.total, '#fef2f2', '#b91c1c', true) +
     cell_('EV', stats.ev, '#ecfdf5', '#047857', true) +
     cell_('NON-EV', stats.nonEv, '#eff6ff', '#1d4ed8', true) +
+    cell_('City rental pending', formatAttritionRental_(stats.rentalPendingTotal), '#fffbeb', '#b45309', true) +
     '</tr></table>'
   );
 }
@@ -234,6 +257,9 @@ function buildAttritionClientMatrixTable_(matrix) {
     'background:' +
     ATTRITION_GRAND_TOTAL_BG +
     ';min-width:56px;">Total</th>' +
+    '<th rowspan="2" style="' +
+    base +
+    'background:#fffbeb;min-width:110px;">Rental Pending</th>' +
     '</tr><tr>';
 
   ATTRITION_BUCKETS.forEach(function () {
@@ -274,11 +300,14 @@ function buildAttritionClientMatrixTable_(matrix) {
     h +=
       '<td style="' + base + 'background:#fff;">' + esc_(row.ev) + '</td>' +
       '<td style="' + base + 'background:#fff;">' + esc_(row.nonEv) + '</td>' +
-      '<td style="' + base + 'background:' + ATTRITION_GRAND_TOTAL_BG + ';">' + esc_(row.grandTotal) + '</td>';
+      '<td style="' + base + 'background:' + ATTRITION_GRAND_TOTAL_BG + ';">' + esc_(row.grandTotal) + '</td>' +
+      '<td style="' + base + 'background:#fffbeb;text-align:right;color:#b45309;font-weight:bold;">' +
+      formatAttritionRental_(row.rentalPending || 0) +
+      '</td>';
     h += '</tr>';
   });
 
-  var overall = matrix.overall || { ev: 0, nonEv: 0, grandTotal: 0 };
+  var overall = matrix.overall || { ev: 0, nonEv: 0, grandTotal: 0, rentalPending: 0 };
   h += '<tr><td style="' + base + 'background:#f3f4f6;text-align:left;">Total</td>';
   ATTRITION_BUCKETS.forEach(function (days) {
     var bucket = matrix.totals[days];
@@ -289,7 +318,10 @@ function buildAttritionClientMatrixTable_(matrix) {
   h +=
     '<td style="' + base + 'background:#f3f4f6;">' + esc_(overall.ev) + '</td>' +
     '<td style="' + base + 'background:#f3f4f6;">' + esc_(overall.nonEv) + '</td>' +
-    '<td style="' + base + 'background:' + ATTRITION_GRAND_TOTAL_BG + ';">' + esc_(overall.grandTotal) + '</td>';
+    '<td style="' + base + 'background:' + ATTRITION_GRAND_TOTAL_BG + ';">' + esc_(overall.grandTotal) + '</td>' +
+    '<td style="' + base + 'background:#fef3c7;text-align:right;color:#b45309;font-weight:bold;">' +
+    formatAttritionRental_(overall.rentalPending || 0) +
+    '</td>';
   h += '</tr></table>';
   return h;
 }
@@ -325,6 +357,7 @@ function buildAttritionRiderCsv_(riders) {
     'First Order Date',
     'Last Working Date',
     'Days Not Working',
+    'Rental Pending Amount',
   ];
   var lines = [headers.join(',')];
   sortAttritionRidersForExport_(riders).forEach(function (r) {
@@ -345,6 +378,7 @@ function buildAttritionRiderCsv_(riders) {
         r.firstOrderDate,
         r.lastWorkingDate,
         r.daysNotWorking,
+        r.rentalPendingAmount != null && r.rentalPendingAmount !== '' ? r.rentalPendingAmount : '',
       ]
         .map(csvEscape_)
         .join(',')
@@ -440,6 +474,7 @@ function plainAttritionBody_(city, asOfDate, minDays, riders, stats) {
     'Criteria: ' + minDays + '+ days not working since LWD',
     '',
     'Total: ' + stats.total + ' | EV: ' + stats.ev + ' | NON-EV: ' + stats.nonEv,
+    'City rental pending: ' + formatAttritionRental_(stats.rentalPendingTotal),
     '',
     '--- Client wise attrition matrix ---',
   ];
@@ -448,88 +483,11 @@ function plainAttritionBody_(city, asOfDate, minDays, riders, stats) {
     ATTRITION_BUCKETS.forEach(function (days) {
       parts.push(days + '+ EV ' + r.buckets[days].ev + ' / NON-EV ' + r.buckets[days].nonEv);
     });
+    parts.push('Rental pending ' + formatAttritionRental_(r.rentalPending || 0));
     lines.push(parts.join(' '));
   });
   lines.push('', '--- Rider details: see attached Excel file (' + riders.length + ' riders) ---');
   return lines.join('\n');
-}
-
-// ─── Inactive Rider (grouped) — keep if same web app URL ───────────────────
-
-function sendInactiveGroupedEmail_(data) {
-  var city = safe_(data.city, 'Unknown');
-  var daysThreshold = Number(data.daysThreshold) || 5;
-  var riders = Array.isArray(data.riders) ? data.riders : [];
-  var to = parseEmails_(data.email);
-  var cc = mergeCcEmails_(data.ccEmail, to);
-
-  if (!to.length) {
-    return jsonResponse_({ ok: false, error: 'No recipient email for ' + city });
-  }
-
-  var subject = 'Inactive Riders — ' + city + ' | ' + riders.length + ' riders | ' + daysThreshold + '+ days';
-  var html =
-    '<div style="font-family:Arial,sans-serif;font-size:14px;">' +
-    '<h2>Inactive Rider Alert — ' +
-    esc_(city) +
-    '</h2>' +
-    '<p><strong>Threshold:</strong> ' +
-    daysThreshold +
-    '+ days inactive</p>' +
-    '<table cellpadding="6" cellspacing="0" border="1" style="border-collapse:collapse;width:100%;font-size:12px;">' +
-    '<tr style="background:#f3f4f6;"><th>Rider</th><th>Code</th><th>Client</th><th>Last active</th><th>Days</th><th>Phone</th></tr>';
-
-  riders.forEach(function (r) {
-    html +=
-      '<tr><td>' +
-      esc_(r.name) +
-      '</td><td>' +
-      esc_(r.workerCode) +
-      '</td><td>' +
-      esc_(r.client) +
-      '</td><td>' +
-      esc_(r.lastActive) +
-      '</td><td>' +
-      esc_(r.daysInactive) +
-      '</td><td>' +
-      esc_(r.phone) +
-      '</td></tr>';
-  });
-
-  html += '</table></div>';
-
-  GmailApp.sendEmail(to.join(','), subject, 'Inactive riders for ' + city + ': ' + riders.length, {
-    name: MAIL_FROM_NAME,
-    htmlBody: html,
-    cc: cc.length ? cc.join(',') : undefined,
-  });
-
-  return jsonResponse_({ ok: true, city: city, riders: riders.length });
-}
-
-function sendInactiveSingleEmail_(data) {
-  var to = parseEmails_(data.email);
-  if (!to.length) return jsonResponse_({ ok: false, error: 'No email' });
-
-  var subject = 'Inactive Rider Reminder — ' + safe_(data.name, 'Rider');
-  var body =
-    'Hi ' +
-    safe_(data.name, 'Rider') +
-    ',\n\nWe noticed you have not completed deliveries for ' +
-    safe_(data.daysInactive, '?') +
-    ' days.\nLast active: ' +
-    safe_(data.lastActive, 'N/A') +
-    '\nWorker code: ' +
-    safe_(data.workerCode, '') +
-    '\n\nPlease contact your hub if you need support.';
-
-  var cc = mergeCcEmails_(data.ccEmail);
-  GmailApp.sendEmail(to[0], subject, body, {
-    name: MAIL_FROM_NAME,
-    cc: cc.length ? cc.join(',') : undefined,
-  });
-
-  return jsonResponse_({ ok: true });
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

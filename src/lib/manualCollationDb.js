@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists } from './paymentMonthList'
+import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAt } from './paymentMonthList'
 
 export const MANUAL_COLLATION_TABLE = 'manual_collation_data'
 export const MANUAL_COLLATION_COLUMNS = '*'
@@ -111,10 +111,11 @@ export async function loadManualCollationSummary() {
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    return { count, preview, months, fromDb: true }
+    const lastUploadAt = count > 0 ? await fetchLastUploadAt(MANUAL_COLLATION_TABLE) : null
+    return { count, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingManualCollationTable(err)) {
-      return { count: 0, preview: [], months: [], fromDb: false, missingTable: true }
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
     }
     throw err
   }

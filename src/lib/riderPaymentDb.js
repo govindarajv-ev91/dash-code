@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists } from './paymentMonthList'
+import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAt } from './paymentMonthList'
 
 export const RIDER_PAYMENT_TABLE = 'rider_payment_data'
 export const RIDER_PAYMENT_COLUMNS = '*'
@@ -111,10 +111,11 @@ export async function loadRiderPaymentSummary() {
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    return { count, preview, months, fromDb: true }
+    const lastUploadAt = count > 0 ? await fetchLastUploadAt(RIDER_PAYMENT_TABLE) : null
+    return { count, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingRiderPaymentTable(err)) {
-      return { count: 0, preview: [], months: [], fromDb: false, missingTable: true }
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
     }
     throw err
   }

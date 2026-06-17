@@ -1,3 +1,5 @@
+import { supabase } from './supabaseClient'
+
 const MONTH_ABBR = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
@@ -34,4 +36,35 @@ export function collectMonthsFromRows(rows, field = 'month') {
 
 export function mergeMonthLists(...lists) {
   return sortMonthLabels(lists.flat())
+}
+
+/** Latest row created_at for a payment upload table (null if empty). */
+export async function fetchLastUploadAt(tableName) {
+  if (!tableName) return null
+  const probe = await supabase.from(tableName).select('id').limit(1)
+  if (probe.error) throw probe.error
+  if (!probe.data?.length) return null
+
+  const { data, error } = await supabase
+    .from(tableName)
+    .select('created_at')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data?.created_at ?? null
+}
+
+export function formatLastUploadAt(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  })
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle, CircleDollarSign } from 'lucide-react'
+import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle, CircleDollarSign, Clock } from 'lucide-react'
+import { formatLastUploadAt } from './lib/paymentMonthList'
 import {
   parseRiderPaymentFile,
   parseManualCollationFile,
@@ -131,6 +132,7 @@ function UploadSection({
   iconColor,
   headerLabels,
   count,
+  lastUploadAt,
   preview,
   previewColumns,
   message,
@@ -155,6 +157,16 @@ function UploadSection({
             <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
               <strong>{count.toLocaleString()}</strong> rows in database
             </p>
+            {count > 0 && lastUploadAt ? (
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <Clock size={12} />
+                Last upload: <strong>{formatLastUploadAt(lastUploadAt)}</strong>
+              </p>
+            ) : count > 0 ? (
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+                Last upload: —
+              </p>
+            ) : null}
           </div>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -272,6 +284,9 @@ export default function RiderPaymentUpload() {
   const [rentalPreview, setRentalPreview] = useState([])
   const [rentalMonths, setRentalMonths] = useState([])
   const [rentalResetMonth, setRentalResetMonth] = useState('')
+  const [paymentLastUpload, setPaymentLastUpload] = useState(null)
+  const [collationLastUpload, setCollationLastUpload] = useState(null)
+  const [rentalLastUpload, setRentalLastUpload] = useState(null)
   const [loading, setLoading] = useState(true)
   const [paymentUploading, setPaymentUploading] = useState(false)
   const [paymentResetting, setPaymentResetting] = useState(false)
@@ -293,12 +308,15 @@ export default function RiderPaymentUpload() {
     setPaymentCount(payment.count)
     setPaymentPreview(payment.preview)
     setPaymentMonths(payment.months || [])
+    setPaymentLastUpload(payment.lastUploadAt ?? null)
     setCollationCount(collation.count)
     setCollationPreview(collation.preview)
     setCollationMonths(collation.months || [])
+    setCollationLastUpload(collation.lastUploadAt ?? null)
     setRentalCount(rental.count)
     setRentalPreview(rental.preview)
     setRentalMonths(rental.months || [])
+    setRentalLastUpload(rental.lastUploadAt ?? null)
     setPaymentResetMonth((prev) => ((payment.months || []).includes(prev) ? prev : ''))
     setCollationResetMonth((prev) => ((collation.months || []).includes(prev) ? prev : ''))
     setRentalResetMonth((prev) => ((rental.months || []).includes(prev) ? prev : ''))
@@ -565,6 +583,7 @@ export default function RiderPaymentUpload() {
         iconColor="var(--accent-green)"
         headerLabels={RIDER_PAYMENT_HEADER_LABELS}
         count={paymentCount}
+        lastUploadAt={paymentLastUpload}
         preview={paymentPreview}
         previewColumns={[
           { key: 'rider_id', label: 'Rider ID' },
@@ -592,6 +611,7 @@ export default function RiderPaymentUpload() {
         iconColor="var(--accent-blue)"
         headerLabels={MANUAL_COLLATION_HEADER_LABELS}
         count={collationCount}
+        lastUploadAt={collationLastUpload}
         preview={collationPreview}
         previewColumns={[
           { key: 'month', label: 'Month' },
@@ -619,6 +639,7 @@ export default function RiderPaymentUpload() {
         iconColor="#f59e0b"
         headerLabels={RENTAL_PENDING_HEADER_LABELS}
         count={rentalCount}
+        lastUploadAt={rentalLastUpload}
         preview={rentalPreview}
         previewColumns={[
           { key: 'rider_id', label: 'Rider ID' },

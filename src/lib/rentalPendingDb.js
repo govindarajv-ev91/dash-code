@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists } from './paymentMonthList'
+import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAt } from './paymentMonthList'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { parseFleetDate } from './fleetDeployReturnExport.js'
 
@@ -113,10 +113,11 @@ export async function loadRentalPendingSummary() {
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    return { count, preview, months, fromDb: true }
+    const lastUploadAt = count > 0 ? await fetchLastUploadAt(RENTAL_PENDING_TABLE) : null
+    return { count, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingRentalPendingTable(err)) {
-      return { count: 0, preview: [], months: [], fromDb: false, missingTable: true }
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
     }
     throw err
   }

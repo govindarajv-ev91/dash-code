@@ -102,9 +102,52 @@ export function citiesForCityKeys(cityKeys, sheetRows) {
   return [...names]
 }
 
-export function getMailConfigForCityKey(cityKey, mailByCityKey) {
+export function getMailConfigForCityKey(cityKey, mailByCityKey, sheetRows = []) {
   if (!cityKey) return {}
-  return mailByCityKey.get(cityKey.toLowerCase()) || {}
+
+  const direct = mailByCityKey.get(cityKey.toLowerCase())
+  if (direct?.to || direct?.cc) return direct
+
+  const targetKey = cityLookupKey(cityKey)
+  for (const row of sheetRows) {
+    const rowKey = (row.cityKey || '').toLowerCase()
+    if (!rowKey) continue
+
+    const rowCityKey = cityLookupKey(row.city)
+    const rowSheetKey = cityLookupKey(row.cityKey)
+    const matches =
+      rowKey === cityKey.toLowerCase() ||
+      rowCityKey === targetKey ||
+      rowSheetKey === targetKey ||
+      normalizeSummaryCity(row.city).toLowerCase() === cityKey.toLowerCase()
+
+    if (matches) {
+      const hit = mailByCityKey.get(rowKey)
+      if (hit?.to || hit?.cc) return hit
+    }
+  }
+
+  return direct || {}
+}
+
+/** Resolve mail config for a city-key group (tries group key + rider cities). */
+export function resolveMailConfigForGroup(cityKey, riders, { mailByCityKey, cityKeyByLookup, sheetRows }) {
+  const keysToTry = new Set()
+  if (cityKey) keysToTry.add(cityKey)
+  for (const rider of riders || []) {
+    if (rider.cityKey) keysToTry.add(rider.cityKey)
+    if (rider.city) {
+      keysToTry.add(resolveCityKey(rider.city, cityKeyByLookup))
+      keysToTry.add(rider.city)
+    }
+  }
+
+  for (const key of keysToTry) {
+    const config = getMailConfigForCityKey(key, mailByCityKey, sheetRows)
+    if (config?.to || config?.cc) return config
+  }
+
+  return {}
 }
 
 export function listCityKeyOptions(sheetRows, riderCityKeys = []) {
@@ -118,9 +161,9 @@ export function parseMailRecipients(...parts) {
   return parts
     .filter(Boolean)
     .join(',')
-    .split(',')
+    .split(/[,;]/)
     .map((e) => e.trim())
-    .filter((e) => e && e !== '<Email>')
+    .filter((e) => e && e !== '<Email>' && e.includes('@'))
     .join(',')
 }
 

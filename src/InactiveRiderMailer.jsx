@@ -11,9 +11,9 @@ import {
     CITY_MAIL_CONFIG_URL,
     parseCityMailConfigCsv,
     resolveCityKey,
-    getMailConfigForCityKey,
-    resolveCityMailRecipients,
-    parseMailRecipients,
+  getMailConfigForCityKey,
+  resolveCityMailRecipients,
+  parseMailRecipients,
 } from './lib/cityMailConfig';
 import {
     fetchAllRentalPending,
@@ -643,7 +643,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
 
         for (const group of Object.values(cityGroups)) {
             const { cityKey, cityLabel, riders } = group;
-            const config = getMailConfigForCityKey(cityKey, cityMailConfig.mailByCityKey);
+            const config = getMailConfigForCityKey(cityKey, cityMailConfig.mailByCityKey, cityMailConfig.sheetRows);
             const { to: cityTo } = resolveCityMailRecipients(config, {
                 userCc: ccEmail,
                 leadershipFallback: LEADERSHIP_MAIL_TO,

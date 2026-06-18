@@ -33,11 +33,11 @@ import { parseRentalPendingAmount } from './lib/riderPerformanceReport'
 import { formatInactiveMailRental } from './lib/inactiveRiderMailerEmail'
 import {
   CITY_MAIL_CONFIG_URL,
-  getMailConfigForCityKey,
   listCityKeyOptions,
   parseCityMailConfigCsv,
   resolveCityKey,
   resolveCityMailRecipients,
+  resolveMailConfigForGroup,
 } from './lib/cityMailConfig'
 
 const ROWS_PER_PAGE = 100
@@ -456,22 +456,30 @@ export default function RiderAttritionMailer({
     setSendingAll(true)
     const cityKeyGroups = {}
     mailEligibleRiders.forEach((r) => {
-      const key = r.cityKey || 'Unknown'
+      const key = resolveCityKey(r.city, cityMailConfig.cityKeyByLookup) || r.cityKey || 'Unknown'
       if (!cityKeyGroups[key]) cityKeyGroups[key] = []
       cityKeyGroups[key].push(r)
     })
 
     let sentCount = 0
     let skippedCount = 0
+    const skippedCities = []
 
     for (const cityKey of Object.keys(cityKeyGroups)) {
       const groupRiders = cityKeyGroups[cityKey]
       if (!groupRiders.length) continue
-      const config = getMailConfigForCityKey(cityKey, cityMailConfig.mailByCityKey)
+
+      const config = resolveMailConfigForGroup(cityKey, groupRiders, cityMailConfig)
       const { to: toRecipients, cc: ccRecipients } = resolveCityMailRecipients(config, {
         userCc: ccEmail,
         leadershipFallback: LEADERSHIP_MAIL_TO,
       })
+
+      if (!toRecipients) {
+        skippedCount++
+        skippedCities.push(cityKey)
+        continue
+      }
 
       try {
         await fetch(ATTRITION_MAILER_URL, {
@@ -514,10 +522,14 @@ export default function RiderAttritionMailer({
     setSendingAll(false)
     if (sentCount === 0) {
       window.alert(
-        'No mail sent. Riders with Fleet status Return are excluded. Check city mail config or filters.'
+        skippedCities.length
+          ? `No mail sent. Missing To email for: ${skippedCities.join(', ')}. Check city mail sheet (City Key / CC Mail Id / To columns).`
+          : 'No mail sent. Riders with Fleet status Return are excluded. Check city mail config or filters.'
       )
     } else if (skippedCount > 0) {
-      window.alert(`Sent ${sentCount} City Key mail(s). Skipped ${skippedCount}.`)
+      window.alert(
+        `Sent ${sentCount} City Key mail(s). Skipped ${skippedCount}: ${skippedCities.join(', ')} (no To email in city mail sheet).`
+      )
     }
   }
 

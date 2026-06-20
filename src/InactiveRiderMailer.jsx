@@ -100,6 +100,28 @@ const MultiSelect = ({ label, options, selected, onChange, icon: Icon, color, pl
         onChange(newSelected);
     };
 
+    const selectAll = (e) => {
+        e.stopPropagation();
+        if (search.trim()) {
+            onChange([...new Set([...selected, ...filteredOptions])]);
+        } else {
+            onChange([...options]);
+        }
+    };
+
+    const unselectAll = (e) => {
+        e.stopPropagation();
+        if (search.trim()) {
+            const removeSet = new Set(filteredOptions);
+            onChange(selected.filter((s) => !removeSet.has(s)));
+        } else {
+            onChange([]);
+        }
+    };
+
+    const allVisibleSelected =
+        filteredOptions.length > 0 && filteredOptions.every((opt) => selected.includes(opt));
+
     return (
         <div ref={containerRef} style={{ position: 'relative' }}>
             <div 
@@ -153,6 +175,44 @@ const MultiSelect = ({ label, options, selected, onChange, icon: Icon, color, pl
                             style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: '0.75rem', outline: 'none', width: '100%' }}
                         />
                     </div>
+                    <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                        <button
+                            type="button"
+                            onClick={selectAll}
+                            disabled={!filteredOptions.length}
+                            style={{
+                                flex: 1,
+                                fontSize: '0.68rem',
+                                background: 'rgba(255,255,255,0.1)',
+                                border: '1px solid rgba(255,255,255,0.12)',
+                                color: '#fff',
+                                padding: '0.25rem 0.4rem',
+                                borderRadius: '4px',
+                                cursor: filteredOptions.length ? 'pointer' : 'not-allowed',
+                                opacity: filteredOptions.length ? 1 : 0.5,
+                            }}
+                        >
+                            Select All{search.trim() ? ' (shown)' : ''}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={unselectAll}
+                            disabled={search.trim() ? !filteredOptions.some((opt) => selected.includes(opt)) : selected.length === 0}
+                            style={{
+                                flex: 1,
+                                fontSize: '0.68rem',
+                                background: 'rgba(255,255,255,0.06)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                color: '#cbd5e1',
+                                padding: '0.25rem 0.4rem',
+                                borderRadius: '4px',
+                                cursor: (search.trim() ? filteredOptions.some((opt) => selected.includes(opt)) : selected.length > 0) ? 'pointer' : 'not-allowed',
+                                opacity: (search.trim() ? filteredOptions.some((opt) => selected.includes(opt)) : selected.length > 0) ? 1 : 0.5,
+                            }}
+                        >
+                            Unselect All{search.trim() ? ' (shown)' : ''}
+                        </button>
+                    </div>
                     <div style={{ maxHeight: '250px', overflowY: 'auto', paddingRight: '4px' }}>
                         <div 
                             style={{ 
@@ -166,8 +226,14 @@ const MultiSelect = ({ label, options, selected, onChange, icon: Icon, color, pl
                             }}
                             onClick={() => { onChange([]); }}
                         >
-                            All {label}
+                            All {label} (no filter)
                         </div>
+                        {selected.length > 0 && (
+                            <div style={{ padding: '0.2rem 0.6rem 0.35rem', fontSize: '0.65rem', color: 'var(--text-dim)' }}>
+                                {selected.length} of {options.length} selected
+                                {allVisibleSelected && filteredOptions.length > 0 ? ' · all shown selected' : ''}
+                            </div>
+                        )}
                         <div style={{ height: '1px', background: 'rgba(255,255,255,0.05)', margin: '0.25rem 0' }}></div>
                         {filteredOptions.map(opt => (
                             <div 

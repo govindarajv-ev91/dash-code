@@ -63,6 +63,37 @@ function buildSortedSourceGroups_(groups) {
   return entries;
 }
 
+var FIXED_CC =
+  'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com,deepika.c@ev91riderz.com,rajeshwari.n@ev91riderz.com';
+
+function parseEmails_(value) {
+  if (!value) return [];
+  return String(value)
+    .split(/[,;]/)
+    .map(function (s) {
+      return s.trim();
+    })
+    .filter(function (s) {
+      return s && s.indexOf('@') > 0 && s !== '<Email>';
+    });
+}
+
+/** Leadership CC + dashboard CC; never duplicate To recipients. */
+function mergeCcEmails_(extra, excludeTo) {
+  var seen = {};
+  var merged = [];
+  (excludeTo || []).forEach(function (email) {
+    seen[String(email).toLowerCase()] = true;
+  });
+  parseEmails_([FIXED_CC, extra].filter(Boolean).join(',')).forEach(function (email) {
+    var key = email.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    merged.push(email);
+  });
+  return merged;
+}
+
 function handleRequest(e) {
   try {
     var p = e.parameter;
@@ -75,13 +106,10 @@ function handleRequest(e) {
     }
 
     // --- LIVE SETTINGS ---
-    var toEmail = data.email;
-    var ccEmail =
-      'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com,deepika.c@ev91riderz.com,rajeshwari.n@ev91riderz.com';
-
-    if (data.ccEmail && data.ccEmail.trim() !== '') {
-      ccEmail = ccEmail + ',' + data.ccEmail.trim();
-    }
+    var toList = parseEmails_(data.email);
+    var ccList = mergeCcEmails_(data.ccEmail, toList);
+    var toEmail = toList.join(',');
+    var ccEmail = ccList.join(',');
 
     var cityName = data.city || 'Various Cities';
     var subject = '';
@@ -249,7 +277,7 @@ function handleRequest(e) {
         '<br><p>Best regards,<br>The Central Team</p></div>';
     }
 
-    if (toEmail && toEmail !== 'null') {
+    if (toList.length) {
       MailApp.sendEmail({
         to: toEmail,
         cc: ccEmail,

@@ -11,9 +11,8 @@ import {
     CITY_MAIL_CONFIG_URL,
     parseCityMailConfigCsv,
     resolveCityKey,
-  getMailConfigForCityKey,
-  resolveCityMailRecipients,
-  parseMailRecipients,
+  resolveMailConfigForGroup,
+  resolveInactiveGroupedMailRecipients,
 } from './lib/cityMailConfig';
 import {
     fetchAllRentalPending,
@@ -223,7 +222,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     const [selectedClients, setSelectedClients] = useState([]);
     const [ccEmail, setCcEmail] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
-    const [cityMailConfig, setCityMailConfig] = useState({ cityKeyByLookup: new Map(), mailByCityKey: new Map() });
+    const [cityMailConfig, setCityMailConfig] = useState({ cityKeyByLookup: new Map(), mailByCityKey: new Map(), sheetRows: [] });
     const [rentalPendingRows, setRentalPendingRows] = useState([]);
     const [rentalPendingLoading, setRentalPendingLoading] = useState(true);
     const debounceRef = useRef(null);
@@ -641,20 +640,28 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
             cityGroups[cityKey].riders.push(r);
         });
 
+        let sentCount = 0;
+        let skippedCount = 0;
+        const skippedCities = [];
+
         for (const group of Object.values(cityGroups)) {
             const { cityKey, cityLabel, riders } = group;
-            const config = getMailConfigForCityKey(cityKey, cityMailConfig.mailByCityKey, cityMailConfig.sheetRows);
-            const { to: cityTo } = resolveCityMailRecipients(config, {
+            const config = resolveMailConfigForGroup(cityKey, riders, cityMailConfig);
+            const sourceEmails = [
+                ...new Set(riders.map((r) => r.email).filter((e) => e && e !== 'N/A' && e.includes('@'))),
+            ].join(',');
+
+            const { to: toRecipients, cc: ccRecipients } = resolveInactiveGroupedMailRecipients(config, {
                 userCc: ccEmail,
+                sourceEmails,
                 leadershipFallback: LEADERSHIP_MAIL_TO,
             });
 
-            const sourceEmails = [
-                ...new Set(riders.map((r) => r.email).filter((e) => e && e !== 'N/A' && e.includes('@'))),
-            ];
-            const toRecipients = parseMailRecipients(cityTo, sourceEmails.join(','));
-
-            if (!toRecipients) continue;
+            if (!toRecipients) {
+                skippedCount++;
+                skippedCities.push(cityKey || cityLabel);
+                continue;
+            }
 
             const mailRiders = mapRidersToMailPayload(riders);
             const { subject, htmlBody } = buildInactiveGroupedMail({
@@ -671,7 +678,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                     body: JSON.stringify({
                         isGrouped: true,
                         email: toRecipients,
-                        ccEmail: ccEmail,
+                        ccEmail: ccRecipients,
                         city: cityKey || cityLabel,
                         daysThreshold: inactiveDays,
                         subject,
@@ -680,12 +687,19 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                         riders: mailRiders,
                     }),
                 });
+                sentCount++;
                 riders.forEach((r) => setSentIds((prev) => new Set(prev).add(r.worker_code + '_mail')));
             } catch (err) {
                 console.error(err);
+                skippedCount++;
             }
         }
         setSendingAll(false);
+        if (sentCount === 0 && skippedCities.length) {
+            window.alert(
+                `No mail sent. Missing To email for: ${skippedCities.join(', ')}. Check city mail sheet (City Key / CC Mail Id / To columns).`
+            );
+        }
     };
 
     const exportCSV = () => {

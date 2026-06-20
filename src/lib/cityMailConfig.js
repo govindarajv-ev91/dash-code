@@ -169,6 +169,29 @@ export function parseMailRecipients(...parts) {
 
 /**
  * Sheet layout: City, City Key, CC Mail Id, To.
+ * Inactive grouped mail: CC Mail Id (city managers) always primary To; source emails also To; user CC only in Cc.
+ */
+export function resolveInactiveGroupedMailRecipients(
+  config,
+  { userCc = '', sourceEmails = '', leadershipFallback = '' } = {}
+) {
+  const sheetManagers = parseMailRecipients(config?.cc && config.cc !== '<Email>' ? config.cc : '')
+  const sheetToCol = parseMailRecipients(config?.to && config.to !== '<Email>' ? config.to : '')
+  const sources = parseMailRecipients(sourceEmails)
+  const manualCc = parseMailRecipients(userCc)
+
+  let to = parseMailRecipients(sheetManagers, sheetToCol, sources)
+  const cc = manualCc
+
+  if (!to && leadershipFallback) {
+    to = parseMailRecipients(leadershipFallback)
+  }
+
+  return { to, cc }
+}
+
+/**
+ * Sheet layout: City, City Key, CC Mail Id, To.
  * To is often "<Email>" — city managers then live in CC Mail Id and must be primary To.
  */
 export function resolveCityMailRecipients(config, { userCc = '', leadershipFallback = '' } = {}) {

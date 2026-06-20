@@ -261,7 +261,7 @@ const fetchWithTimeout = (url, options = {}, timeoutMs = 8000) => {
   ])
 }
 
-// Fetch published Google Sheet CSV via same-origin server proxy (Vercel API / Vite dev proxy).
+// Fetch published Google Sheet CSV: server proxy (Vite/Vercel) then direct fetch (Firebase/static hosts).
 export const fetchPublishedCsv = async (url, options = {}) => {
   const { proxyUrl } = options
   const serverProxyUrl =
@@ -274,6 +274,15 @@ export const fetchPublishedCsv = async (url, options = {}) => {
       timeout: 30000,
     },
   ]
+
+  // Published docs.google.com CSV allows browser CORS (*). Static hosts have no /api route.
+  if (url && url.includes('docs.google.com/spreadsheets/')) {
+    strategies.push({
+      name: 'Direct Google Sheet',
+      url,
+      timeout: 30000,
+    })
+  }
 
   let lastError = null
   const attemptLog = []

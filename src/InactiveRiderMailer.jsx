@@ -223,6 +223,8 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     const [ccEmail, setCcEmail] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
     const [cityMailConfig, setCityMailConfig] = useState({ cityKeyByLookup: new Map(), mailByCityKey: new Map(), sheetRows: [] });
+    const [cityMailConfigError, setCityMailConfigError] = useState(null);
+    const [cityMailConfigReady, setCityMailConfigReady] = useState(false);
     const [rentalPendingRows, setRentalPendingRows] = useState([]);
     const [rentalPendingLoading, setRentalPendingLoading] = useState(true);
     const debounceRef = useRef(null);
@@ -230,11 +232,22 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     // Fetch City Mail Config
     useEffect(() => {
         const fetchCityConfigs = async () => {
+            setCityMailConfigError(null);
             try {
                 const csv = await fetchPublishedCsv(CITY_MAIL_CONFIG_URL);
-                setCityMailConfig(parseCityMailConfigCsv(csv));
+                const parsed = parseCityMailConfigCsv(csv);
+                setCityMailConfig(parsed);
+                setCityMailConfigReady(Boolean(parsed.sheetRows?.length));
+                if (!parsed.sheetRows?.length) {
+                    setCityMailConfigError('City mail sheet loaded but has no rows. Check the Google Sheet publish link.');
+                }
             } catch (err) {
                 console.error('Failed to fetch city configs:', err);
+                setCityMailConfigReady(false);
+                setCityMailConfigError(
+                    err?.message ||
+                        'Could not load city mail sheet. Grouped mail will miss city manager To addresses until this loads.'
+                );
             }
         };
         fetchCityConfigs();
@@ -629,6 +642,14 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
     };
 
     const sendGroupedMails = async () => {
+        if (!cityMailConfigReady) {
+            window.alert(
+                cityMailConfigError ||
+                    'City mail sheet is not loaded yet. Wait a moment and try again, or refresh the page.'
+            );
+            return;
+        }
+
         setSendingAll(true);
         const cityGroups = {};
 
@@ -747,12 +768,27 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                                 style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none', width: '160px', fontSize: '0.8rem' }}
                             />
                         </div>
-                        <button onClick={sendGroupedMails} disabled={sendingAll || ridersWithEmail.length === 0} style={{ padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'linear-gradient(135deg, #a855f7 0%, #7c3aed 100%)', color: '#fff', border: 'none', borderRadius: '10px', cursor: sendingAll ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: '0.95rem' }}>
+                        <button onClick={sendGroupedMails} disabled={sendingAll || ridersWithEmail.length === 0 || !cityMailConfigReady} style={{ padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'linear-gradient(135deg, #a855f7 0%, #7c3aed 100%)', color: '#fff', border: 'none', borderRadius: '10px', cursor: sendingAll || !cityMailConfigReady ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: '0.95rem', opacity: cityMailConfigReady ? 1 : 0.6 }}>
                             {sendingAll ? <Loader size={18} className="spin" /> : <Mail size={18} />} Send Grouped
                         </button>
                         <button onClick={exportCSV} className="glass" style={{ padding: '0.7rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer', borderRadius: '10px', background: 'rgba(255,255,255,0.08)', fontWeight: 600 }}><Download size={18} /> Export</button>
                     </div>
                 </div>
+
+                {cityMailConfigError ? (
+                    <div className="glass" style={{ width: '100%', padding: '0.75rem 1rem', color: '#fbbf24', fontSize: '0.85rem', border: '1px solid rgba(251, 191, 36, 0.35)' }}>
+                        <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: '0.4rem' }} />
+                        City mail sheet not loaded — grouped mail will not use Google Sheet To/CC until this is fixed. {cityMailConfigError}
+                    </div>
+                ) : cityMailConfigReady ? (
+                    <div className="glass" style={{ width: '100%', padding: '0.55rem 1rem', color: '#4ade80', fontSize: '0.8rem' }}>
+                        City mail sheet loaded ({cityMailConfig.sheetRows.length} cities) — Google Sheet CC Mail Id / To will be used for Send Grouped.
+                    </div>
+                ) : (
+                    <div className="glass" style={{ width: '100%', padding: '0.55rem 1rem', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                        Loading city mail sheet…
+                    </div>
+                )}
 
                 <div className="filter-bar" style={{ display: 'flex', gap: '0.75rem', width: '100%', flexWrap: 'wrap', background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
                     <div className="glass" style={{ padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', border: 'none' }}>

@@ -18,6 +18,7 @@ const RiderPerformance = lazy(() => import('./RiderPerformance'))
 const RiderPaymentUpload = lazy(() => import('./RiderPaymentUpload'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
 const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
+const IotData = lazy(() => import('./IotData'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -27,7 +28,7 @@ import {
   FLEET_FULL_PAGE_SIZE,
 } from './lib/fleetDataConfig'
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -435,6 +436,13 @@ function App() {
             SD & EV Rent
           </button>
           <button 
+            className={`nav-item ${activePage === 'iotdata' ? 'active' : ''}`}
+            onClick={() => setActivePage('iotdata')}
+          >
+            <Radio size={20} />
+            IoT Data
+          </button>
+          <button 
             className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetdata')}
           >
@@ -546,6 +554,11 @@ function App() {
           <PaymentHistory onboardingData={onboardingData} />
         ) : activePage === 'sdpayment' ? (
           <SdPaymentViewer />
+        ) : activePage === 'iotdata' ? (
+          <IotData
+            fleetData={fleetData}
+            loading={loading}
+          />
         ) : activePage === 'fleetdata' ? (
           <FleetDataViewer
             fleetData={displayFleetData}

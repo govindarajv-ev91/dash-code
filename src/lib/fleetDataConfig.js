@@ -50,6 +50,9 @@ export const FLEET_SD_COLUMNS = [
   'security_deposit_paid_deployee',
   'security_deposit_pending_deployee',
   'sd_paid_utr_deployee',
+  'vehicle_deployed_at_deployed',
+  'bike_deployed_date_sd_refund_request',
+  'sd_amount_paid_screenshot_deployee',
 ].join(',')
 
 /** Fleet columns for payment history rider vehicle/phone lookup. */

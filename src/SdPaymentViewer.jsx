@@ -10,9 +10,20 @@ import {
   filterSdRows,
   filterEvRentRows,
   formatInr,
+  isViewableFleetUrl,
 } from './lib/sdPaymentReport'
 
 const ROWS_PER_PAGE = 100
+
+function SdPaidScreenshotLink({ url }) {
+  if (!isViewableFleetUrl(url)) return '—'
+  const href = url.startsWith('www.') ? `https://${url}` : url
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="fdv-link" style={{ fontSize: '0.75rem' }}>
+      View
+    </a>
+  )
+}
 
 function StatCard({ label, value, icon: Icon, color = 'var(--accent-blue)', iconBg = 'rgba(56, 189, 248, 0.12)' }) {
   return (
@@ -75,10 +86,12 @@ export default function SdPaymentViewer() {
     }
   }, [])
 
-  const sdRows = useMemo(
+  const sdReport = useMemo(
     () => buildSdPaymentReport(paymentRows, collationRows, deferredFleet),
     [paymentRows, collationRows, deferredFleet]
   )
+  const sdRows = sdReport.rows
+  const paymentWeekLabels = sdReport.paymentWeekLabels
 
   const evRentRows = useMemo(
     () => buildEvRentMonthReport(paymentRows, collationRows, deferredFleet),
@@ -114,14 +127,16 @@ export default function SdPaymentViewer() {
 
   const sdTotals = useMemo(() => {
     let fleetPaid = 0
-    let paymentDed = 0
+    let paymentDed2Wks = 0
+    let paymentDedTotal = 0
     let manualPaid = 0
     for (const r of filteredSd) {
       fleetPaid += r.fleetSdPaid
-      paymentDed += r.paymentSdDeduction
+      paymentDed2Wks += r.paymentSdDeduction2Wks
+      paymentDedTotal += r.paymentSdDeductionTotal
       manualPaid += r.manualSdPaid
     }
-    return { fleetPaid, paymentDed, manualPaid, riders: filteredSd.length }
+    return { fleetPaid, paymentDed2Wks, paymentDedTotal, manualPaid, riders: filteredSd.length }
   }, [filteredSd])
 
   const evTotals = useMemo(() => {
@@ -148,18 +163,26 @@ export default function SdPaymentViewer() {
 
   const exportExcel = useCallback(() => {
     if (activeTab === 'sd') {
+      const week1Label = paymentWeekLabels[0] || 'Last Week 1'
+      const week2Label = paymentWeekLabels[1] || 'Week 2'
       const rows = filteredSd.map((r) => ({
-        'Rider ID': r.riderId,
+        'Rider ID (First Deployee)': r.riderId,
         'Rider Name': r.riderName,
+        Phone: r.riderPhone,
+        'First Deployee Date': r.firstDeployeeDate,
         City: r.city,
         Client: r.client,
         Vehicle: r.vehicleNumber,
-        Phone: r.riderPhone,
+        'Vehicle Deployed At': r.vehicleDeployedAt,
         'Fleet SD Total': r.fleetSdTotal,
         'Fleet SD Paid': r.fleetSdPaid,
         'Fleet SD Pending': r.fleetSdPending,
         'SD UTR': r.sdUtr,
-        'Payment SD Deduction': r.paymentSdDeduction,
+        'SD Paid Screenshot (Last Deployee)': r.sdPaidScreenshot,
+        [`Payment SD Ded. (${week1Label})`]: r.paymentSdLastWeek,
+        [`Payment SD Ded. (${week2Label})`]: r.paymentSdPrevWeek,
+        'Payment SD Ded. (2 wks)': r.paymentSdDeduction2Wks,
+        'Payment SD Ded. (Total)': r.paymentSdDeductionTotal,
         'Manual SD Paid': r.manualSdPaid,
         Gap: r.sdGap,
       }))
@@ -187,7 +210,7 @@ export default function SdPaymentViewer() {
       XLSX.utils.book_append_sheet(wb, ws, 'EV Rent')
       XLSX.writeFile(wb, `EV_Rent_${new Date().toISOString().slice(0, 10)}.xlsx`)
     }
-  }, [activeTab, filteredSd, filteredEvRent])
+  }, [activeTab, filteredSd, filteredEvRent, paymentWeekLabels])
 
   if (loading) {
     return (
@@ -206,7 +229,7 @@ export default function SdPaymentViewer() {
             <div>
               <h1 style={{ margin: 0 }}>SD & EV Rent</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-                Unique EV riders · fleet SD · payment deductions · manual collation
+                Unique EV riders · fleet SD · payment SD (last 2 weeks) · manual collation
               </p>
             </div>
           </div>
@@ -240,7 +263,8 @@ export default function SdPaymentViewer() {
         <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
           <StatCard label="EV Riders" value={sdTotals.riders.toLocaleString('en-IN')} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
           <StatCard label="Fleet SD Paid" value={formatInr(sdTotals.fleetPaid)} icon={Landmark} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
-          <StatCard label="Payment SD Ded." value={formatInr(sdTotals.paymentDed)} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
+          <StatCard label="Payment SD Ded. (2 wks)" value={formatInr(sdTotals.paymentDed2Wks)} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
+          <StatCard label="Payment SD Ded. (Total)" value={formatInr(sdTotals.paymentDedTotal)} icon={Receipt} color="#f97316" iconBg="rgba(249, 115, 22, 0.12)" />
           <StatCard label="Manual SD Paid" value={formatInr(sdTotals.manualPaid)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
         </section>
       ) : (
@@ -292,7 +316,7 @@ export default function SdPaymentViewer() {
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
           <input
             type="text"
-            placeholder="Search rider, city, vehicle, UTR..."
+            placeholder="Search rider, phone, city, vehicle, UTR..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ width: '100%', padding: '0.55rem 0.75rem 0.55rem 2.25rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', color: '#fff', outline: 'none' }}
@@ -307,15 +331,26 @@ export default function SdPaymentViewer() {
               {activeTab === 'sd' ? (
                 <tr>
                   <th>Rider</th>
+                  <th title="From first Deployee record">Phone</th>
+                  <th title="First Deployee date_record">First Deployee Date</th>
                   <th>City</th>
                   <th>Client</th>
                   <th>Vehicle</th>
+                  <th>Vehicle Deployed At</th>
                   <th>Fleet SD Total</th>
                   <th>Fleet SD Paid</th>
                   <th>Fleet SD Pending</th>
-                  <th>Payment SD Ded.</th>
+                  <th title={paymentWeekLabels[0] || 'Most recent payment week'}>
+                    SD Ded.{paymentWeekLabels[0] ? ` (${paymentWeekLabels[0]})` : ''}
+                  </th>
+                  <th title={paymentWeekLabels[1] || 'Previous payment week'}>
+                    SD Ded.{paymentWeekLabels[1] ? ` (${paymentWeekLabels[1]})` : ''}
+                  </th>
+                  <th>SD Ded. (2 wks)</th>
+                  <th>Payment SD Ded. (Total)</th>
                   <th>Manual SD Paid</th>
                   <th>SD UTR</th>
+                  <th title="SD Amount Paid Screenshot — last Deployee record">SD Paid Screenshot</th>
                 </tr>
               ) : (
                 <tr>
@@ -339,17 +374,24 @@ export default function SdPaymentViewer() {
                     <tr key={r.rowKey}>
                       <td>
                         <div style={{ fontWeight: 600 }}>{r.riderName}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{r.riderId}</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }} title="First Deployee rider ID">{r.riderId}</div>
                       </td>
+                      <td style={{ fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{r.riderPhone || '—'}</td>
+                      <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{r.firstDeployeeDate || '—'}</td>
                       <td>{r.city}</td>
                       <td>{r.client}</td>
                       <td>{r.vehicleNumber || '—'}</td>
+                      <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{r.vehicleDeployedAt || '—'}</td>
                       <td>{formatInr(r.fleetSdTotal)}</td>
                       <td style={{ color: '#4ade80', fontWeight: 600 }}>{formatInr(r.fleetSdPaid)}</td>
                       <td>{formatInr(r.fleetSdPending)}</td>
-                      <td style={{ color: '#fb923c', fontWeight: 600 }}>{formatInr(r.paymentSdDeduction)}</td>
+                      <td style={{ color: '#fdba74', fontWeight: 600 }}>{formatInr(r.paymentSdLastWeek)}</td>
+                      <td style={{ color: '#fed7aa', fontWeight: 600 }}>{formatInr(r.paymentSdPrevWeek)}</td>
+                      <td style={{ color: '#fb923c', fontWeight: 600 }}>{formatInr(r.paymentSdDeduction2Wks)}</td>
+                      <td style={{ color: '#f97316', fontWeight: 700 }}>{formatInr(r.paymentSdDeductionTotal)}</td>
                       <td style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{formatInr(r.manualSdPaid)}</td>
                       <td style={{ fontSize: '0.75rem' }}>{r.sdUtr || '—'}</td>
+                      <td><SdPaidScreenshotLink url={r.sdPaidScreenshot} /></td>
                     </tr>
                   ))
                 ) : (
@@ -380,7 +422,7 @@ export default function SdPaymentViewer() {
                 )
               ) : (
                 <tr>
-                  <td colSpan={activeTab === 'sd' ? 10 : 10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                  <td colSpan={activeTab === 'sd' ? 17 : 10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
                     No data. Upload payment & manual collation on Payment Upload page first.
                   </td>
                 </tr>

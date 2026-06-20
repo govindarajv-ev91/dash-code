@@ -557,6 +557,7 @@ function App() {
         ) : activePage === 'iotdata' ? (
           <IotData
             fleetData={fleetData}
+            riderData={riderData}
             loading={loading}
           />
         ) : activePage === 'fleetdata' ? (

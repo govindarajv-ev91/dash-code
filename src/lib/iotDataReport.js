@@ -1,7 +1,11 @@
 import { format, isValid, parseISO } from 'date-fns'
 import { parseFleetDate } from './fleetDeployReturnExport'
 import { vehiclePartitionKey } from './fleetDeployReturnExport'
-import { getCurrentlyDeployedAssignments } from './riderPerformanceReport'
+import {
+  getCurrentlyDeployedAssignments,
+  normalizeRiderIdKey,
+  parseMetricDate,
+} from './riderPerformanceReport'
 
 function parseRangeDate(value) {
   if (!value) return null
@@ -36,76 +40,134 @@ export function iotRowDistanceKm(row) {
   return Number.isFinite(n) ? n : 0
 }
 
-/**
- * Aggregate IoT km by vehicle for a date range and attach fleet deploy rider/client as of range end date.
- */
-export function buildIotVehicleReport(iotRows, fleetRows, { dateFrom, dateTo } = {}) {
-  const endDate = parseRangeDate(dateTo) || new Date()
-  const assignments = getCurrentlyDeployedAssignments(fleetRows, endDate)
-  const assignmentByVehicle = new Map()
+function normalizePhone(value) {
+  const digits = (value ?? '').toString().replace(/\D/g, '')
+  if (digits.length >= 10) return digits.slice(-10)
+  return digits.length >= 6 ? digits : ''
+}
 
-  for (const assignment of assignments) {
-    const key = vehiclePartitionKey(assignment.vehicleNumber)
-    if (key) assignmentByVehicle.set(key, assignment)
+/** rider_id/worker_code + date → delivered orders (from rider_metrics). */
+export function buildRiderDayOrderIndex(riderRows) {
+  const byWorkerDate = new Map()
+  const byPhoneDate = new Map()
+
+  for (const row of riderRows || []) {
+    const date = parseMetricDate(row.date_record)
+    if (!date) continue
+    const dateKey = format(date, 'yyyy-MM-dd')
+    const delivered = parseInt(row.delivered, 10) || 0
+    if (!delivered) continue
+
+    const workerKey = normalizeRiderIdKey(row.worker_code)
+    if (workerKey) {
+      const key = `${workerKey}|${dateKey}`
+      byWorkerDate.set(key, (byWorkerDate.get(key) || 0) + delivered)
+    }
+
+    const phone = normalizePhone(row.mob_number)
+    if (phone) {
+      const key = `${phone}|${dateKey}`
+      byPhoneDate.set(key, (byPhoneDate.get(key) || 0) + delivered)
+    }
   }
 
-  const grouped = new Map()
+  return { byWorkerDate, byPhoneDate }
+}
+
+export function lookupRiderDayOrders(assignment, dateKey, orderIndex) {
+  if (!assignment || !dateKey || !orderIndex) return 0
+
+  const idKey = normalizeRiderIdKey(assignment.riderId)
+  if (idKey) {
+    const byId = orderIndex.byWorkerDate.get(`${idKey}|${dateKey}`)
+    if (byId != null) return byId
+  }
+
+  const phone = normalizePhone(assignment.mobile)
+  if (phone) {
+    const byPhone = orderIndex.byPhoneDate.get(`${phone}|${dateKey}`)
+    if (byPhone != null) return byPhone
+  }
+
+  return 0
+}
+
+/**
+ * IoT rows by vehicle + run_date with fleet rider/client as of that date and rider order count.
+ */
+export function buildIotVehicleReport(iotRows, fleetRows, riderRows, { dateFrom, dateTo } = {}) {
+  void dateFrom
+  void dateTo
+
+  const orderIndex = buildRiderDayOrderIndex(riderRows)
+  const assignmentCache = new Map()
+
+  function assignmentMapForDate(dateStr) {
+    if (!assignmentCache.has(dateStr)) {
+      const asOf = parseRangeDate(dateStr) || new Date()
+      const assignments = getCurrentlyDeployedAssignments(fleetRows, asOf)
+      const byVehicle = new Map()
+      for (const assignment of assignments) {
+        const key = vehiclePartitionKey(assignment.vehicleNumber)
+        if (key) byVehicle.set(key, assignment)
+      }
+      assignmentCache.set(dateStr, byVehicle)
+    }
+    return assignmentCache.get(dateStr)
+  }
+
+  const rows = []
 
   for (const row of iotRows || []) {
     const vehicleNumber = (row.vehicle_number || row.raw_vehicle_id || '').toString().trim()
-    const key = vehiclePartitionKey(vehicleNumber)
-    if (!key) continue
+    const vehicleKey = vehiclePartitionKey(vehicleNumber)
+    const runDate = normalizeIotRunDate(row.run_date ?? row.record_date)
+    if (!vehicleKey || !runDate) continue
 
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        vehicleNumber,
-        totalDistanceKm: 0,
-        dayKeys: new Set(),
-        dataSources: new Set(),
-        lookupMatched: false,
-      })
-    }
+    const assignment = assignmentMapForDate(runDate).get(vehicleKey)
+    const orderCount = lookupRiderDayOrders(assignment, runDate, orderIndex)
 
-    const entry = grouped.get(key)
-    entry.totalDistanceKm += iotRowDistanceKm(row)
-    const day = normalizeIotRunDate(row.run_date ?? row.record_date)
-    if (day) entry.dayKeys.add(day)
-    if (row.data_source) entry.dataSources.add(String(row.data_source))
-    if (row.lookup_matched === true) entry.lookupMatched = true
+    rows.push({
+      rowKey: `${vehicleKey}|${runDate}`,
+      runDate,
+      vehicleNumber,
+      runningDistanceKm: Math.round(iotRowDistanceKm(row) * 100) / 100,
+      dataSource: row.data_source ? String(row.data_source) : '—',
+      lookupMatched: row.lookup_matched === true,
+      riderId: assignment?.riderId || '—',
+      riderName: assignment?.riderName || '—',
+      client: assignment?.client || '—',
+      city: assignment?.city || '—',
+      hub: assignment?.hub || '—',
+      deployStatus: assignment ? 'Deployed' : 'Not deployed',
+      orderCount,
+    })
   }
 
-  return [...grouped.values()]
-    .map((entry) => {
-      const key = vehiclePartitionKey(entry.vehicleNumber)
-      const assignment = assignmentByVehicle.get(key)
-      return {
-        vehicleNumber: entry.vehicleNumber,
-        runningDistanceKm: Math.round(entry.totalDistanceKm * 100) / 100,
-        daysWithData: entry.dayKeys.size,
-        dataSource: [...entry.dataSources].join(', ') || '—',
-        lookupMatched: entry.lookupMatched,
-        riderId: assignment?.riderId || '—',
-        riderName: assignment?.riderName || '—',
-        client: assignment?.client || '—',
-        city: assignment?.city || '—',
-        hub: assignment?.hub || '—',
-        deployStatus: assignment ? 'Deployed' : 'Not deployed',
-      }
-    })
-    .sort((a, b) => b.runningDistanceKm - a.runningDistanceKm || a.vehicleNumber.localeCompare(b.vehicleNumber))
+  return rows.sort(
+    (a, b) =>
+      b.runDate.localeCompare(a.runDate) ||
+      b.runningDistanceKm - a.runningDistanceKm ||
+      a.vehicleNumber.localeCompare(b.vehicleNumber)
+  )
 }
 
 export function summarizeIotReport(rows) {
   let totalKm = 0
-  const vehicles = rows?.length || 0
+  let totalOrders = 0
+  const vehicles = new Set()
   let deployed = 0
   for (const row of rows || []) {
     totalKm += row.runningDistanceKm || 0
+    totalOrders += row.orderCount || 0
+    vehicles.add(row.vehicleNumber)
     if (row.deployStatus === 'Deployed') deployed++
   }
   return {
-    vehicles,
+    rows: rows?.length || 0,
+    vehicles: vehicles.size,
     totalKm: Math.round(totalKm * 100) / 100,
+    totalOrders,
     deployed,
   }
 }

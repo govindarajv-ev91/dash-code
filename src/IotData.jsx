@@ -26,7 +26,7 @@ import { formatLastUploadAt } from './lib/paymentMonthList'
 
 const ROWS_PER_PAGE = 50
 
-export default function IotData({ fleetData, loading: appLoading }) {
+export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   const defaultFrom = format(subDays(new Date(), 6), 'yyyy-MM-dd')
 
@@ -89,8 +89,8 @@ export default function IotData({ fleetData, loading: appLoading }) {
   }, [loadRangeData, missingTable])
 
   const reportRows = useMemo(
-    () => buildIotVehicleReport(iotRows, fleetData, { dateFrom, dateTo }),
-    [iotRows, fleetData, dateFrom, dateTo]
+    () => buildIotVehicleReport(iotRows, fleetData, riderData, { dateFrom, dateTo }),
+    [iotRows, fleetData, riderData, dateFrom, dateTo]
   )
 
   const stats = useMemo(() => summarizeIotReport(reportRows), [reportRows])
@@ -100,11 +100,13 @@ export default function IotData({ fleetData, loading: appLoading }) {
     if (!q) return reportRows
     return reportRows.filter(
       (r) =>
+        r.runDate.includes(q) ||
         r.vehicleNumber.toLowerCase().includes(q) ||
         r.riderId.toLowerCase().includes(q) ||
         r.riderName.toLowerCase().includes(q) ||
         r.client.toLowerCase().includes(q) ||
-        r.city.toLowerCase().includes(q)
+        r.city.toLowerCase().includes(q) ||
+        String(r.orderCount).includes(q)
     )
   }, [reportRows, searchTerm])
 
@@ -149,6 +151,7 @@ export default function IotData({ fleetData, loading: appLoading }) {
   const exportExcel = () => {
     if (!filtered.length) return
     const rows = filtered.map((r) => ({
+      Date: r.runDate,
       'Vehicle Number': r.vehicleNumber,
       'Rider ID': r.riderId,
       'Rider Name': r.riderName,
@@ -156,9 +159,9 @@ export default function IotData({ fleetData, loading: appLoading }) {
       City: r.city,
       Hub: r.hub,
       'Deploy Status': r.deployStatus,
+      Orders: r.orderCount,
       'Running Distance (KM)': r.runningDistanceKm,
       'Data Source': r.dataSource,
-      'Days With Data': r.daysWithData,
     }))
     const ws = XLSX.utils.json_to_sheet(rows)
     const wb = XLSX.utils.book_new()
@@ -184,7 +187,7 @@ export default function IotData({ fleetData, loading: appLoading }) {
               IoT Data
             </h1>
             <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '720px' }}>
-              Reads from Supabase <code style={{ color: '#fff' }}>iot_data</code> (Alt Mobility). Shows running distance by vehicle for the selected date range, with deployed rider and client from fleet data.
+              Reads from Supabase <code style={{ color: '#fff' }}>iot_data</code> (Alt Mobility). Shows running distance by vehicle and date, with deployed rider, client from fleet, and order count from rider metrics for that date.
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -291,12 +294,20 @@ export default function IotData({ fleetData, loading: appLoading }) {
 
       <section className="stats-grid" style={{ marginBottom: '1.25rem' }}>
         <div className="stat-card glass">
-          <div className="label">Vehicles</div>
+          <div className="label">Unique vehicles</div>
           <div className="value">{stats.vehicles.toLocaleString()}</div>
+        </div>
+        <div className="stat-card glass">
+          <div className="label">IoT rows</div>
+          <div className="value">{stats.rows.toLocaleString()}</div>
         </div>
         <div className="stat-card glass">
           <div className="label">Total running distance</div>
           <div className="value">{stats.totalKm.toLocaleString('en-IN')} km</div>
+        </div>
+        <div className="stat-card glass">
+          <div className="label">Total orders</div>
+          <div className="value">{stats.totalOrders.toLocaleString('en-IN')}</div>
         </div>
         <div className="stat-card glass">
           <div className="label">Deployed riders matched</div>
@@ -328,21 +339,23 @@ export default function IotData({ fleetData, loading: appLoading }) {
               <thead>
                 <tr>
                   <th>#</th>
+                  <th>Date</th>
                   <th>Vehicle</th>
                   <th>Rider</th>
                   <th>Client</th>
                   <th>City / Hub</th>
                   <th>Source</th>
                   <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Orders</th>
                   <th style={{ textAlign: 'right' }}>Running distance (km)</th>
-                  <th style={{ textAlign: 'center' }}>Days</th>
                 </tr>
               </thead>
               <tbody>
                 {paginated.length ? (
                   paginated.map((r, i) => (
-                    <tr key={r.vehicleNumber}>
+                    <tr key={r.rowKey}>
                       <td>{(currentPage - 1) * ROWS_PER_PAGE + i + 1}</td>
+                      <td style={{ whiteSpace: 'nowrap', fontSize: '0.85rem' }}>{r.runDate}</td>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700, color: 'var(--accent-amber)' }}>
                           <Truck size={14} />
@@ -375,15 +388,17 @@ export default function IotData({ fleetData, loading: appLoading }) {
                           {r.deployStatus}
                         </span>
                       </td>
+                      <td style={{ textAlign: 'right', fontWeight: 700, color: r.orderCount > 0 ? '#4ade80' : 'var(--text-dim)' }}>
+                        {r.orderCount.toLocaleString('en-IN')}
+                      </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: '#38bdf8' }}>
                         {r.runningDistanceKm.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                       </td>
-                      <td style={{ textAlign: 'center', color: 'var(--text-dim)' }}>{r.daysWithData}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={9} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-dim)' }}>
+                    <td colSpan={10} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-dim)' }}>
                       No IoT data for this range
                     </td>
                   </tr>

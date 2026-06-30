@@ -163,8 +163,8 @@ export default function SdPaymentViewer() {
 
   const exportExcel = useCallback(() => {
     if (activeTab === 'sd') {
-      const week1Label = paymentWeekLabels[0] || 'Last Week 1'
-      const week2Label = paymentWeekLabels[1] || 'Week 2'
+      const week1Label = paymentWeekLabels[0] || 'Recent 1'
+      const week2Label = paymentWeekLabels[1] || 'Recent 2'
       const rows = filteredSd.map((r) => ({
         'Rider ID (First Deployee)': r.riderId,
         'Rider Name': r.riderName,
@@ -179,8 +179,8 @@ export default function SdPaymentViewer() {
         'Fleet SD Pending': r.fleetSdPending,
         'SD UTR': r.sdUtr,
         'SD Paid Screenshot (Last Deployee)': r.sdPaidScreenshot,
-        [`Payment SD Ded. (${week1Label})`]: r.paymentSdLastWeek,
-        [`Payment SD Ded. (${week2Label})`]: r.paymentSdPrevWeek,
+        [`Payment SD Ded. (${r.paymentSdLastWeekLabel || week1Label})`]: r.paymentSdLastWeek,
+        [`Payment SD Ded. (${r.paymentSdPrevWeekLabel || week2Label})`]: r.paymentSdPrevWeek,
         'Payment SD Ded. (2 wks)': r.paymentSdDeduction2Wks,
         'Payment SD Ded. (Total)': r.paymentSdDeductionTotal,
         'Manual SD Paid': r.manualSdPaid,
@@ -340,12 +340,8 @@ export default function SdPaymentViewer() {
                   <th>Fleet SD Total</th>
                   <th>Fleet SD Paid</th>
                   <th>Fleet SD Pending</th>
-                  <th title={paymentWeekLabels[0] || 'Most recent payment week'}>
-                    SD Ded.{paymentWeekLabels[0] ? ` (${paymentWeekLabels[0]})` : ''}
-                  </th>
-                  <th title={paymentWeekLabels[1] || 'Previous payment week'}>
-                    SD Ded.{paymentWeekLabels[1] ? ` (${paymentWeekLabels[1]})` : ''}
-                  </th>
+                  <th title="Rider's most recent payment week with SD deduction">SD Ded. (Recent 1)</th>
+                  <th title="Rider's previous payment week with SD deduction">SD Ded. (Recent 2)</th>
                   <th>SD Ded. (2 wks)</th>
                   <th>Payment SD Ded. (Total)</th>
                   <th>Manual SD Paid</th>
@@ -385,8 +381,18 @@ export default function SdPaymentViewer() {
                       <td>{formatInr(r.fleetSdTotal)}</td>
                       <td style={{ color: '#4ade80', fontWeight: 600 }}>{formatInr(r.fleetSdPaid)}</td>
                       <td>{formatInr(r.fleetSdPending)}</td>
-                      <td style={{ color: '#fdba74', fontWeight: 600 }}>{formatInr(r.paymentSdLastWeek)}</td>
-                      <td style={{ color: '#fed7aa', fontWeight: 600 }}>{formatInr(r.paymentSdPrevWeek)}</td>
+                      <td style={{ color: '#fdba74', fontWeight: 600 }}>
+                        <div>{formatInr(r.paymentSdLastWeek)}</div>
+                        {r.paymentSdLastWeekLabel ? (
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', fontWeight: 400 }}>{r.paymentSdLastWeekLabel}</div>
+                        ) : null}
+                      </td>
+                      <td style={{ color: '#fed7aa', fontWeight: 600 }}>
+                        <div>{formatInr(r.paymentSdPrevWeek)}</div>
+                        {r.paymentSdPrevWeekLabel ? (
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', fontWeight: 400 }}>{r.paymentSdPrevWeekLabel}</div>
+                        ) : null}
+                      </td>
                       <td style={{ color: '#fb923c', fontWeight: 600 }}>{formatInr(r.paymentSdDeduction2Wks)}</td>
                       <td style={{ color: '#f97316', fontWeight: 700 }}>{formatInr(r.paymentSdDeductionTotal)}</td>
                       <td style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{formatInr(r.manualSdPaid)}</td>

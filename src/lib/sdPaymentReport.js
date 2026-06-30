@@ -3,9 +3,55 @@ import { normalizeSummaryCity } from './citySummaryAliases'
 import { normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { formatInr } from './paymentHistoryReport'
-import { monthSortKey } from './paymentMonthList'
+import { monthSortKey, normalizeMonthLabel } from './paymentMonthList'
 
 export { formatInr }
+
+const MONTH_ABBR = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+}
+
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function normalizePaymentMonth(value) {
+  const text = normalizeMonthLabel(value)
+  if (!text) return ''
+
+  const named = text.match(/^([A-Za-z]+)[\s\-_/]+(\d{4})$/)
+  if (named) {
+    const abbr = named[1].slice(0, 3).toLowerCase()
+    const monthIndex = MONTH_ABBR[abbr]
+    const year = Number(named[2])
+    if (monthIndex != null && Number.isFinite(year)) {
+      return `${MONTH_SHORT[monthIndex]}-${year}`
+    }
+  }
+
+  const short = text.match(/^([A-Za-z]{3})-(\d{4})$/)
+  if (short) {
+    const abbr = short[1].toLowerCase()
+    const monthIndex = MONTH_ABBR[abbr]
+    const year = Number(short[2])
+    if (monthIndex != null && Number.isFinite(year)) {
+      return `${MONTH_SHORT[monthIndex]}-${year}`
+    }
+  }
+
+  return text
+}
+
+function normalizePaymentWeek(value) {
+  const text = pickText(value)
+  if (!text) return ''
+  const n = parseInt(text.replace(/^W/i, '').replace(/[^\d]/g, ''), 10)
+  return Number.isFinite(n) && n > 0 ? String(n) : text
+}
+
+function monthLabelFromDate(date) {
+  if (!date) return ''
+  return `${MONTH_SHORT[date.getMonth()]}-${date.getFullYear()}`
+}
 
 function num(value) {
   const n = Number(value)
@@ -36,26 +82,44 @@ export function formatDeployedAt(value) {
 }
 
 function paymentWeekKey(row) {
-  const month = pickText(row.month)
-  const week = pickText(row.week)
-  if (!month || !week) return ''
-  return `${month}|${week}`
+  const month = normalizePaymentMonth(row.month)
+  const week = normalizePaymentWeek(row.week)
+  if (month && week) return `${month}|${week}`
+
+  const paymentDate = parseFleetDate(row.payment_date)
+  if (paymentDate) {
+    const monthFromDate = month || monthLabelFromDate(paymentDate)
+    const dateKey = paymentDate.toISOString().slice(0, 10)
+    if (monthFromDate && week) return `${monthFromDate}|${week}`
+    if (monthFromDate) return `${monthFromDate}|date:${dateKey}`
+    return `date:${dateKey}`
+  }
+
+  return ''
 }
 
 function paymentWeekSortValue(row) {
   const paymentDate = parseFleetDate(row.payment_date)
   if (paymentDate) return paymentDate.getTime()
-  const mk = monthSortKey(row.month)
-  const weekNum = parseInt(String(row.week).replace(/\D/g, ''), 10) || 0
+  const mk = monthSortKey(normalizePaymentMonth(row.month))
+  const weekNum = parseInt(normalizePaymentWeek(row.week), 10) || 0
   if (typeof mk === 'number') return mk * 100 + weekNum
+  const key = paymentWeekKey(row)
+  if (key.startsWith('date:')) {
+    const d = parseFleetDate(key.slice(5))
+    if (d) return d.getTime()
+  }
   return 0
 }
 
 function formatPaymentWeekLabel(key) {
   if (!key) return ''
+  if (key.startsWith('date:')) return key.slice(5)
   const [month, week] = key.split('|')
+  if (week.startsWith('date:')) return `${month} (${week.slice(5)})`
   const w = week.replace(/^W/i, '')
-  return w ? `${month} W${w}` : month
+  const n = parseInt(w, 10)
+  return n ? `${month} W${n}` : month
 }
 
 /** Two most recent payment month+week keys from uploaded payment rows. */
@@ -250,8 +314,7 @@ function aggregatePaymentSdTotal(paymentRows, evRiders) {
   return byRider
 }
 
-function aggregatePaymentSdByWeeks(paymentRows, evRiders, weekKeys) {
-  const weekSet = new Set(weekKeys)
+function aggregatePaymentSdWeeksPerRider(paymentRows, evRiders) {
   const byRider = new Map()
   for (const row of paymentRows || []) {
     const id = normalizeRiderIdKey(row.rider_id)
@@ -259,22 +322,29 @@ function aggregatePaymentSdByWeeks(paymentRows, evRiders, weekKeys) {
     const sd = num(row.sd)
     if (!sd) continue
     const wk = paymentWeekKey(row)
-    if (!weekSet.has(wk)) continue
-    if (!byRider.has(id)) {
-      byRider.set(id, {
-        byWeek: new Map(),
-        riderName: pickText(row.rider_name),
-        city: normalizeSummaryCity(row.city),
-        client: normalizeSummaryClient(row.client_name),
-      })
-    }
-    const entry = byRider.get(id)
-    entry.byWeek.set(wk, (entry.byWeek.get(wk) || 0) + sd)
-    entry.riderName = pickText(row.rider_name, entry.riderName) || entry.riderName
-    entry.city = normalizeSummaryCity(pickText(row.city, entry.city)) || entry.city
-    entry.client = normalizeSummaryClient(pickText(row.client_name, entry.client)) || entry.client
+    if (!wk) continue
+    const sort = paymentWeekSortValue(row)
+    if (!byRider.has(id)) byRider.set(id, new Map())
+    const weekMap = byRider.get(id)
+    const prev = weekMap.get(wk) || { amount: 0, sort: 0 }
+    weekMap.set(wk, {
+      amount: prev.amount + sd,
+      sort: Math.max(prev.sort, sort),
+    })
   }
   return byRider
+}
+
+function riderRecentSdWeeks(weekMap, count = 2) {
+  if (!weekMap?.size) return []
+  return [...weekMap.entries()]
+    .sort((a, b) => b[1].sort - a[1].sort || b[1].amount - a[1].amount)
+    .slice(0, count)
+    .map(([key, value]) => ({
+      key,
+      label: formatPaymentWeekLabel(key),
+      amount: value.amount,
+    }))
 }
 
 function aggregateManualSd(collationRows, evRiders) {
@@ -308,7 +378,7 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
   const firstDeployeeIndex = buildFirstDeployeeIndex(fleetRows)
   const weekKeys = resolveLatestPaymentWeeks(paymentRows, 2)
   const paymentWeekLabels = weekKeys.map(formatPaymentWeekLabel)
-  const paymentSdByWeek = aggregatePaymentSdByWeeks(paymentRows, evRiders, weekKeys)
+  const sdWeeksByRider = aggregatePaymentSdWeeksPerRider(paymentRows, evRiders)
   const paymentSdTotal = aggregatePaymentSdTotal(paymentRows, evRiders)
   const manualSd = aggregateManualSd(collationRows, evRiders)
 
@@ -319,14 +389,16 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
     const fleet = fleetIndex.get(id)
     const deployee = latestDeployeeIndex.get(id)
     const firstDeployee = firstDeployeeIndex.get(id)
-    const payWeek = paymentSdByWeek.get(id)
     const payTotal = paymentSdTotal.get(id)
     const manual = manualSd.get(id)
-    if (!fleet && !payWeek && !payTotal && !manual) continue
+    const recentSdWeeks = riderRecentSdWeeks(sdWeeksByRider.get(id), 2)
+    if (!fleet && !recentSdWeeks.length && !payTotal && !manual) continue
 
     const fleetSdPaid = fleet?.sdPaid ?? 0
-    const paymentSdLastWeek = weekKeys[0] ? (payWeek?.byWeek.get(weekKeys[0]) ?? 0) : 0
-    const paymentSdPrevWeek = weekKeys[1] ? (payWeek?.byWeek.get(weekKeys[1]) ?? 0) : 0
+    const paymentSdLastWeek = recentSdWeeks[0]?.amount ?? 0
+    const paymentSdPrevWeek = recentSdWeeks[1]?.amount ?? 0
+    const paymentSdLastWeekLabel = recentSdWeeks[0]?.label ?? ''
+    const paymentSdPrevWeekLabel = recentSdWeeks[1]?.label ?? ''
     const paymentSdDeduction2Wks = paymentSdLastWeek + paymentSdPrevWeek
     const paymentSdDeductionTotal = payTotal?.amount ?? 0
     const manualSdPaid = manual?.amount ?? 0
@@ -334,9 +406,9 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
     rows.push({
       rowKey: `sd-${id}`,
       riderId: pickText(firstDeployee?.riderId, fleet?.riderId) || id,
-      riderName: pickText(fleet?.riderName, firstDeployee?.riderName, payTotal?.riderName, payWeek?.riderName, manual?.riderName) || 'N/A',
-      city: pickText(fleet?.city, payTotal?.city, payWeek?.city, manual?.city) || 'Unknown',
-      client: fleet?.client || payTotal?.client || payWeek?.client || 'Unknown',
+      riderName: pickText(fleet?.riderName, firstDeployee?.riderName, payTotal?.riderName, manual?.riderName) || 'N/A',
+      city: pickText(fleet?.city, payTotal?.city, manual?.city) || 'Unknown',
+      client: fleet?.client || payTotal?.client || 'Unknown',
       vehicleNumber: fleet?.vehicleNumber || '',
       riderPhone: pickText(firstDeployee?.phone, fleet?.phone) || '',
       firstDeployeeDate: formatDeployedAt(firstDeployee?.dateRecord),
@@ -348,6 +420,8 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
       sdPaidScreenshot: deployee?.sdPaidScreenshot ?? '',
       paymentSdLastWeek,
       paymentSdPrevWeek,
+      paymentSdLastWeekLabel,
+      paymentSdPrevWeekLabel,
       paymentSdDeduction2Wks,
       paymentSdDeductionTotal,
       manualSdPaid,

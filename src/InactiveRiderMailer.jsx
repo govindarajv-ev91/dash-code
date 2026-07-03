@@ -24,6 +24,10 @@ import {
     buildInactiveGroupedMail,
     mapRidersToMailPayload,
 } from './lib/inactiveRiderMailerEmail';
+import {
+    buildRiderFleetStatusContext,
+    resolveRiderFleetDeployStatus,
+} from './lib/riderAttritionReport';
 
 const LEADERSHIP_MAIL_TO =
     'sujithra.y@ev91riderz.com,murali.bharath@ev91riderz.com,govindaraj.v@ev91riderz.com';
@@ -73,6 +77,27 @@ const formatRentalPendingDisplay = (value) => {
     if (n == null) return '-';
     return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 };
+
+/** Return (3) beats Deployee (2) — inventory current_status should reflect latest state. */
+function inventoryStatusPriority(status) {
+    const s = (status || '').toLowerCase();
+    if (s.includes('return')) return 3;
+    if (s.includes('deploy')) return 2;
+    return 1;
+}
+
+function shouldReplaceInventoryAssignment(existing, nextStatus) {
+    if (!existing) return true;
+    return inventoryStatusPriority(nextStatus) >= inventoryStatusPriority(existing.vehicleStatus);
+}
+
+function setInventoryAssignment(inventoryMap, key, info) {
+    if (!key) return;
+    const existing = inventoryMap.get(key);
+    if (shouldReplaceInventoryAssignment(existing, info.vehicleStatus)) {
+        inventoryMap.set(key, info);
+    }
+}
 
 const MultiSelect = ({ label, options, selected, onChange, icon: Icon, color, placeholder = "Search..." }) => {
     const [isOpen, setIsOpen] = useState(false);
@@ -335,6 +360,11 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
         [rentalPendingRows]
     );
 
+    const fleetStatusCtx = useMemo(
+        () => (fleetData?.length ? buildRiderFleetStatusContext(fleetData, new Date()) : null),
+        [fleetData]
+    );
+
     // Debounce search input — waits 300ms after user stops typing
     const handleSearchChange = useCallback((e) => {
         const val = e.target.value;
@@ -432,8 +462,6 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
             if (!rid || !vno) return;
 
             const status = v.current_status || 'Unknown';
-            const statusLow = status.toLowerCase();
-            const isDeployed = statusLow.includes('deploy');
 
             // Store for master check
             vehicleToRider.set(vno, rid.toLowerCase());
@@ -447,18 +475,12 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                 riderId: rid
             };
 
-            const existing = inventoryMap.get(rid.toLowerCase());
-            // If already exists, prefer Deployed over Return
-            if (!existing || isDeployed || !existing.vehicleStatus.toLowerCase().includes('deploy')) {
-                inventoryMap.set(rid.toLowerCase(), info);
-            }
-            
-            // Also link by composite parts if applicable
+            setInventoryAssignment(inventoryMap, rid.toLowerCase(), info);
+
+            // Also link by composite parts if applicable (e.g. FE944231_… → 944231)
             if (rid.includes('_')) {
                 rid.split('_').forEach(part => {
-                    if (part && !inventoryMap.has(part.toLowerCase())) {
-                        inventoryMap.set(part.toLowerCase(), info);
-                    }
+                    if (part) setInventoryAssignment(inventoryMap, part.toLowerCase(), info);
                 });
             }
         });
@@ -550,7 +572,21 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                 ? Math.floor((today - new Date(info.lastActiveDate)) / (1000 * 60 * 60 * 24))
                 : 'N/A';
 
-            const isDeployed = (assignment.vehicleStatus || '').toLowerCase().includes('deploy');
+            const fleetInfo = fleetStatusCtx
+                ? resolveRiderFleetDeployStatus(fleetStatusCtx, info.worker_code, info.mob_number)
+                : null;
+            const fleetStatus = fleetInfo?.deployStatus;
+            const fleetVehicle = fleetInfo?.deployVehicle;
+
+            const vehicleStatus =
+                fleetStatus && fleetStatus !== 'N/A'
+                    ? fleetStatus
+                    : (assignment.vehicleStatus || 'Unknown');
+            const vehicle =
+                fleetVehicle && fleetVehicle !== 'N/A'
+                    ? fleetVehicle
+                    : (assignment.vehicle || 'N/A');
+            const isDeployed = vehicleStatus === 'Deployee';
             const lookupId = assignment?.riderId || info.riderId || info.worker_code;
             const rentalPendingAmount =
                 lookupRentalPendingAmount(rentalPendingIndex, lookupId) ??
@@ -558,14 +594,14 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
 
             inactive.push({
                 ...info,
-                vehicle: assignment.vehicle || 'N/A',
-                vehicleStatus: assignment.vehicleStatus || 'Unknown',
+                vehicle,
+                vehicleStatus,
                 hubLocation: assignment.hubLocation || 'N/A',
                 sdOverall: assignment.sdOverall || '0',
                 model: assignment.model || 'N/A',
                 daysSinceActive,
                 rentalPendingAmount,
-                canSend: info.email && info.email !== 'N/A' && info.email.includes('@') && assignment.vehicle && assignment.vehicle !== 'N/A' && isDeployed
+                canSend: info.email && info.email !== 'N/A' && info.email.includes('@') && vehicle && vehicle !== 'N/A' && isDeployed
             });
         });
 
@@ -574,7 +610,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
             const db = typeof b.daysSinceActive === 'number' ? b.daysSinceActive : 9999;
             return db - da;
         });
-    }, [riderData, infoMap, inactiveDays, rentalPendingIndex]);
+    }, [riderData, infoMap, inactiveDays, rentalPendingIndex, fleetStatusCtx]);
 
     const availableFilters = useMemo(() => {
         const months = new Set();
@@ -960,7 +996,7 @@ const InactiveRiderMailer = ({ riderData, kycData, fleetData, onboardingData, in
                                 </td>
                                 <td style={{ padding: '0.6rem 0.75rem' }}>
                                     <div style={{ marginBottom: '4px' }}>
-                                        <span className="status-badge" style={{ padding: '0.1rem 0.4rem', fontSize: '0.7rem', background: r.vehicleStatus?.toLowerCase().includes('deploy') ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255,255,255,0.05)', color: r.vehicleStatus?.toLowerCase().includes('deploy') ? '#22c55e' : 'var(--text-dim)' }}>
+                                        <span className="status-badge" style={{ padding: '0.1rem 0.4rem', fontSize: '0.7rem', background: r.vehicleStatus === 'Deployee' ? 'rgba(34, 197, 94, 0.1)' : r.vehicleStatus === 'Return' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(255,255,255,0.05)', color: r.vehicleStatus === 'Deployee' ? '#22c55e' : r.vehicleStatus === 'Return' ? '#f59e0b' : 'var(--text-dim)' }}>
                                             {r.vehicleStatus}
                                         </span>
                                     </div>

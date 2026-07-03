@@ -308,6 +308,16 @@ function resolveAttritionFleetInfo(fleetCtx, riderIndex, workerCode, mobile) {
   }
 }
 
+/** Build fleet interval context for deploy/return status (inactive mailer, attrition, etc.). */
+export function buildRiderFleetStatusContext(fleetRows, asOfDate = new Date()) {
+  return buildAttritionFleetContext(fleetRows, asOfDate)
+}
+
+/** Current fleet deploy/return status for a rider (Deployee | Return | N/A). */
+export function resolveRiderFleetDeployStatus(fleetCtx, workerCode, mobile, riderIndex = null) {
+  return resolveAttritionFleetInfo(fleetCtx, riderIndex, workerCode, mobile)
+}
+
 /** Latest date in rider_metrics with deliveries — used as "today" for attrition. */
 export function resolveAsOfDate(riderRows) {
   let maxDate = null

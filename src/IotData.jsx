@@ -18,6 +18,7 @@ import {
   fetchIotDataInRange,
   loadIotSummary,
   saveIotRows,
+  fetchRiderOrdersForIot,
   getIotDbSetupMessage,
   isMissingIotTable,
 } from './lib/iotDataDb'
@@ -42,6 +43,9 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const [currentPage, setCurrentPage] = useState(1)
   const [uploading, setUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState(null)
+  const [riderOrderRows, setRiderOrderRows] = useState([])
+  const [riderOrdersLoading, setRiderOrdersLoading] = useState(false)
+  const [riderOrdersError, setRiderOrdersError] = useState(null)
 
   const loadSummary = useCallback(async () => {
     try {
@@ -88,9 +92,35 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     if (!missingTable) loadRangeData()
   }, [loadRangeData, missingTable])
 
+  const loadRiderOrders = useCallback(async () => {
+    if (!dateFrom || !dateTo || dateFrom > dateTo) {
+      setRiderOrderRows([])
+      return
+    }
+    setRiderOrdersLoading(true)
+    setRiderOrdersError(null)
+    try {
+      const rows = await fetchRiderOrdersForIot(dateFrom, dateTo, { fallbackRows: riderData })
+      setRiderOrderRows(rows)
+      if (!rows.length) {
+        setRiderOrdersError('No rider order data for this date range. Orders will show as 0.')
+      }
+    } catch (err) {
+      console.warn('IoT rider orders load failed:', err)
+      setRiderOrdersError(err?.message || 'Failed to load rider orders')
+      setRiderOrderRows([])
+    } finally {
+      setRiderOrdersLoading(false)
+    }
+  }, [dateFrom, dateTo, riderData])
+
+  useEffect(() => {
+    loadRiderOrders()
+  }, [loadRiderOrders])
+
   const reportRows = useMemo(
-    () => buildIotVehicleReport(iotRows, fleetData, riderData, { dateFrom, dateTo }),
-    [iotRows, fleetData, riderData, dateFrom, dateTo]
+    () => buildIotVehicleReport(iotRows, fleetData, riderOrderRows, { dateFrom, dateTo }),
+    [iotRows, fleetData, riderOrderRows, dateFrom, dateTo]
   )
 
   const stats = useMemo(() => summarizeIotReport(reportRows), [reportRows])
@@ -255,8 +285,8 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
             style={{ padding: '0.45rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
           />
         </label>
-        <button type="button" className="btn-primary" onClick={loadRangeData} disabled={iotLoading} style={{ padding: '0.5rem 1rem' }}>
-          {iotLoading ? <Loader size={16} className="spin" /> : 'Apply range'}
+        <button type="button" className="btn-primary" onClick={() => { loadRangeData(); loadRiderOrders() }} disabled={iotLoading || riderOrdersLoading} style={{ padding: '0.5rem 1rem' }}>
+          {iotLoading || riderOrdersLoading ? <Loader size={16} className="spin" /> : 'Apply range'}
         </button>
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
@@ -285,6 +315,13 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
         </div>
       )}
 
+      {riderOrdersError && !riderOrdersLoading && (
+        <div className="glass" style={{ marginBottom: '1rem', padding: '0.65rem 0.85rem', fontSize: '0.85rem', color: '#fbbf24', background: 'rgba(251, 191, 36, 0.1)' }}>
+          <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />
+          {riderOrdersError}
+        </div>
+      )}
+
       {iotError && !iotLoading && (
         <div className="glass" style={{ marginBottom: '1rem', padding: '0.75rem 1rem', display: 'flex', gap: '0.5rem', alignItems: 'center', color: '#fbbf24' }}>
           <AlertTriangle size={18} />
@@ -307,7 +344,9 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
         </div>
         <div className="stat-card glass">
           <div className="label">Total orders</div>
-          <div className="value">{stats.totalOrders.toLocaleString('en-IN')}</div>
+          <div className="value">
+            {riderOrdersLoading ? '…' : stats.totalOrders.toLocaleString('en-IN')}
+          </div>
         </div>
         <div className="stat-card glass">
           <div className="label">Deployed riders matched</div>
@@ -389,7 +428,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
                         </span>
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: r.orderCount > 0 ? '#4ade80' : 'var(--text-dim)' }}>
-                        {r.orderCount.toLocaleString('en-IN')}
+                        {riderOrdersLoading ? '…' : r.orderCount.toLocaleString('en-IN')}
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: '#38bdf8' }}>
                         {r.runningDistanceKm.toLocaleString('en-IN', { maximumFractionDigits: 2 })}

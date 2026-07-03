@@ -46,6 +46,15 @@ function normalizePhone(value) {
   return digits.length >= 6 ? digits : ''
 }
 
+function addRiderDayOrders(indexMap, riderKey, dateKey, delivered) {
+  const key = (riderKey ?? '').toString().trim()
+  if (!key) return
+  const idKey = normalizeRiderIdKey(key)
+  if (!idKey) return
+  const fullKey = `${idKey}|${dateKey}`
+  indexMap.set(fullKey, (indexMap.get(fullKey) || 0) + delivered)
+}
+
 /** rider_id/worker_code + date → delivered orders (from rider_metrics). */
 export function buildRiderDayOrderIndex(riderRows) {
   const byWorkerDate = new Map()
@@ -58,11 +67,8 @@ export function buildRiderDayOrderIndex(riderRows) {
     const delivered = parseInt(row.delivered, 10) || 0
     if (!delivered) continue
 
-    const workerKey = normalizeRiderIdKey(row.worker_code)
-    if (workerKey) {
-      const key = `${workerKey}|${dateKey}`
-      byWorkerDate.set(key, (byWorkerDate.get(key) || 0) + delivered)
-    }
+    addRiderDayOrders(byWorkerDate, row.worker_code, dateKey, delivered)
+    addRiderDayOrders(byWorkerDate, row.rider_id, dateKey, delivered)
 
     const phone = normalizePhone(row.mob_number)
     if (phone) {

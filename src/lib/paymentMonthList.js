@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { fetchAllData } from './supabaseFetch'
 
 const MONTH_ABBR = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
@@ -38,6 +39,28 @@ export function mergeMonthLists(...lists) {
   return sortMonthLabels(lists.flat())
 }
 
+/**
+ * Row count for upload tables. Tries exact count first; in production exact head
+ * requests often time out while row selects still work — falls back to estimated
+ * then paginated id scan.
+ */
+export async function fetchTableCount(tableName, { maxRetries = 8 } = {}) {
+  if (!tableName) return 0
+
+  const exact = await supabase.from(tableName).select('id', { count: 'exact', head: true })
+  if (!exact.error && exact.count != null) return exact.count
+
+  const estimated = await supabase.from(tableName).select('id', { count: 'estimated', head: true })
+  if (!estimated.error && estimated.count != null && estimated.count > 0) return estimated.count
+
+  const probe = await supabase.from(tableName).select('id').limit(1)
+  if (probe.error) throw probe.error
+  if (!probe.data?.length) return 0
+
+  const { data } = await fetchAllData(tableName, 'id', 'id', { useKeyset: true, maxRetries })
+  return data?.length ?? 0
+}
+
 /** Latest row created_at for a payment upload table (null if empty). */
 export async function fetchLastUploadAt(tableName) {
   if (!tableName) return null
@@ -53,6 +76,16 @@ export async function fetchLastUploadAt(tableName) {
     .maybeSingle()
   if (error) throw error
   return data?.created_at ?? null
+}
+
+/** Safe last-upload lookup — never fails the parent summary load. */
+export async function fetchLastUploadAtSafe(tableName) {
+  try {
+    return await fetchLastUploadAt(tableName)
+  } catch (err) {
+    console.warn(`[payment] last upload time for ${tableName}:`, err?.message || err)
+    return null
+  }
 }
 
 export function formatLastUploadAt(iso) {

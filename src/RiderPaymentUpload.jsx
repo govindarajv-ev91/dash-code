@@ -298,8 +298,11 @@ export default function RiderPaymentUpload() {
   const [collationMessage, setCollationMessage] = useState(null)
   const [rentalMessage, setRentalMessage] = useState(null)
   const [resetConfirm, setResetConfirm] = useState(null)
+  const [loadError, setLoadError] = useState(null)
+  const [missingTables, setMissingTables] = useState([])
 
   const refreshSummaries = useCallback(async () => {
+    setLoadError(null)
     const [payment, collation, rental] = await Promise.all([
       loadRiderPaymentSummary(),
       loadManualCollationSummary(),
@@ -320,12 +323,22 @@ export default function RiderPaymentUpload() {
     setPaymentResetMonth((prev) => ((payment.months || []).includes(prev) ? prev : ''))
     setCollationResetMonth((prev) => ((collation.months || []).includes(prev) ? prev : ''))
     setRentalResetMonth((prev) => ((rental.months || []).includes(prev) ? prev : ''))
+
+    const missing = []
+    if (payment.missingTable) missing.push('rider_payment_data')
+    if (collation.missingTable) missing.push('manual_collation_data')
+    if (rental.missingTable) missing.push('rental_pending_data')
+    setMissingTables(missing)
+
     return { payment, collation, rental }
   }, [])
 
   useEffect(() => {
     refreshSummaries()
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Rider payment upload load failed:', err)
+        setLoadError(err?.message || 'Failed to load payment data from Supabase. Check connection and try again.')
+      })
       .finally(() => setLoading(false))
   }, [refreshSummaries])
 
@@ -576,6 +589,35 @@ export default function RiderPaymentUpload() {
         <Database size={16} />
         First-time setup: run <code style={{ color: '#fff' }}>sql/create_rider_payment_tables.sql</code> in Supabase SQL Editor.
       </div>
+
+      {loadError && (
+        <div className="glass" style={{ marginBottom: '1.25rem', padding: '0.85rem 1rem', fontSize: '0.85rem', color: '#f87171', background: 'rgba(239,68,68,0.1)', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <AlertTriangle size={16} />
+            {loadError}
+          </span>
+          <button
+            type="button"
+            className="glass-btn"
+            onClick={() => {
+              setLoading(true)
+              refreshSummaries()
+                .catch((err) => setLoadError(err?.message || 'Failed to load payment data.'))
+                .finally(() => setLoading(false))
+            }}
+            style={{ padding: '0.4rem 0.85rem' }}
+          >
+            Retry load
+          </button>
+        </div>
+      )}
+
+      {missingTables.length > 0 && !loadError && (
+        <div className="glass" style={{ marginBottom: '1.25rem', padding: '0.85rem 1rem', fontSize: '0.85rem', color: '#fbbf24', background: 'rgba(251,191,36,0.1)' }}>
+          <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: '0.35rem' }} />
+          Missing table(s): {missingTables.join(', ')}. Run the SQL setup script in Supabase, then refresh.
+        </div>
+      )}
 
       <UploadSection
         title="Rider Payment Data"

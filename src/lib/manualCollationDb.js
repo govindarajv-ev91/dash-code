@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAt } from './paymentMonthList'
+import { collectMonthsFromRows, mergeMonthLists, fetchTableCount, fetchLastUploadAtSafe } from './paymentMonthList'
 
 export const MANUAL_COLLATION_TABLE = 'manual_collation_data'
 export const MANUAL_COLLATION_COLUMNS = '*'
@@ -11,9 +11,7 @@ export function isMissingManualCollationTable(error) {
 }
 
 export async function fetchManualCollationCount() {
-  const probe = await supabase.from(MANUAL_COLLATION_TABLE).select('id', { count: 'exact', head: true })
-  if (probe.error) throw probe.error
-  return probe.count ?? 0
+  return fetchTableCount(MANUAL_COLLATION_TABLE)
 }
 
 export async function fetchManualCollationPreview(limit = 50) {
@@ -83,7 +81,10 @@ export async function fetchAllManualCollation({ force = false } = {}) {
   collationInflight = (async () => {
     const probe = await supabase.from(MANUAL_COLLATION_TABLE).select('id').limit(1)
     if (probe.error) throw probe.error
-    const { data } = await fetchAllData(MANUAL_COLLATION_TABLE, MANUAL_COLLATION_COLUMNS, 'id', { useKeyset: true })
+    const { data } = await fetchAllData(MANUAL_COLLATION_TABLE, MANUAL_COLLATION_COLUMNS, 'id', {
+      useKeyset: true,
+      maxRetries: 10,
+    })
     cachedCollation = data || []
     return cachedCollation
   })().finally(() => {
@@ -101,9 +102,16 @@ export function clearManualCollationCache() {
 export async function loadManualCollationSummary() {
   try {
     const [count, preview] = await Promise.all([
-      fetchManualCollationCount(),
-      fetchManualCollationCount().then((n) => (n > 0 ? fetchManualCollationPreview(25) : [])),
+      fetchManualCollationCount().catch((err) => {
+        if (isMissingManualCollationTable(err)) throw err
+        return 0
+      }),
+      fetchManualCollationPreview(25).catch(() => []),
     ])
+    let resolvedCount = count
+    if (resolvedCount === 0 && preview.length > 0) {
+      resolvedCount = await fetchTableCount(MANUAL_COLLATION_TABLE, { maxRetries: 10 }).catch(() => preview.length)
+    }
     let months = []
     try {
       months = await fetchManualCollationMonths()
@@ -111,8 +119,11 @@ export async function loadManualCollationSummary() {
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    const lastUploadAt = count > 0 ? await fetchLastUploadAt(MANUAL_COLLATION_TABLE) : null
-    return { count, preview, months, lastUploadAt, fromDb: true }
+    const lastUploadAt =
+      resolvedCount > 0 || preview.length > 0
+        ? await fetchLastUploadAtSafe(MANUAL_COLLATION_TABLE)
+        : null
+    return { count: resolvedCount, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingManualCollationTable(err)) {
       return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }

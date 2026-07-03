@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAt } from './paymentMonthList'
+import { collectMonthsFromRows, mergeMonthLists, fetchTableCount, fetchLastUploadAtSafe } from './paymentMonthList'
 
 export const RIDER_PAYMENT_TABLE = 'rider_payment_data'
 export const RIDER_PAYMENT_COLUMNS = '*'
@@ -11,9 +11,7 @@ export function isMissingRiderPaymentTable(error) {
 }
 
 export async function fetchRiderPaymentCount() {
-  const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id', { count: 'exact', head: true })
-  if (probe.error) throw probe.error
-  return probe.count ?? 0
+  return fetchTableCount(RIDER_PAYMENT_TABLE)
 }
 
 export async function fetchRiderPaymentPreview(limit = 50) {
@@ -83,7 +81,10 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
   paymentsInflight = (async () => {
     const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
     if (probe.error) throw probe.error
-    const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_COLUMNS, 'id', { useKeyset: true })
+    const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_COLUMNS, 'id', {
+      useKeyset: true,
+      maxRetries: 10,
+    })
     cachedPayments = data || []
     return cachedPayments
   })().finally(() => {
@@ -101,9 +102,16 @@ export function clearRiderPaymentCache() {
 export async function loadRiderPaymentSummary() {
   try {
     const [count, preview] = await Promise.all([
-      fetchRiderPaymentCount(),
-      fetchRiderPaymentCount().then((n) => (n > 0 ? fetchRiderPaymentPreview(25) : [])),
+      fetchRiderPaymentCount().catch((err) => {
+        if (isMissingRiderPaymentTable(err)) throw err
+        return 0
+      }),
+      fetchRiderPaymentPreview(25).catch(() => []),
     ])
+    let resolvedCount = count
+    if (resolvedCount === 0 && preview.length > 0) {
+      resolvedCount = await fetchTableCount(RIDER_PAYMENT_TABLE, { maxRetries: 10 }).catch(() => preview.length)
+    }
     let months = []
     try {
       months = await fetchRiderPaymentMonths()
@@ -111,8 +119,11 @@ export async function loadRiderPaymentSummary() {
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    const lastUploadAt = count > 0 ? await fetchLastUploadAt(RIDER_PAYMENT_TABLE) : null
-    return { count, preview, months, lastUploadAt, fromDb: true }
+    const lastUploadAt =
+      resolvedCount > 0 || preview.length > 0
+        ? await fetchLastUploadAtSafe(RIDER_PAYMENT_TABLE)
+        : null
+    return { count: resolvedCount, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingRiderPaymentTable(err)) {
       return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }

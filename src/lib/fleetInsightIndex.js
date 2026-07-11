@@ -184,6 +184,37 @@ function normalizeName(value) {
   return (value ?? '').toString().trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
+/** FE944231 ↔ 944231 and similar ID format variants for fleet ↔ metrics matching. */
+export function extractRiderIdAliases(value) {
+  const aliases = new Set()
+  const raw = (value ?? '').toString().trim()
+  if (!raw) return aliases
+
+  const idKey = normalizeRiderIdKey(raw)
+  if (idKey) aliases.add(idKey)
+
+  const prefixMatch = idKey.match(/^([A-Z]{2,5})(\d+)$/i)
+  if (prefixMatch?.[2]?.length >= 5) {
+    aliases.add(prefixMatch[2])
+    aliases.add(`${prefixMatch[1]}${prefixMatch[2]}`)
+  }
+
+  const embeddedFe = idKey.match(/FE(\d{5,})/i)
+  if (embeddedFe) {
+    aliases.add(`FE${embeddedFe[1]}`)
+    aliases.add(embeddedFe[1])
+  }
+
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length >= 5) aliases.add(digits)
+
+  return aliases
+}
+
+export function normalizeInsightPhone(value) {
+  return normalizePhone(value)
+}
+
 export { normalizeFleetStatus } from './fleetDeployReturnExport'
 
 /** Same merged fleet rows used on Fleet Data page — dedupe overlapping deploy/return events. */
@@ -220,8 +251,7 @@ export function buildFleetHistoryIndex(fleetRows) {
   const byName = new Map()
 
   for (const row of prepared) {
-    const idKey = normalizeRiderIdKey(row.rider_id)
-    if (idKey) {
+    for (const idKey of extractRiderIdAliases(row.rider_id)) {
       if (!byId.has(idKey)) byId.set(idKey, [])
       byId.get(idKey).push(row)
     }
@@ -254,8 +284,10 @@ export function buildFleetHistoryIndex(fleetRows) {
 
 export function resolveFleetHistoryForRider({ workerCode, mobile, name }, index) {
   const { byId, byPhone, byName } = index
-  const idKey = normalizeRiderIdKey(workerCode)
-  if (idKey && byId.has(idKey)) return byId.get(idKey)
+
+  for (const alias of extractRiderIdAliases(workerCode)) {
+    if (byId.has(alias)) return byId.get(alias)
+  }
 
   const phone = normalizePhone(mobile)
   if (phone && byPhone.has(phone)) return byPhone.get(phone)
@@ -264,6 +296,47 @@ export function resolveFleetHistoryForRider({ workerCode, mobile, name }, index)
   if (riderName && byName.has(riderName)) return byName.get(riderName)
 
   return []
+}
+
+/** Index currently-deployed fleet assignments by rider ID aliases + phone. */
+export function buildCurrentDeployLookup(assignments) {
+  const byId = new Map()
+  const byPhone = new Map()
+  const byVehicle = new Map()
+
+  for (const assignment of assignments || []) {
+    const vehicleKey = vehiclePartitionKey(assignment.vehicleNumber)
+    if (vehicleKey) byVehicle.set(vehicleKey, assignment)
+
+    for (const alias of extractRiderIdAliases(assignment.riderId)) {
+      if (!byId.has(alias)) byId.set(alias, assignment)
+    }
+
+    const phone = normalizePhone(assignment.mobile)
+    if (phone && !byPhone.has(phone)) byPhone.set(phone, assignment)
+  }
+
+  return { byId, byPhone, byVehicle }
+}
+
+export function lookupCurrentDeploy(lookup, { workerCode, mobile, vehicleNumber }) {
+  if (!lookup) return null
+
+  for (const alias of extractRiderIdAliases(workerCode)) {
+    const hit = lookup.byId.get(alias)
+    if (hit) return hit
+  }
+
+  const phone = normalizePhone(mobile)
+  if (phone) {
+    const hit = lookup.byPhone.get(phone)
+    if (hit) return hit
+  }
+
+  const vehicleKey = vehiclePartitionKey(vehicleNumber)
+  if (vehicleKey) return lookup.byVehicle.get(vehicleKey) || null
+
+  return null
 }
 
 export function enrichRiderFromFleetRow(rider, fleetRow) {

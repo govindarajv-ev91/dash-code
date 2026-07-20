@@ -3,9 +3,14 @@ import { parseFleetDate } from './fleetDeployReturnExport'
 import { vehiclePartitionKey } from './fleetDeployReturnExport'
 import {
   getCurrentlyDeployedAssignments,
-  normalizeRiderIdKey,
   parseMetricDate,
 } from './riderPerformanceReport'
+import {
+  buildFleetIntervalIndexes,
+  extractRiderIdAliases,
+  findRiderForVehicleOnDate,
+  prepareMergedFleetRows,
+} from './fleetInsightIndex'
 
 function parseRangeDate(value) {
   if (!value) return null
@@ -47,12 +52,10 @@ function normalizePhone(value) {
 }
 
 function addRiderDayOrders(indexMap, riderKey, dateKey, delivered) {
-  const key = (riderKey ?? '').toString().trim()
-  if (!key) return
-  const idKey = normalizeRiderIdKey(key)
-  if (!idKey) return
-  const fullKey = `${idKey}|${dateKey}`
-  indexMap.set(fullKey, (indexMap.get(fullKey) || 0) + delivered)
+  for (const alias of extractRiderIdAliases(riderKey)) {
+    const fullKey = `${alias}|${dateKey}`
+    indexMap.set(fullKey, (indexMap.get(fullKey) || 0) + delivered)
+  }
 }
 
 /** rider_id/worker_code + date → delivered orders (from rider_metrics). */
@@ -83,9 +86,8 @@ export function buildRiderDayOrderIndex(riderRows) {
 export function lookupRiderDayOrders(assignment, dateKey, orderIndex) {
   if (!assignment || !dateKey || !orderIndex) return 0
 
-  const idKey = normalizeRiderIdKey(assignment.riderId)
-  if (idKey) {
-    const byId = orderIndex.byWorkerDate.get(`${idKey}|${dateKey}`)
+  for (const alias of extractRiderIdAliases(assignment.riderId)) {
+    const byId = orderIndex.byWorkerDate.get(`${alias}|${dateKey}`)
     if (byId != null) return byId
   }
 
@@ -98,6 +100,37 @@ export function lookupRiderDayOrders(assignment, dateKey, orderIndex) {
   return 0
 }
 
+function resolveIotAssignment(interval, openAssignment) {
+  if (interval) {
+    return {
+      vehicleNumber: interval.vehicleNumber,
+      riderId: interval.riderId || openAssignment?.riderId || '',
+      riderName: interval.riderName || openAssignment?.riderName || '—',
+      mobile: interval.mobile || openAssignment?.mobile || '',
+      client: openAssignment?.client || '—',
+      city: openAssignment?.city || '—',
+      hub: openAssignment?.hub || '—',
+    }
+  }
+  return openAssignment || null
+}
+
+/** Pre-compute open fleet assignments per IoT run date (avoids O(rows × fleet) work). */
+function buildAssignmentCacheByDate(fleetRows, runDates) {
+  const cache = new Map()
+  for (const runDate of runDates) {
+    const asOf = parseRangeDate(runDate)
+    if (!asOf) continue
+    const openByVehicle = new Map()
+    for (const assignment of getCurrentlyDeployedAssignments(fleetRows, asOf)) {
+      const key = vehiclePartitionKey(assignment.vehicleNumber)
+      if (key) openByVehicle.set(key, assignment)
+    }
+    cache.set(runDate, openByVehicle)
+  }
+  return cache
+}
+
 /**
  * IoT rows by vehicle + run_date with fleet rider/client as of that date and rider order count.
  */
@@ -105,32 +138,31 @@ export function buildIotVehicleReport(iotRows, fleetRows, riderRows, { dateFrom,
   void dateFrom
   void dateTo
 
+  if (!iotRows?.length) return []
+
   const orderIndex = buildRiderDayOrderIndex(riderRows)
-  const assignmentCache = new Map()
+  const preparedFleet = prepareMergedFleetRows(fleetRows)
+  const { vehicleIntervals } = buildFleetIntervalIndexes(preparedFleet)
 
-  function assignmentMapForDate(dateStr) {
-    if (!assignmentCache.has(dateStr)) {
-      const asOf = parseRangeDate(dateStr) || new Date()
-      const assignments = getCurrentlyDeployedAssignments(fleetRows, asOf)
-      const byVehicle = new Map()
-      for (const assignment of assignments) {
-        const key = vehiclePartitionKey(assignment.vehicleNumber)
-        if (key) byVehicle.set(key, assignment)
-      }
-      assignmentCache.set(dateStr, byVehicle)
-    }
-    return assignmentCache.get(dateStr)
-  }
-
-  const rows = []
-
-  for (const row of iotRows || []) {
+  const runDates = new Set()
+  const parsedIot = []
+  for (const row of iotRows) {
     const vehicleNumber = (row.vehicle_number || row.raw_vehicle_id || '').toString().trim()
     const vehicleKey = vehiclePartitionKey(vehicleNumber)
     const runDate = normalizeIotRunDate(row.run_date ?? row.record_date)
     if (!vehicleKey || !runDate) continue
+    runDates.add(runDate)
+    parsedIot.push({ row, vehicleNumber, vehicleKey, runDate })
+  }
 
-    const assignment = assignmentMapForDate(runDate).get(vehicleKey)
+  const assignmentByDate = buildAssignmentCacheByDate(fleetRows, runDates)
+  const rows = []
+
+  for (const { row, vehicleNumber, vehicleKey, runDate } of parsedIot) {
+    const asOf = parseRangeDate(runDate)
+    const interval = asOf ? findRiderForVehicleOnDate(vehicleIntervals, vehicleKey, asOf) : null
+    const openAssignment = assignmentByDate.get(runDate)?.get(vehicleKey)
+    const assignment = resolveIotAssignment(interval, openAssignment)
     const orderCount = lookupRiderDayOrders(assignment, runDate, orderIndex)
 
     rows.push({

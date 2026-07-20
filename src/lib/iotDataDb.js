@@ -8,8 +8,27 @@ import { parseMetricDate } from './riderPerformanceReport'
 export const IOT_RIDER_ORDER_COLUMNS =
   'id,delivered,date_record,worker_code,mob_number'
 
-let cachedRiderOrderFetch = null
-let cachedRiderOrderKey = ''
+let sessionRiderOrders = null
+let sessionRiderOrdersInflight = null
+
+async function getRiderOrdersSessionCache() {
+  if (sessionRiderOrders) return sessionRiderOrders
+  if (sessionRiderOrdersInflight) return sessionRiderOrdersInflight
+
+  sessionRiderOrdersInflight = fetchAllData('rider_metrics', IOT_RIDER_ORDER_COLUMNS, 'id', {
+    pageSize: 1000,
+    maxRetries: 10,
+  })
+    .then(({ data }) => {
+      sessionRiderOrders = data || []
+      return sessionRiderOrders
+    })
+    .finally(() => {
+      sessionRiderOrdersInflight = null
+    })
+
+  return sessionRiderOrdersInflight
+}
 
 /** Keep rider_metrics rows whose date_record falls in [dateFrom, dateTo] (yyyy-MM-dd). */
 export function filterRiderRowsToDateRange(rows, dateFrom, dateTo) {
@@ -27,78 +46,26 @@ export function filterRiderRowsToDateRange(rows, dateFrom, dateTo) {
   return out
 }
 
-async function fetchRiderOrdersByDateFilter(dateFrom, dateTo) {
-  const from = dateFrom.trim()
-  const to = dateTo.trim()
-  const all = []
-  let cursor = null
-  const pageSize = 1000
-
-  while (true) {
-    let query = supabase
-      .from('rider_metrics')
-      .select(IOT_RIDER_ORDER_COLUMNS)
-      .gte('date_record', from)
-      .lte('date_record', to)
-      .order('id', { ascending: true })
-      .limit(pageSize)
-
-    if (cursor != null) query = query.gt('id', cursor)
-
-    const { data, error } = await query
-    if (error) throw error
-    if (!data?.length) break
-
-    all.push(...data)
-    const lastId = data[data.length - 1]?.id
-    if (lastId == null || data.length < pageSize) break
-    cursor = lastId
-  }
-
-  return filterRiderRowsToDateRange(all, from, to)
-}
-
-/** Rider order rows for IoT date range — fetched on-page so production does not depend on App cache timing. */
+/** Rider order rows for IoT date range — session-cached, filtered in memory. */
 export async function fetchRiderOrdersForIot(dateFrom, dateTo, { fallbackRows = [] } = {}) {
   const from = (dateFrom ?? '').toString().trim()
   const to = (dateTo ?? '').toString().trim()
   if (!from || !to || from > to) return []
 
-  const cacheKey = `${from}|${to}`
-  if (cachedRiderOrderKey === cacheKey && cachedRiderOrderFetch) {
-    return cachedRiderOrderFetch
+  try {
+    const all = await getRiderOrdersSessionCache()
+    const filtered = filterRiderRowsToDateRange(all, from, to)
+    if (filtered.length) return filtered
+  } catch (err) {
+    console.warn('[IoT] rider_metrics fetch failed, using fallback:', err?.message || err)
   }
 
-  const load = (async () => {
-    try {
-      const scoped = await fetchRiderOrdersByDateFilter(from, to)
-      if (scoped.length) return scoped
-    } catch (err) {
-      console.warn('[IoT] rider_metrics date-scoped fetch failed:', err?.message || err)
-    }
-
-    try {
-      const { data } = await fetchAllData('rider_metrics', IOT_RIDER_ORDER_COLUMNS, 'id', {
-        pageSize: 1000,
-        maxRetries: 8,
-      })
-      const filtered = filterRiderRowsToDateRange(data || [], from, to)
-      if (filtered.length) return filtered
-    } catch (err) {
-      console.warn('[IoT] rider_metrics full fetch failed, using fallback:', err?.message || err)
-    }
-
-    return filterRiderRowsToDateRange(fallbackRows || [], from, to)
-  })()
-
-  cachedRiderOrderKey = cacheKey
-  cachedRiderOrderFetch = load
-  return load
+  return filterRiderRowsToDateRange(fallbackRows || [], from, to)
 }
 
 export function clearIotRiderOrderCache() {
-  cachedRiderOrderFetch = null
-  cachedRiderOrderKey = ''
+  sessionRiderOrders = null
+  sessionRiderOrdersInflight = null
 }
 
 /** Live Supabase table (Alt Mobility / pipeline ingest). */

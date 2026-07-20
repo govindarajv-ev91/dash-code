@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from 'react'
 import { format, subDays } from 'date-fns'
 import {
   Radio,
@@ -46,6 +46,8 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const [riderOrderRows, setRiderOrderRows] = useState([])
   const [riderOrdersLoading, setRiderOrdersLoading] = useState(false)
   const [riderOrdersError, setRiderOrdersError] = useState(null)
+  const riderDataRef = useRef(riderData)
+  riderDataRef.current = riderData
 
   const loadSummary = useCallback(async () => {
     try {
@@ -88,10 +90,6 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     loadSummary()
   }, [loadSummary])
 
-  useEffect(() => {
-    if (!missingTable) loadRangeData()
-  }, [loadRangeData, missingTable])
-
   const loadRiderOrders = useCallback(async () => {
     if (!dateFrom || !dateTo || dateFrom > dateTo) {
       setRiderOrderRows([])
@@ -100,7 +98,9 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     setRiderOrdersLoading(true)
     setRiderOrdersError(null)
     try {
-      const rows = await fetchRiderOrdersForIot(dateFrom, dateTo, { fallbackRows: riderData })
+      const rows = await fetchRiderOrdersForIot(dateFrom, dateTo, {
+        fallbackRows: riderDataRef.current,
+      })
       setRiderOrderRows(rows)
       if (!rows.length) {
         setRiderOrdersError('No rider order data for this date range. Orders will show as 0.')
@@ -112,11 +112,23 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     } finally {
       setRiderOrdersLoading(false)
     }
-  }, [dateFrom, dateTo, riderData])
+  }, [dateFrom, dateTo])
+
+  const applyRange = useCallback(() => {
+    loadRangeData()
+    loadRiderOrders()
+  }, [loadRangeData, loadRiderOrders])
 
   useEffect(() => {
-    loadRiderOrders()
-  }, [loadRiderOrders])
+    if (!missingTable) {
+      loadRangeData()
+      loadRiderOrders()
+    }
+    // Only reload when date range or table availability changes — not on every App riderData update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFrom, dateTo, missingTable])
+
+  const deferredSearch = useDeferredValue(searchTerm)
 
   const reportRows = useMemo(
     () => buildIotVehicleReport(iotRows, fleetData, riderOrderRows, { dateFrom, dateTo }),
@@ -126,7 +138,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const stats = useMemo(() => summarizeIotReport(reportRows), [reportRows])
 
   const filtered = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase()
+    const q = deferredSearch.trim().toLowerCase()
     if (!q) return reportRows
     return reportRows.filter(
       (r) =>
@@ -138,7 +150,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
         r.city.toLowerCase().includes(q) ||
         String(r.orderCount).includes(q)
     )
-  }, [reportRows, searchTerm])
+  }, [reportRows, deferredSearch])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE))
   const paginated = useMemo(() => {
@@ -285,7 +297,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
             style={{ padding: '0.45rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
           />
         </label>
-        <button type="button" className="btn-primary" onClick={() => { loadRangeData(); loadRiderOrders() }} disabled={iotLoading || riderOrdersLoading} style={{ padding: '0.5rem 1rem' }}>
+        <button type="button" className="btn-primary" onClick={applyRange} disabled={iotLoading || riderOrdersLoading} style={{ padding: '0.5rem 1rem' }}>
           {iotLoading || riderOrdersLoading ? <Loader size={16} className="spin" /> : 'Apply range'}
         </button>
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>

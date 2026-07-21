@@ -501,22 +501,106 @@ export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fle
   return rows
 }
 
-export function filterSdRows(rows, { search = '', cities = [] } = {}) {
+function normalizePhoneDigits(value) {
+  const digits = (value ?? '').toString().replace(/\D/g, '')
+  if (digits.length >= 10) return digits.slice(-10)
+  return digits
+}
+
+function sdRowMatchesSearch(row, q) {
+  return (
+    row.riderId.toLowerCase().includes(q) ||
+    row.riderName.toLowerCase().includes(q) ||
+    (row.riderPhone || '').toLowerCase().includes(q) ||
+    normalizePhoneDigits(row.riderPhone).includes(normalizePhoneDigits(q)) ||
+    (row.firstDeployeeDate || '').toLowerCase().includes(q) ||
+    row.city.toLowerCase().includes(q) ||
+    row.client.toLowerCase().includes(q) ||
+    (row.vehicleNumber || '').toLowerCase().includes(q) ||
+    (row.vehicleDeployedAt || '').toLowerCase().includes(q) ||
+    (row.sdUtr || '').toLowerCase().includes(q)
+  )
+}
+
+/** Maps rider IDs ↔ phone numbers from fleet + SD rows (same phone, multiple rider IDs). */
+export function buildSdPhoneLinkIndex(fleetRows = [], sdRows = []) {
+  const riderToPhone = new Map()
+  const phoneToRiders = new Map()
+
+  const link = (riderId, phone) => {
+    const id = normalizeRiderIdKey(riderId)
+    const digits = normalizePhoneDigits(phone)
+    if (!id || !digits) return
+    riderToPhone.set(id, digits)
+    if (!phoneToRiders.has(digits)) phoneToRiders.set(digits, new Set())
+    phoneToRiders.get(digits).add(id)
+  }
+
+  for (const row of fleetRows || []) {
+    link(row.rider_id, row.rider_contact_number)
+  }
+  for (const row of sdRows || []) {
+    link(row.riderId, row.riderPhone)
+  }
+
+  return { riderToPhone, phoneToRiders }
+}
+
+function resolveSdPhoneLinkTargets(q, rows, phoneLinkIndex) {
+  const { riderToPhone, phoneToRiders } = phoneLinkIndex
+  const phones = new Set()
+  const riderIds = new Set()
+  const normalizedQPhone = normalizePhoneDigits(q)
+  const qLower = q.toLowerCase()
+
+  if (normalizedQPhone.length >= 6) phones.add(normalizedQPhone)
+
+  for (const row of rows || []) {
+    const id = normalizeRiderIdKey(row.riderId)
+    const idLower = id.toLowerCase()
+    if (idLower.includes(qLower) || row.riderId.toLowerCase().includes(qLower)) {
+      riderIds.add(id)
+      const phone = riderToPhone.get(id) || normalizePhoneDigits(row.riderPhone)
+      if (phone) phones.add(phone)
+    }
+  }
+
+  for (const [id, phone] of riderToPhone) {
+    if (id.toLowerCase().includes(qLower)) {
+      riderIds.add(id)
+      phones.add(phone)
+    }
+  }
+
+  for (const phone of phones) {
+    const linked = phoneToRiders.get(phone)
+    if (linked) linked.forEach((id) => riderIds.add(id))
+  }
+
+  return { phones, riderIds }
+}
+
+export function filterSdRows(rows, { search = '', cities = [], linkByPhone = false, phoneLinkIndex = null } = {}) {
   const q = search.toLowerCase().trim()
-  return rows.filter((r) => {
-    if (cities.length && !cities.includes(r.city)) return false
-    if (!q) return true
-    return (
-      r.riderId.toLowerCase().includes(q) ||
-      r.riderName.toLowerCase().includes(q) ||
-      (r.riderPhone || '').toLowerCase().includes(q) ||
-      (r.firstDeployeeDate || '').toLowerCase().includes(q) ||
-      r.city.toLowerCase().includes(q) ||
-      r.client.toLowerCase().includes(q) ||
-      (r.vehicleNumber || '').toLowerCase().includes(q) ||
-      (r.vehicleDeployedAt || '').toLowerCase().includes(q) ||
-      (r.sdUtr || '').toLowerCase().includes(q)
-    )
+  const base = rows.filter((r) => !cities.length || cities.includes(r.city))
+  if (!q) return base
+
+  if (!linkByPhone || !phoneLinkIndex) {
+    return base.filter((r) => sdRowMatchesSearch(r, q))
+  }
+
+  const { phones, riderIds } = resolveSdPhoneLinkTargets(q, base, phoneLinkIndex)
+
+  if (!phones.size && !riderIds.size) {
+    return base.filter((r) => sdRowMatchesSearch(r, q))
+  }
+
+  return base.filter((r) => {
+    const id = normalizeRiderIdKey(r.riderId)
+    const phone = phoneLinkIndex.riderToPhone.get(id) || normalizePhoneDigits(r.riderPhone)
+    if (riderIds.has(id)) return true
+    if (phone && phones.has(phone)) return true
+    return sdRowMatchesSearch(r, q)
   })
 }
 

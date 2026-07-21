@@ -7,6 +7,7 @@ import { fetchFleetSdRows } from './lib/fleetSdFetch'
 import {
   buildSdPaymentReport,
   buildEvRentMonthReport,
+  buildSdPhoneLinkIndex,
   filterSdRows,
   filterEvRentRows,
   formatInr,
@@ -52,6 +53,7 @@ export default function SdPaymentViewer() {
   const [selectedCity, setSelectedCity] = useState('')
   const [selectedMonth, setSelectedMonth] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
+  const [linkSearchByPhone, setLinkSearchByPhone] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -108,9 +110,20 @@ export default function SdPaymentViewer() {
     [evRentRows]
   )
 
+  const sdPhoneLinkIndex = useMemo(
+    () => buildSdPhoneLinkIndex(deferredFleet, sdRows),
+    [deferredFleet, sdRows]
+  )
+
   const filteredSd = useMemo(
-    () => filterSdRows(sdRows, { search: deferredSearch, cities: selectedCity ? [selectedCity] : [] }),
-    [sdRows, deferredSearch, selectedCity]
+    () =>
+      filterSdRows(sdRows, {
+        search: deferredSearch,
+        cities: selectedCity ? [selectedCity] : [],
+        linkByPhone: linkSearchByPhone,
+        phoneLinkIndex: sdPhoneLinkIndex,
+      }),
+    [sdRows, deferredSearch, selectedCity, linkSearchByPhone, sdPhoneLinkIndex]
   )
 
   const filteredEvRent = useMemo(
@@ -159,7 +172,7 @@ export default function SdPaymentViewer() {
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [activeTab, search, selectedCity, selectedMonth])
+  }, [activeTab, search, selectedCity, selectedMonth, linkSearchByPhone])
 
   const exportExcel = useCallback(() => {
     if (activeTab === 'sd') {
@@ -312,11 +325,29 @@ export default function SdPaymentViewer() {
             ))}
           </select>
         )}
+        {activeTab === 'sd' && (
+          <label
+            className="rp-toggle-check"
+            title="When on, searching a rider ID or phone shows all SD rows linked to that phone (e.g. Blinkit + BB for the same number)"
+            style={{ whiteSpace: 'nowrap' }}
+          >
+            <input
+              type="checkbox"
+              checked={linkSearchByPhone}
+              onChange={(e) => setLinkSearchByPhone(e.target.checked)}
+            />
+            Link search by phone
+          </label>
+        )}
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
           <input
             type="text"
-            placeholder="Search rider, phone, city, vehicle, UTR..."
+            placeholder={
+              activeTab === 'sd' && linkSearchByPhone
+                ? 'Search rider ID or phone (includes same phone records)...'
+                : 'Search rider, phone, city, vehicle, UTR...'
+            }
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ width: '100%', padding: '0.55rem 0.75rem 0.55rem 2.25rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', color: '#fff', outline: 'none' }}

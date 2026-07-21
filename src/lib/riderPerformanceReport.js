@@ -50,6 +50,11 @@ export function buildDayOrderHeader(asOfDate, dayOffset) {
   return `D-${dayOffset} Order (${format(d, 'dd/MM')})`
 }
 
+export function buildDayKmHeader(asOfDate, dayOffset) {
+  const d = subDays(startOfDay(asOfDate), dayOffset)
+  return `D-${dayOffset} KM (${format(d, 'dd/MM')})`
+}
+
 export function getRiderPerformanceHeaders(asOfDate = new Date()) {
   const asOf = startOfDay(asOfDate)
   const headers = []
@@ -73,6 +78,11 @@ export function getRiderPerformanceHeaders(asOfDate = new Date()) {
       continue
     }
     headers.push(h)
+  }
+
+  // Last 3 days IoT running distance (D-1 … D-3)
+  for (let n = 1; n <= 3; n++) {
+    headers.push(buildDayKmHeader(asOf, n))
   }
 
   return headers
@@ -576,12 +586,50 @@ export function classifyEfficiencyLabel(label) {
   return 'unknown'
 }
 
+export function hasZeroOrdersLast4Days(row, asOfDate = new Date()) {
+  const asOf = startOfDay(asOfDate)
+  for (let n = 1; n <= 4; n++) {
+    const header = buildDayOrderHeader(asOf, n)
+    const orders = Number(row[header] ?? row[`D-${n} Order`] ?? 0)
+    if (orders > 0) return false
+  }
+  return true
+}
+
+export function getZeroOrderRiderPerformanceHeaders(asOfDate = new Date()) {
+  const asOf = startOfDay(asOfDate)
+  return [
+    'Date',
+    'V no',
+    'ID',
+    'City',
+    'Category',
+    'Client',
+    'Name',
+    'mobile no',
+    'Hub location',
+    'Source',
+    'Eff/inff',
+    buildDayOrderHeader(asOf, 1),
+    buildDayOrderHeader(asOf, 2),
+    buildDayOrderHeader(asOf, 3),
+    buildDayOrderHeader(asOf, 4),
+    buildDayKmHeader(asOf, 1),
+    buildDayKmHeader(asOf, 2),
+    buildDayKmHeader(asOf, 3),
+    buildDayKmHeader(asOf, 4),
+    'In-active Days',
+    'Rental Pending Amount',
+  ]
+}
+
 export function filterRiderPerformanceRows(
   rows,
-  { city = 'All', client = 'All', source = 'All', search = '' } = {}
+  { city = 'All', client = 'All', source = 'All', search = '', view = 'all', asOfDate = new Date() } = {}
 ) {
   const q = search.trim().toLowerCase()
   return (rows || []).filter((row) => {
+    if (view === 'zero_orders' && !hasZeroOrdersLast4Days(row, asOfDate)) return false
     if (city !== 'All' && row.City !== city) return false
     if (client !== 'All' && row.Client !== client) return false
     if (source !== 'All' && row.Source !== source) return false
@@ -691,6 +739,17 @@ export function getCellValue(row, header, asOfDate = new Date()) {
   for (let n = 1; n <= 4; n++) {
     if (header === buildDayOrderHeader(asOf, n)) {
       return row[buildDayOrderHeader(asOf, n)] ?? row[`D-${n} Order`] ?? ''
+    }
+  }
+  for (let n = 1; n <= 4; n++) {
+    if (header === buildDayKmHeader(asOf, n)) {
+      const v = row[buildDayKmHeader(asOf, n)]
+      if (v === '' || v == null) return ''
+      const num = Number(v)
+      if (!Number.isNaN(num)) {
+        return num.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+      }
+      return v
     }
   }
   return row[header] ?? ''

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import {
   getRiderPerformanceHeaders,
+  getZeroOrderRiderPerformanceHeaders,
   buildRiderPerformanceReport,
   rowsToPerformanceCsv,
   getCellValue,
@@ -28,6 +29,7 @@ import {
   filterRiderPerformanceRows,
   summarizeRiderPerformanceRows,
   summarizeRentalPendingRows,
+  hasZeroOrdersLast4Days,
 } from './lib/riderPerformanceReport'
 import { downloadRiderPerformanceSummaryExcel } from './lib/riderPerformanceExcelExport'
 import {
@@ -35,6 +37,11 @@ import {
   buildRentalPendingByRiderIndex,
   lookupRentalPendingAmount,
 } from './lib/rentalPendingDb'
+import { fetchIotDataInRange } from './lib/iotDataDb'
+import {
+  enrichPerformanceRowsWithIotKm,
+  getIotKmDateRange,
+} from './lib/riderPerformanceIotKm'
 
 export default function RiderPerformance({
   fleetData,
@@ -52,9 +59,14 @@ export default function RiderPerformance({
   const [rentalPendingRows, setRentalPendingRows] = useState([])
   const [rentalPendingLoading, setRentalPendingLoading] = useState(true)
   const [includeNegativeRental, setIncludeNegativeRental] = useState(false)
+  const [activeViewTab, setActiveViewTab] = useState('all')
+  const [iotRows, setIotRows] = useState([])
+  const [iotLoading, setIotLoading] = useState(true)
   const today = useMemo(() => new Date(), [])
   const reportDate = format(today, 'yyyy-MM-dd')
-  const tableHeaders = useMemo(() => getRiderPerformanceHeaders(today), [today])
+  const allTableHeaders = useMemo(() => getRiderPerformanceHeaders(today), [today])
+  const zeroOrderTableHeaders = useMemo(() => getZeroOrderRiderPerformanceHeaders(today), [today])
+  const tableHeaders = activeViewTab === 'zero_orders' ? zeroOrderTableHeaders : allTableHeaders
 
   const isDataPending = fleetLoading || refreshing
   const deferredFleet = useDeferredValue(fleetData)
@@ -75,6 +87,26 @@ export default function RiderPerformance({
     loadRentalPending()
   }, [loadRentalPending])
 
+  const iotKmDateRange = useMemo(() => getIotKmDateRange(today), [today])
+
+  const loadIotKm = useCallback(
+    (force = false) => {
+      setIotLoading(true)
+      return fetchIotDataInRange(iotKmDateRange.from, iotKmDateRange.to)
+        .then((data) => setIotRows(data || []))
+        .catch((err) => {
+          console.warn('IoT KM load failed:', err)
+          setIotRows([])
+        })
+        .finally(() => setIotLoading(false))
+    },
+    [iotKmDateRange]
+  )
+
+  useEffect(() => {
+    loadIotKm()
+  }, [loadIotKm])
+
   const rentalPendingIndex = useMemo(
     () => buildRentalPendingByRiderIndex(rentalPendingRows),
     [rentalPendingRows]
@@ -83,11 +115,12 @@ export default function RiderPerformance({
   const reportRows = useMemo(() => {
     if (!deferredFleet?.length) return []
     const base = buildRiderPerformanceReport(deferredFleet, deferredRider, today)
-    return base.map((row) => ({
+    const withRental = base.map((row) => ({
       ...row,
       'Rental Pending Amount': lookupRentalPendingAmount(rentalPendingIndex, row.ID) ?? '',
     }))
-  }, [deferredFleet, deferredRider, today, rentalPendingIndex])
+    return enrichPerformanceRowsWithIotKm(withRental, iotRows, today)
+  }, [deferredFleet, deferredRider, today, rentalPendingIndex, iotRows])
 
   const cities = useMemo(() => {
     const set = new Set(reportRows.map((r) => r.City).filter(Boolean))
@@ -111,11 +144,17 @@ export default function RiderPerformance({
         client: clientFilter,
         source: sourceFilter,
         search,
+        view: activeViewTab === 'zero_orders' ? 'zero_orders' : 'all',
+        asOfDate: today,
       }),
-    [reportRows, search, cityFilter, clientFilter, sourceFilter]
+    [reportRows, search, cityFilter, clientFilter, sourceFilter, activeViewTab, today]
   )
 
   const stats = useMemo(() => summarizeRiderPerformanceRows(filteredRows), [filteredRows])
+  const zeroOrderCount = useMemo(
+    () => reportRows.filter((row) => hasZeroOrdersLast4Days(row, today)).length,
+    [reportRows, today]
+  )
   const rentalStats = useMemo(
     () => summarizeRentalPendingRows(filteredRows, { includeNegative: includeNegativeRental }),
     [filteredRows, includeNegativeRental]
@@ -140,8 +179,9 @@ export default function RiderPerformance({
     if (refreshData && !refreshing) {
       refreshData()
       loadRentalPending(true)
+      loadIotKm(true)
     }
-  }, [refreshData, refreshing, loadRentalPending])
+  }, [refreshData, refreshing, loadRentalPending, loadIotKm])
 
   const exportCsv = () => {
     const csv = rowsToPerformanceCsv(filteredRows, tableHeaders)
@@ -209,6 +249,9 @@ export default function RiderPerformance({
               )}
               {rentalPendingLoading && (
                 <span style={{ marginLeft: 8 }}>· Loading rental pending…</span>
+              )}
+              {iotLoading && (
+                <span style={{ marginLeft: 8 }}>· Loading IoT KM…</span>
               )}
               {dataUpdatedAt && !fleetLoading && !refreshing && (
                 <span style={{ marginLeft: 8 }}>
@@ -386,9 +429,32 @@ export default function RiderPerformance({
         </div>
       </div>
 
+      <div className="fdv-tab-bar glass" style={{ marginBottom: '1rem' }}>
+        <button
+          type="button"
+          className={`fdv-tab ${activeViewTab === 'all' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveViewTab('all')}
+        >
+          <UserCheck size={16} />
+          All Riders
+        </button>
+        <button
+          type="button"
+          className={`fdv-tab ${activeViewTab === 'zero_orders' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveViewTab('zero_orders')}
+        >
+          <TrendingDown size={16} />
+          0 Order Riders (4 days)
+          <span className="rp-tab-count">{zeroOrderCount.toLocaleString()}</span>
+        </button>
+      </div>
+
       <div className="rp-meta glass">
         <span>
           <strong>{displayRows.length.toLocaleString()}</strong> riders
+          {activeViewTab === 'zero_orders' && (
+            <span> · 0 orders on D-1, D-2, D-3 &amp; D-4</span>
+          )}
           {stats.total !== reportRows.length && (
             <span> (filtered from {reportRows.length.toLocaleString()})</span>
           )}
@@ -420,7 +486,9 @@ export default function RiderPerformance({
               ) : displayRows.length === 0 ? (
                 <tr>
                   <td colSpan={tableHeaders.length} className="rp-empty">
-                    No currently deployed riders found
+                    {activeViewTab === 'zero_orders'
+                      ? 'No riders with 0 orders on all of the last 4 days'
+                      : 'No currently deployed riders found'}
                   </td>
                 </tr>
               ) : (

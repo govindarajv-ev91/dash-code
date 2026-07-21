@@ -2045,6 +2045,24 @@ select option {
   margin-bottom: 0;
 }
 
+.rp-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.fdv-tab-active .rp-tab-count {
+  background: rgba(99, 102, 241, 0.25);
+  color: #fff;
+}
+
 .rp-recalculating {
   color: var(--primary);
   font-weight: 600;

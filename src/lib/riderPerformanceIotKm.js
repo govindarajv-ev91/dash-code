@@ -31,8 +31,11 @@ export function lookupVehicleDayKm(index, vehicleNumber, dateKey) {
   return Math.round(km * 100) / 100
 }
 
-export function enrichPerformanceRowsWithIotKm(rows, iotRows, asOfDate = new Date()) {
-  const index = buildVehicleDayKmIndex(iotRows)
+export function enrichPerformanceRowsWithIotKm(rows, iotRowsOrIndex, asOfDate = new Date()) {
+  const index =
+    iotRowsOrIndex instanceof Map
+      ? iotRowsOrIndex
+      : buildVehicleDayKmIndex(iotRowsOrIndex)
   const asOf = startOfDay(asOfDate)
 
   return (rows || []).map((row) => {

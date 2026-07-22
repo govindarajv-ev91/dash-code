@@ -1,4 +1,5 @@
 import {
+  addDays,
   differenceInCalendarDays,
   endOfWeek,
   format,
@@ -498,11 +499,16 @@ function buildRowFromAssignment(assignment, stats, asOf, fleetSourceByRider, rec
   return row
 }
 
-export function buildRiderPerformanceReport(fleetRows, riderRows, asOfDate = new Date()) {
+export function buildRiderPerformanceReport(
+  fleetRows,
+  riderRows,
+  asOfDate = new Date(),
+  { metricsIndex: metricsIndexOpt = null, fleetSourceByRider: fleetSourceOpt = null } = {}
+) {
   const asOf = startOfDay(asOfDate)
   const deployed = getCurrentlyDeployedAssignments(fleetRows, asOf)
-  const metricsIndex = buildRiderMetricsIndex(riderRows)
-  const fleetSourceByRider = buildFleetSourceByRider(fleetRows)
+  const metricsIndex = metricsIndexOpt || buildRiderMetricsIndex(riderRows)
+  const fleetSourceByRider = fleetSourceOpt || buildFleetSourceByRider(fleetRows)
 
   return deployed.map((assignment) => {
     const records = resolveRiderMetricRecords(assignment, metricsIndex)
@@ -584,6 +590,20 @@ export function classifyEfficiencyLabel(label) {
   if (s === 'Low frequency') return 'low'
   if (s === '0 Orders') return 'zero'
   return 'unknown'
+}
+
+/**
+ * Selected end date (e.g. 21st) → report asOf so D-1…D-4 = 21, 20, 19, 18.
+ * Internal asOf is endDate + 1 day (same pattern as All Riders vs yesterday).
+ */
+export function getZeroOrderAsOfFromEndDate(endDate) {
+  return addDays(startOfDay(endDate), 1)
+}
+
+/** Four calendar dates in the 0-order window (newest → oldest). */
+export function getZeroOrderWindowDates(endDate) {
+  const end = startOfDay(endDate)
+  return [0, 1, 2, 3].map((n) => subDays(end, n))
 }
 
 export function hasZeroOrdersLast4Days(row, asOfDate = new Date()) {

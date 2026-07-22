@@ -2228,11 +2228,23 @@ select option {
 .rp-table-wrap {
   padding: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .rp-table-scroll {
   overflow: auto;
-  max-height: calc(100vh - 320px);
+  max-height: calc(100vh - 380px);
+}
+
+.rp-table-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-color);
 }
 
 .rp-table {

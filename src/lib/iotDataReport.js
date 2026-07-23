@@ -51,14 +51,7 @@ function normalizePhone(value) {
   return digits.length >= 6 ? digits : ''
 }
 
-function addRiderDayOrders(indexMap, riderKey, dateKey, delivered) {
-  for (const alias of extractRiderIdAliases(riderKey)) {
-    const fullKey = `${alias}|${dateKey}`
-    indexMap.set(fullKey, (indexMap.get(fullKey) || 0) + delivered)
-  }
-}
-
-/** rider_id/worker_code + date → delivered orders (from rider_metrics). */
+/** rider_id/worker_code + date → delivered orders (from order_upload_data). */
 export function buildRiderDayOrderIndex(riderRows) {
   const byWorkerDate = new Map()
   const byPhoneDate = new Map()
@@ -70,8 +63,15 @@ export function buildRiderDayOrderIndex(riderRows) {
     const delivered = parseInt(row.delivered, 10) || 0
     if (!delivered) continue
 
-    addRiderDayOrders(byWorkerDate, row.worker_code, dateKey, delivered)
-    addRiderDayOrders(byWorkerDate, row.rider_id, dateKey, delivered)
+    // Deduplicate aliases across worker_code + rider_id so the same row is not added twice.
+    const idAliases = new Set([
+      ...extractRiderIdAliases(row.worker_code),
+      ...extractRiderIdAliases(row.rider_id),
+    ])
+    for (const alias of idAliases) {
+      const fullKey = `${alias}|${dateKey}`
+      byWorkerDate.set(fullKey, (byWorkerDate.get(fullKey) || 0) + delivered)
+    }
 
     const phone = normalizePhone(row.mob_number)
     if (phone) {

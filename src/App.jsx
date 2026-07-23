@@ -16,6 +16,7 @@ const VehicleInventory = lazy(() => import('./VehicleInventory'))
 const FleetDataViewer = lazy(() => import('./FleetDataViewer'))
 const RiderPerformance = lazy(() => import('./RiderPerformance'))
 const RiderPaymentUpload = lazy(() => import('./RiderPaymentUpload'))
+const OrderUpload = lazy(() => import('./OrderUpload'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
 const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
 const IotData = lazy(() => import('./IotData'))
@@ -28,7 +29,10 @@ import {
   FLEET_FULL_PAGE_SIZE,
 } from './lib/fleetDataConfig'
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield } from 'lucide-react'
+import { fetchAllOrderUploads, clearOrderUploadCache } from './lib/orderUploadDb'
+import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
+import { clearIotRiderOrderCache } from './lib/iotDataDb'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package } from 'lucide-react'
 import './index.css'
 
 const DB_NAME = 'DashFleetDB'
@@ -129,13 +133,25 @@ async function fetchFullFleetTables() {
 }
 
 async function fetchCoreDashboardData({ fullFleet = false } = {}) {
-  const riderRes = await fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', {
-    pageSize: FLEET_SLIM_PAGE_SIZE,
-  })
+  const [riderRes, uploadRows] = await Promise.all([
+    fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', {
+      pageSize: FLEET_SLIM_PAGE_SIZE,
+    }),
+    fetchAllOrderUploads().catch((err) => {
+      console.warn('order_upload_data load skipped:', err?.message || err)
+      return []
+    }),
+  ])
+  const mergedRiders = mergeRiderMetricSources(riderRes.data || [], uploadRows || [])
   const { fleetRes, formFleetRes } = fullFleet
     ? await fetchFullFleetTables()
     : await fetchSlimFleetTables()
-  return { riderRes, fleetRes, formFleetRes }
+  return {
+    riderRes: { ...riderRes, data: mergedRiders, metricsCount: riderRes.data?.length ?? 0, uploadCount: uploadRows?.length ?? 0 },
+    uploadRows,
+    fleetRes,
+    formFleetRes,
+  }
 }
 
 async function fetchSecondaryTables() {
@@ -223,12 +239,17 @@ function App() {
       setRefreshing(true)
       setFleetLoading(true)
       try {
-        await clearCacheKeys(['rider_metrics', 'fleet_data', FLEET_FORM_CACHE_KEY, 'fleet_sheet_data'])
-        const { riderRes, fleetRes, formFleetRes } = await fetchCoreDashboardData({ fullFleet })
+        await clearCacheKeys(['rider_metrics', 'order_upload_data', 'fleet_data', FLEET_FORM_CACHE_KEY, 'fleet_sheet_data'])
+        clearOrderUploadCache()
+        clearIotRiderOrderCache()
+        const { riderRes, uploadRows, fleetRes, formFleetRes } = await fetchCoreDashboardData({ fullFleet })
 
         if (riderRes.data?.length) {
           startTransition(() => setRiderData(riderRes.data))
-          scheduleCacheWrite(() => cacheData('rider_metrics', riderRes.data))
+          scheduleCacheWrite(() => {
+            cacheData('rider_metrics', riderRes.data)
+            if (uploadRows?.length) cacheData('order_upload_data', uploadRows)
+          })
         }
 
         const merged = applyFleetToState(fleetRes, formFleetRes)
@@ -250,6 +271,7 @@ function App() {
 
     const [
       cachedRiders,
+      cachedUploads,
       cachedFleet,
       cachedFormFleet,
       cachedWeekly,
@@ -258,6 +280,7 @@ function App() {
       cachedInventory,
     ] = await Promise.all([
       getCachedData('rider_metrics'),
+      getCachedData('order_upload_data'),
       getCachedData('fleet_data'),
       getCachedData(FLEET_FORM_CACHE_KEY),
       getCachedData('weekly_performance'),
@@ -266,7 +289,11 @@ function App() {
       getCachedData('vehicle_inventory'),
     ])
 
-    if (cachedRiders) startTransition(() => setRiderData(cachedRiders))
+    if (cachedRiders) {
+      startTransition(() => setRiderData(cachedRiders))
+    } else if (cachedUploads?.length) {
+      startTransition(() => setRiderData(mergeRiderMetricSources([], cachedUploads)))
+    }
     if (cachedFleet || cachedFormFleet) {
       const { legacy, form } = splitFleetBySource([
         ...(cachedFleet || []),
@@ -286,14 +313,22 @@ function App() {
     if (cachedRiders && cachedFleet) setLoading(false)
 
     try {
-      const [riderRes, slimFleet] = await Promise.all([
+      const [riderRes, uploadRows, slimFleet] = await Promise.all([
         fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', { pageSize: FLEET_SLIM_PAGE_SIZE }),
+        fetchAllOrderUploads().catch((err) => {
+          console.warn('order_upload_data load skipped:', err?.message || err)
+          return []
+        }),
         fetchSlimFleetTables(),
       ])
 
-      if (riderRes.data?.length) {
-        startTransition(() => setRiderData(riderRes.data))
-        scheduleCacheWrite(() => cacheData('rider_metrics', riderRes.data))
+      const mergedRiders = mergeRiderMetricSources(riderRes.data || [], uploadRows || [])
+      if (mergedRiders.length) {
+        startTransition(() => setRiderData(mergedRiders))
+        scheduleCacheWrite(() => {
+          cacheData('rider_metrics', mergedRiders)
+          if (uploadRows?.length) cacheData('order_upload_data', uploadRows)
+        })
       }
 
       setLoading(false)
@@ -303,7 +338,7 @@ function App() {
       setDataUpdatedAt(new Date())
 
       console.log(
-        `Fleet loaded (slim): ${fleetRes.data?.length ?? 0} from ${FLEET_LEGACY_TABLE}, ${formFleetRes.data?.length ?? 0} from ${FLEET_FORM_TABLE}`
+        `Fleet loaded (slim): ${fleetRes.data?.length ?? 0} from ${FLEET_LEGACY_TABLE}, ${formFleetRes.data?.length ?? 0} from ${FLEET_FORM_TABLE} · orders: ${riderRes.data?.length ?? 0} metrics + ${uploadRows?.length ?? 0} uploads → ${mergedRiders.length} merged`
       )
 
       setTimeout(() => loadSecondaryTables(), 2500)
@@ -318,6 +353,26 @@ function App() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  const refreshOrdersAfterUpload = useCallback(async () => {
+    clearOrderUploadCache()
+    clearIotRiderOrderCache()
+    try {
+      const [riderRes, uploadRows] = await Promise.all([
+        fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', { pageSize: FLEET_SLIM_PAGE_SIZE }),
+        fetchAllOrderUploads().catch(() => []),
+      ])
+      const merged = mergeRiderMetricSources(riderRes.data || [], uploadRows || [])
+      startTransition(() => setRiderData(merged))
+      scheduleCacheWrite(() => {
+        cacheData('rider_metrics', merged)
+        cacheData('order_upload_data', uploadRows || [])
+      })
+      setDataUpdatedAt(new Date())
+    } catch (err) {
+      console.warn('Refresh after order upload failed:', err?.message || err)
+    }
+  }, [])
 
   const fleetPagesNeedingFull = new Set(['fleetdata'])
   useEffect(() => {
@@ -420,6 +475,13 @@ function App() {
           >
             <Wallet size={20} />
             Payment Upload
+          </button>
+          <button 
+            className={`nav-item ${activePage === 'orderupload' ? 'active' : ''}`}
+            onClick={() => setActivePage('orderupload')}
+          >
+            <Package size={20} />
+            Order Upload
           </button>
           <button 
             className={`nav-item ${activePage === 'paymenthistory' ? 'active' : ''}`}
@@ -550,6 +612,8 @@ function App() {
           />
         ) : activePage === 'paymentupload' ? (
           <RiderPaymentUpload />
+        ) : activePage === 'orderupload' ? (
+          <OrderUpload onOrdersSaved={refreshOrdersAfterUpload} />
         ) : activePage === 'paymenthistory' ? (
           <PaymentHistory onboardingData={onboardingData} />
         ) : activePage === 'sdpayment' ? (

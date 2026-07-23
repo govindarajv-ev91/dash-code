@@ -3,6 +3,8 @@ import { supabase } from './lib/supabaseClient';
 import { Layout, Users, ClipboardList, MapPin, Briefcase, Filter, Calendar, Search, X, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
+import { toMetricDateKey } from './lib/mergeRiderMetrics';
+import { parseMetricDate } from './lib/riderPerformanceReport';
 
 const MultiSelect = ({ options, selectedValues, onChange, label, placeholder }) => {
     const [isOpen, setIsOpen] = useState(false);
@@ -198,14 +200,11 @@ const RiderAttendance = ({ riderData, loading }) => {
                 source: r.source
             };
 
-            let d;
-            const dateStr = r.date_record;
-            if (dateStr?.includes('/')) {
-                const [dd, mm, yPart] = dateStr.split('/');
-                const yyyy = yPart ? yPart.split(' ')[0] : '2026';
-                d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-            } else {
-                d = new Date(dateStr);
+            let d = parseMetricDate(r.date_record);
+            // Fallback for legacy string formats
+            if (!d) {
+                const key = toMetricDateKey(r.date_record);
+                d = key ? parseMetricDate(key) : null;
             }
 
             if (d && !isNaN(d.getTime()) && d > current.latestDate) {

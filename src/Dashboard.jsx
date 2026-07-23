@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useDeferredValue } from 'react';
+import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, Legend 
@@ -10,6 +10,12 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
+import {
+  toMetricDateKey,
+  mapOrderUploadToRiderMetric,
+  selectOverviewOrderRows,
+} from './lib/mergeRiderMetrics';
+import { fetchAllOrderUploads } from './lib/orderUploadDb';
 
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80'];
 
@@ -17,22 +23,45 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [directUploads, setDirectUploads] = useState([]);
   const deferredRiderData = useDeferredValue(riderData);
   const deferredFleetData = useDeferredValue(fleetData);
 
-  // Process data for charts
-  const ordersByDate = useMemo(() => {
-    const grouped = deferredRiderData.reduce((acc, curr) => {
-      let date = curr.date_record;
-      if (!date) return acc;
-      if (date.includes('/')) {
-        const [dd, mm, part] = date.split('/');
-        const yyyy = part ? part.split(' ')[0] : '2026';
-        date = `${yyyy}-${mm}-${dd}`;
-      }
+  const loadDirectUploads = useCallback(async () => {
+    try {
+      const rows = await fetchAllOrderUploads({ force: true })
+      setDirectUploads(rows || [])
+    } catch {
+      setDirectUploads([])
+    }
+  }, [])
 
-      if (startDate && date < startDate) return acc;
-      if (endDate && date > endDate) return acc;
+  useEffect(() => {
+    loadDirectUploads()
+  }, [loadDirectUploads, riderData])
+
+  // Effective filter: one date filled = that single day (not open-ended range).
+  const filterFrom = startDate || endDate || ''
+  const filterTo = endDate || startDate || ''
+
+  const overviewOrderRows = useMemo(() => {
+    if (directUploads.length) {
+      return directUploads.map(mapOrderUploadToRiderMetric).filter(Boolean)
+    }
+    return selectOverviewOrderRows(deferredRiderData)
+  }, [directUploads, deferredRiderData])
+
+  const overviewOrdersFromUpload = directUploads.length > 0 ||
+    (deferredRiderData || []).some((r) => r?._data_source === 'order_upload')
+
+  // Process data for charts — upload-only when Order Upload has data
+  const ordersByDate = useMemo(() => {
+    const grouped = overviewOrderRows.reduce((acc, curr) => {
+      const date = toMetricDateKey(curr.date_record);
+      if (!date) return acc;
+
+      if (filterFrom && date < filterFrom) return acc;
+      if (filterTo && date > filterTo) return acc;
 
       if (!acc[date]) acc[date] = { date, ev: 0, nonEv: 0, total: 0 };
       
@@ -55,7 +84,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
 
     return Object.values(grouped)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [deferredRiderData, startDate, endDate]);
+  }, [overviewOrderRows, filterFrom, filterTo]);
 
   const vehicleStatusDist = useMemo(() => {
     // Moved below filteredFleet, will define it after filteredFleet.
@@ -161,22 +190,14 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     let totalOrders = 0;
     const activeCodes = new Set();
 
-    deferredRiderData.forEach(r => {
+    overviewOrderRows.forEach(r => {
       const delivered = parseInt(r.delivered, 10) || 0;
-      const dateStr = r.date_record || '';
-      
-      let yyyy_mm_dd = '';
-      if (dateStr.includes('/')) {
-        const [dd, mm, yPart] = dateStr.split('/');
-        const yyyy = yPart ? yPart.split(' ')[0] : '2026';
-        yyyy_mm_dd = `${yyyy}-${mm}-${dd}`;
-      } else if (dateStr) {
-        yyyy_mm_dd = dateStr;
-      }
+      const yyyy_mm_dd = toMetricDateKey(r.date_record);
 
-      const isWithinDateRange = (!startDate || yyyy_mm_dd >= startDate) && (!endDate || yyyy_mm_dd <= endDate);
+      const isWithinDateRange =
+        (!filterFrom || yyyy_mm_dd >= filterFrom) && (!filterTo || yyyy_mm_dd <= filterTo);
 
-      if (isWithinDateRange) {
+      if (isWithinDateRange && yyyy_mm_dd) {
          totalOrders += delivered;
          if (delivered > 0 && r.worker_code) {
            activeCodes.add(r.worker_code);
@@ -209,10 +230,10 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     });
 
     let changeStr = 'All Time';
-    if (startDate && endDate && startDate === endDate) changeStr = startDate;
-    else if (startDate && endDate) changeStr = `${startDate} to ${endDate}`;
-    else if (startDate) changeStr = `Since ${startDate}`;
-    else if (endDate) changeStr = `Until ${endDate}`;
+    if (filterFrom && filterTo && filterFrom === filterTo) changeStr = filterFrom;
+    else if (filterFrom && filterTo) changeStr = `${filterFrom} to ${filterTo}`;
+    else if (filterFrom) changeStr = `Since ${filterFrom}`;
+    else if (filterTo) changeStr = `Until ${filterTo}`;
 
     return [
       { label: 'Total Orders', value: totalOrders.toLocaleString(), icon: TrendingUp, change: changeStr, isPositive: true },
@@ -220,7 +241,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       { label: 'Deployed Vehicles', value: activeVehicles.toLocaleString(), icon: Truck, change: changeStr, isPositive: true },
       { label: 'Returned Units', value: returnedVehicles.toLocaleString(), icon: Activity, change: changeStr, isPositive: false },
     ];
-  }, [deferredRiderData, combinedVehicles, startDate, endDate]);
+  }, [overviewOrderRows, combinedVehicles, filterFrom, filterTo, startDate, endDate]);
 
   const filteredFleet = useMemo(() => {
     return combinedVehicles.filter(item => {
@@ -265,7 +286,16 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       <header className="header">
         <div>
           <h1>General Overview</h1>
-          <p style={{ color: 'var(--text-dim)' }}>Fleet & Rider Performance Metrics</p>
+          <p style={{ color: 'var(--text-dim)' }}>
+            Fleet & Rider Performance Metrics
+            {overviewOrdersFromUpload ? (
+              <span style={{ marginLeft: 8, color: 'var(--accent-blue)' }}>
+                · Orders from Order Upload only (days not uploaded are hidden)
+              </span>
+            ) : (
+              <span style={{ marginLeft: 8 }}>· Orders from rider_metrics</span>
+            )}
+          </p>
         </div>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.05)', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
@@ -289,7 +319,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               </button>
             )}
           </div>
-          <button className="glass" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }} onClick={refreshData}>
+          <button className="glass" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }} onClick={() => { refreshData?.(); loadDirectUploads(); }}>
             <RefreshCw size={18} /> Refresh
           </button>
         </div>
@@ -315,6 +345,11 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       <div className="charts-grid">
         <div className="chart-card glass">
           <h3>Orders Performance</h3>
+          {overviewOrdersFromUpload && (
+            <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              Showing uploaded order dates only — not rider_metrics fill-in days
+            </p>
+          )}
           <div style={{ height: '300px', width: '100%' }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={ordersByDate}>

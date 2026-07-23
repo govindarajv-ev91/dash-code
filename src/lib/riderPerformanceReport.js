@@ -135,6 +135,33 @@ export function normalizeRiderIdKey(value) {
   return s
 }
 
+/** Aliases so fleet FE963117 matches order upload 963117 (and reverse). */
+export function riderIdLookupKeys(value) {
+  const aliases = new Set()
+  const raw = (value ?? '').toString().trim()
+  if (!raw) return aliases
+
+  const idKey = normalizeRiderIdKey(raw)
+  if (idKey) aliases.add(idKey)
+
+  const prefixMatch = idKey.match(/^([A-Z]{2,5})(\d+)$/i)
+  if (prefixMatch?.[2]?.length >= 5) {
+    aliases.add(prefixMatch[2])
+    aliases.add(`${prefixMatch[1]}${prefixMatch[2]}`)
+  }
+
+  const embeddedFe = idKey.match(/FE(\d{5,})/i)
+  if (embeddedFe) {
+    aliases.add(`FE${embeddedFe[1]}`)
+    aliases.add(embeddedFe[1])
+  }
+
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length >= 5) aliases.add(digits)
+
+  return aliases
+}
+
 function normalizeName(value) {
   return (value ?? '').toString().trim().toLowerCase().replace(/\s+/g, ' ')
 }
@@ -302,9 +329,10 @@ export function buildRiderMetricsIndex(riderRows) {
       workerName: normalizeName(row.worker_name),
     }
 
-    const workerKey = normalizeRiderIdKey(worker)
-    if (!byWorker.has(workerKey)) byWorker.set(workerKey, [])
-    byWorker.get(workerKey).push(record)
+    for (const workerKey of riderIdLookupKeys(worker)) {
+      if (!byWorker.has(workerKey)) byWorker.set(workerKey, [])
+      byWorker.get(workerKey).push(record)
+    }
 
     const phone = normalizePhone(record.mobile)
     if (phone) {
@@ -327,13 +355,14 @@ export function buildRiderMetricsIndex(riderRows) {
   return { byWorker, byMobile, byName }
 }
 
-/** Match fleet rider_id to rider_metrics (ID, mobile, or name). */
+/** Match fleet rider_id to order rows (ID aliases, mobile, or name). */
 export function resolveRiderMetricRecords(assignment, metricsIndex) {
   const { byWorker, byMobile, byName } = metricsIndex
-  const idKey = normalizeRiderIdKey(assignment.riderId)
 
-  const byId = byWorker.get(idKey)
-  if (byId?.length) return mergeRecordsByDate(byId)
+  for (const idKey of riderIdLookupKeys(assignment.riderId)) {
+    const byId = byWorker.get(idKey)
+    if (byId?.length) return mergeRecordsByDate(byId)
+  }
 
   const phone = normalizePhone(assignment.mobile)
   if (phone && byMobile.has(phone)) {

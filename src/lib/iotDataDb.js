@@ -1,26 +1,21 @@
 import { format } from 'date-fns'
 import { supabase } from './supabaseClient'
 import { fetchLastUploadAt } from './paymentMonthList'
-import { fetchAllData } from './supabaseFetch'
 import { parseMetricDate } from './riderPerformanceReport'
-
-/** Slim rider_metrics columns for IoT order counts (per date range). */
-export const IOT_RIDER_ORDER_COLUMNS =
-  'id,delivered,date_record,worker_code,mob_number'
+import { fetchAllOrderUploads } from './orderUploadDb'
+import { mapOrderUploadToRiderMetric } from './mergeRiderMetrics'
 
 let sessionRiderOrders = null
 let sessionRiderOrdersInflight = null
 
+/** IoT order counts come only from order_upload_data (never rider_metrics). */
 async function getRiderOrdersSessionCache() {
   if (sessionRiderOrders) return sessionRiderOrders
   if (sessionRiderOrdersInflight) return sessionRiderOrdersInflight
 
-  sessionRiderOrdersInflight = fetchAllData('rider_metrics', IOT_RIDER_ORDER_COLUMNS, 'id', {
-    pageSize: 1000,
-    maxRetries: 10,
-  })
-    .then(({ data }) => {
-      sessionRiderOrders = data || []
+  sessionRiderOrdersInflight = fetchAllOrderUploads({ force: false })
+    .then((uploads) => {
+      sessionRiderOrders = (uploads || []).map(mapOrderUploadToRiderMetric).filter(Boolean)
       return sessionRiderOrders
     })
     .finally(() => {
@@ -30,7 +25,7 @@ async function getRiderOrdersSessionCache() {
   return sessionRiderOrdersInflight
 }
 
-/** Keep rider_metrics rows whose date_record falls in [dateFrom, dateTo] (yyyy-MM-dd). */
+/** Keep order rows whose date_record falls in [dateFrom, dateTo] (yyyy-MM-dd). */
 export function filterRiderRowsToDateRange(rows, dateFrom, dateTo) {
   const from = (dateFrom ?? '').toString().trim()
   const to = (dateTo ?? '').toString().trim()
@@ -46,7 +41,11 @@ export function filterRiderRowsToDateRange(rows, dateFrom, dateTo) {
   return out
 }
 
-/** Rider order rows for IoT date range — session-cached, filtered in memory. */
+function onlyOrderUploadRows(rows = []) {
+  return (rows || []).filter((r) => r?._data_source === 'order_upload')
+}
+
+/** Rider order rows for IoT date range — order_upload_data only. */
 export async function fetchRiderOrdersForIot(dateFrom, dateTo, { fallbackRows = [] } = {}) {
   const from = (dateFrom ?? '').toString().trim()
   const to = (dateTo ?? '').toString().trim()
@@ -57,10 +56,10 @@ export async function fetchRiderOrdersForIot(dateFrom, dateTo, { fallbackRows = 
     const filtered = filterRiderRowsToDateRange(all, from, to)
     if (filtered.length) return filtered
   } catch (err) {
-    console.warn('[IoT] rider_metrics fetch failed, using fallback:', err?.message || err)
+    console.warn('[IoT] order_upload_data fetch failed, using upload-only fallback:', err?.message || err)
   }
 
-  return filterRiderRowsToDateRange(fallbackRows || [], from, to)
+  return filterRiderRowsToDateRange(onlyOrderUploadRows(fallbackRows), from, to)
 }
 
 export function clearIotRiderOrderCache() {

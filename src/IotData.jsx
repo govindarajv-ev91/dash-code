@@ -103,7 +103,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
       })
       setRiderOrderRows(rows)
       if (!rows.length) {
-        setRiderOrdersError('No rider order data for this date range. Orders will show as 0.')
+        setRiderOrdersError('No order_upload_data rows for this date range. Orders will show as 0.')
       }
     } catch (err) {
       console.warn('IoT rider orders load failed:', err)
@@ -258,6 +258,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
           ) : (
             <>
               <span><strong>{dbCount.toLocaleString()}</strong> rows in <code style={{ color: '#fff' }}>iot_data</code></span>
+              <span>· Orders from <code style={{ color: '#fff' }}>order_upload_data</code> only</span>
               {lastUploadAt && (
                 <span style={{ color: 'var(--accent-blue)' }}>· Last upload: {formatLastUploadAt(lastUploadAt)}</span>
               )}

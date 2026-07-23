@@ -47,6 +47,8 @@ import {
   buildVehicleDayKmIndex,
   getIotKmDateRange,
 } from './lib/riderPerformanceIotKm'
+import { fetchAllOrderUploads } from './lib/orderUploadDb'
+import { mapOrderUploadToRiderMetric } from './lib/mergeRiderMetrics'
 
 const ROWS_PER_PAGE = 80
 
@@ -74,6 +76,8 @@ export default function RiderPerformance({
   const [activeViewTab, setActiveViewTab] = useState('all')
   const [iotRows, setIotRows] = useState([])
   const [iotLoading, setIotLoading] = useState(true)
+  const [orderUploadRows, setOrderUploadRows] = useState([])
+  const [orderUploadsLoading, setOrderUploadsLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
   const today = useMemo(() => new Date(), [])
   /** End date of 0-order window (e.g. 21 → show 21,20,19,18). Default = yesterday. */
@@ -122,6 +126,24 @@ export default function RiderPerformance({
     loadRentalPending()
   }, [loadRentalPending])
 
+  // Order counts: order_upload_data only (same source as IoT / Overview uploads).
+  const loadOrderUploads = useCallback(() => {
+    setOrderUploadsLoading(true)
+    return fetchAllOrderUploads({ force: true })
+      .then((rows) => {
+        setOrderUploadRows((rows || []).map(mapOrderUploadToRiderMetric).filter(Boolean))
+      })
+      .catch((err) => {
+        console.warn('Order upload load failed for Rider Performance:', err)
+        setOrderUploadRows([])
+      })
+      .finally(() => setOrderUploadsLoading(false))
+  }, [])
+
+  useEffect(() => {
+    loadOrderUploads()
+  }, [loadOrderUploads, riderData])
+
   // Fetch only the IoT window needed for the active view (smaller + faster).
   const iotKmDateRange = useMemo(() => getIotKmDateRange(reportAsOf), [reportAsOf])
 
@@ -145,16 +167,24 @@ export default function RiderPerformance({
     [rentalPendingRows]
   )
 
+  const orderRowsForMetrics = useMemo(() => {
+    if (orderUploadRows.length) return orderUploadRows
+    // Fallback only when nothing uploaded yet — prefer upload-tagged rows from App merge.
+    const fromMerged = (deferredRider || []).filter((r) => r?._data_source === 'order_upload')
+    if (fromMerged.length) return fromMerged
+    return deferredRider || []
+  }, [orderUploadRows, deferredRider])
+
   const metricsIndex = useMemo(
-    () => buildRiderMetricsIndex(deferredRider),
-    [deferredRider]
+    () => buildRiderMetricsIndex(orderRowsForMetrics),
+    [orderRowsForMetrics]
   )
 
   const iotKmIndex = useMemo(() => buildVehicleDayKmIndex(iotRows), [iotRows])
 
   const reportRows = useMemo(() => {
     if (!deferredFleet?.length) return []
-    const base = buildRiderPerformanceReport(deferredFleet, deferredRider, reportAsOf, {
+    const base = buildRiderPerformanceReport(deferredFleet, orderRowsForMetrics, reportAsOf, {
       metricsIndex,
     })
     const withRental = base.map((row) => ({
@@ -162,7 +192,7 @@ export default function RiderPerformance({
       'Rental Pending Amount': lookupRentalPendingAmount(rentalPendingIndex, row.ID) ?? '',
     }))
     return enrichPerformanceRowsWithIotKm(withRental, iotKmIndex, reportAsOf)
-  }, [deferredFleet, deferredRider, reportAsOf, metricsIndex, rentalPendingIndex, iotKmIndex])
+  }, [deferredFleet, orderRowsForMetrics, reportAsOf, metricsIndex, rentalPendingIndex, iotKmIndex])
 
   const cities = useMemo(() => {
     const set = new Set(reportRows.map((r) => r.City).filter(Boolean))
@@ -236,8 +266,9 @@ export default function RiderPerformance({
       refreshData()
       loadRentalPending(true)
       loadIotKm()
+      loadOrderUploads()
     }
-  }, [refreshData, refreshing, loadRentalPending, loadIotKm])
+  }, [refreshData, refreshing, loadRentalPending, loadIotKm, loadOrderUploads])
 
   const exportCsv = () => {
     const csv = rowsToPerformanceCsv(filteredRows, tableHeaders)
@@ -257,7 +288,7 @@ export default function RiderPerformance({
     const todayRows = sameDayKey(reportAsOf, today)
       ? reportRows
       : enrichPerformanceRowsWithIotKm(
-          buildRiderPerformanceReport(deferredFleet, deferredRider, today, { metricsIndex }).map(
+          buildRiderPerformanceReport(deferredFleet, orderRowsForMetrics, today, { metricsIndex }).map(
             (row) => ({
               ...row,
               'Rental Pending Amount': lookupRentalPendingAmount(rentalPendingIndex, row.ID) ?? '',
@@ -266,7 +297,7 @@ export default function RiderPerformance({
           iotKmIndex,
           today
         )
-    const exportRows = filterReportRowsForExcelExport(todayRows, riderData, today)
+    const exportRows = filterReportRowsForExcelExport(todayRows, orderRowsForMetrics, today)
     if (!exportRows.length) {
       window.alert(
         'No riders to export. Riders must have client order data in the last 5 days and Max Order below 20 (last 3 days: D-2 to D-4).'
@@ -311,7 +342,15 @@ export default function RiderPerformance({
           <div>
             <h1>Rider Performance</h1>
             <p style={{ color: 'var(--text-dim)', margin: 0, fontSize: '0.9rem' }}>
-              Currently deployed riders only · date-wise deploy order
+              Currently deployed riders only · orders from <code style={{ color: '#fff' }}>order_upload_data</code>
+              {orderUploadRows.length > 0 && (
+                <span style={{ marginLeft: 8 }}>
+                  · {orderUploadRows.length.toLocaleString()} upload rows
+                </span>
+              )}
+              {orderUploadsLoading && (
+                <span style={{ marginLeft: 8 }}>· Loading order uploads…</span>
+              )}
               {rentalPendingRows.length > 0 && (
                 <span style={{ marginLeft: 8 }}>
                   · Rental pending for {rentalPendingRows.length.toLocaleString()} rider rows

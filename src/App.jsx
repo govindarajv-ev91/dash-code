@@ -17,6 +17,7 @@ const FleetDataViewer = lazy(() => import('./FleetDataViewer'))
 const RiderPerformance = lazy(() => import('./RiderPerformance'))
 const RiderPaymentUpload = lazy(() => import('./RiderPaymentUpload'))
 const OrderUpload = lazy(() => import('./OrderUpload'))
+const OrderHistory = lazy(() => import('./OrderHistory'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
 const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
 const IotData = lazy(() => import('./IotData'))
@@ -484,6 +485,13 @@ function App() {
             Order Upload
           </button>
           <button 
+            className={`nav-item ${activePage === 'orderhistory' ? 'active' : ''}`}
+            onClick={() => setActivePage('orderhistory')}
+          >
+            <ClipboardList size={20} />
+            Order History
+          </button>
+          <button 
             className={`nav-item ${activePage === 'paymenthistory' ? 'active' : ''}`}
             onClick={() => setActivePage('paymenthistory')}
           >
@@ -614,6 +622,8 @@ function App() {
           <RiderPaymentUpload />
         ) : activePage === 'orderupload' ? (
           <OrderUpload onOrdersSaved={refreshOrdersAfterUpload} />
+        ) : activePage === 'orderhistory' ? (
+          <OrderHistory />
         ) : activePage === 'paymenthistory' ? (
           <PaymentHistory onboardingData={onboardingData} />
         ) : activePage === 'sdpayment' ? (

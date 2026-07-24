@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, memo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, memo, startTransition } from 'react'
 import {
   History,
   Search,
@@ -14,7 +14,11 @@ import {
   Loader,
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
-import { fetchAllOrderUploads, clearOrderUploadCache } from './lib/orderUploadDb'
+import {
+  fetchOrderUploadsForHistory,
+  fetchOrderUploadMonths,
+  clearOrderUploadCache,
+} from './lib/orderUploadDb'
 import {
   buildOrderHistoryRows,
   filterOrderHistory,
@@ -134,14 +138,17 @@ function MultiSelect({ label, options, selected, onChange }) {
 }
 
 export default function OrderHistory() {
+  const [months, setMonths] = useState([])
+  const [selectedMonth, setSelectedMonth] = useState('')
   const [rawRows, setRawRows] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loadingMonths, setLoadingMonths] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const [selectedCities, setSelectedCities] = useState([])
   const [selectedClients, setSelectedClients] = useState([])
-  const [selectedMonths, setSelectedMonths] = useState([])
   const [type1Filter, setType1Filter] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -149,43 +156,88 @@ export default function OrderHistory() {
 
   const deferredCities = useDeferredValue(selectedCities)
   const deferredClients = useDeferredValue(selectedClients)
-  const deferredMonths = useDeferredValue(selectedMonths)
 
-  const loadRows = useCallback(async (force = false) => {
-    setLoading(true)
+  const loadMonths = useCallback(async () => {
+    setLoadingMonths(true)
     setError(null)
     try {
-      if (force) clearOrderUploadCache()
-      const rows = await fetchAllOrderUploads({ force })
-      setRawRows(rows || [])
+      const list = await fetchOrderUploadMonths()
+      const monthList = list || []
+      setMonths(monthList)
+      setSelectedMonth((prev) => {
+        if (prev && monthList.includes(prev)) return prev
+        return monthList[0] || ''
+      })
+    } catch (err) {
+      console.error(err)
+      setMonths([])
+      setError(err?.message || 'Failed to load months')
+    } finally {
+      setLoadingMonths(false)
+    }
+  }, [])
+
+  const loadMonthRows = useCallback(async (month, force = false) => {
+    if (!month) {
+      setRawRows([])
+      setLoading(false)
+      setLoadingMore(false)
+      return
+    }
+    setLoading(true)
+    setLoadingMore(false)
+    setError(null)
+    let gotFirstPage = false
+    try {
+      const rows = await fetchOrderUploadsForHistory(month, {
+        force,
+        onPage: (partial) => {
+          startTransition(() => setRawRows(partial || []))
+          if (!gotFirstPage) {
+            gotFirstPage = true
+            setLoading(false)
+            setLoadingMore(true)
+          }
+        },
+      })
+      startTransition(() => setRawRows(rows || []))
     } catch (err) {
       console.error(err)
       setRawRows([])
       setError(err?.message || 'Failed to load order history')
     } finally {
       setLoading(false)
+      setLoadingMore(false)
     }
   }, [])
 
   useEffect(() => {
-    loadRows(false)
-  }, [loadRows])
+    loadMonths()
+  }, [loadMonths])
+
+  useEffect(() => {
+    if (selectedMonth) loadMonthRows(selectedMonth, false)
+    else setRawRows([])
+  }, [selectedMonth, loadMonthRows])
+
+  const handleRefresh = useCallback(async () => {
+    clearOrderUploadCache()
+    await loadMonths()
+    if (selectedMonth) await loadMonthRows(selectedMonth, true)
+  }, [loadMonths, loadMonthRows, selectedMonth])
 
   const historyRows = useMemo(() => buildOrderHistoryRows(rawRows), [rawRows])
 
   const filterOptions = useMemo(() => {
     const cities = new Set()
     const clients = new Set()
-    const months = new Set()
     for (const r of historyRows) {
       if (r.city && r.city !== '—') cities.add(r.city)
       if (r.client && r.client !== '—') clients.add(r.client)
-      if (r.month) months.add(r.month)
     }
     return {
       cities: [...cities].sort((a, b) => a.localeCompare(b)),
       clients: [...clients].sort((a, b) => a.localeCompare(b)),
-      months: [...months].sort().reverse(),
     }
   }, [historyRows])
 
@@ -195,12 +247,11 @@ export default function OrderHistory() {
         search: deferredSearch,
         cities: deferredCities,
         clients: deferredClients,
-        months: deferredMonths,
         type1: type1Filter,
         dateFrom,
         dateTo,
       }),
-    [historyRows, deferredSearch, deferredCities, deferredClients, deferredMonths, type1Filter, dateFrom, dateTo]
+    [historyRows, deferredSearch, deferredCities, deferredClients, type1Filter, dateFrom, dateTo]
   )
 
   const totals = useMemo(() => summarizeOrderHistoryTotals(filtered), [filtered])
@@ -215,7 +266,7 @@ export default function OrderHistory() {
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [search, selectedCities, selectedClients, selectedMonths, type1Filter, dateFrom, dateTo])
+  }, [search, selectedCities, selectedClients, type1Filter, dateFrom, dateTo, selectedMonth])
 
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages)
@@ -234,18 +285,20 @@ export default function OrderHistory() {
     const ws = XLSX.utils.json_to_sheet(rows)
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Order History')
-    XLSX.writeFile(wb, `Order_History_${new Date().toISOString().slice(0, 10)}.xlsx`)
-  }, [filtered])
+    XLSX.writeFile(wb, `Order_History_${selectedMonth || 'export'}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }, [filtered, selectedMonth])
 
   const clearFilters = () => {
     setSearch('')
     setSelectedCities([])
     setSelectedClients([])
-    setSelectedMonths([])
     setType1Filter('')
     setDateFrom('')
     setDateTo('')
   }
+
+  const busy = loading || loadingMonths
+  const showTableSpinner = busy && !rawRows.length
 
   return (
     <div className="dashboard-container">
@@ -255,16 +308,20 @@ export default function OrderHistory() {
           <div>
             <h1 style={{ margin: 0 }}>Order History</h1>
             <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-              Browse uploaded orders from <code style={{ color: '#fff' }}>order_upload_data</code>
-              {!loading && (
-                <span> · {rawRows.length.toLocaleString('en-IN')} rows in database</span>
+              Loads one month at a time from <code style={{ color: '#fff' }}>order_upload_data</code>
+              {!busy && selectedMonth && (
+                <span>
+                  {' '}
+                  · {selectedMonth}: {rawRows.length.toLocaleString('en-IN')} rows
+                  {loadingMore ? ' (loading more…)' : ''}
+                </span>
               )}
             </p>
           </div>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <button type="button" className="fsr-export-btn" onClick={() => loadRows(true)} disabled={loading}>
-            {loading ? <Loader size={16} className="spin" /> : <RefreshCw size={16} />}
+          <button type="button" className="fsr-export-btn" onClick={handleRefresh} disabled={busy}>
+            {busy ? <Loader size={16} className="spin" /> : <RefreshCw size={16} />}
             Refresh
           </button>
           <button type="button" className="fsr-export-btn" onClick={exportExcel} disabled={!filtered.length}>
@@ -284,6 +341,22 @@ export default function OrderHistory() {
         className="filter-bar glass"
         style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', padding: '0.85rem', marginBottom: '1rem', alignItems: 'flex-end' }}
       >
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-dim)', minWidth: '160px' }}>
+          <span>Month (loads data)</span>
+          <select
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            disabled={loadingMonths || !months.length}
+            className="fsr-select"
+            style={{ padding: '0.45rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
+          >
+            {!months.length ? <option value="">No months</option> : null}
+            {months.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </label>
+
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
           <input
@@ -347,7 +420,6 @@ export default function OrderHistory() {
 
         <MultiSelect label="City" options={filterOptions.cities} selected={selectedCities} onChange={setSelectedCities} />
         <MultiSelect label="Client" options={filterOptions.clients} selected={selectedClients} onChange={setSelectedClients} />
-        <MultiSelect label="Month" options={filterOptions.months} selected={selectedMonths} onChange={setSelectedMonths} />
 
         <button type="button" className="glass-btn" onClick={clearFilters} style={{ padding: '0.5rem 0.85rem' }}>
           Clear filters
@@ -355,12 +427,12 @@ export default function OrderHistory() {
       </div>
 
       <div className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
-        <StatCard label="Total orders" value={loading ? '…' : totals.orders.toLocaleString('en-IN')} icon={Package} />
-        <StatCard label="Active riders" value={loading ? '…' : totals.riders.toLocaleString('en-IN')} icon={Users} color="#a78bfa" iconBg="rgba(167,139,250,0.12)" />
-        <StatCard label="EV orders" value={loading ? '…' : totals.evOrders.toLocaleString('en-IN')} icon={Zap} color="#4ade80" iconBg="rgba(74,222,128,0.12)" />
-        <StatCard label="NON-EV orders" value={loading ? '…' : totals.nonEvOrders.toLocaleString('en-IN')} icon={Bike} color="#fb7185" iconBg="rgba(251,113,133,0.12)" />
-        <StatCard label="Rows" value={loading ? '…' : totals.rows.toLocaleString('en-IN')} icon={History} color="#38bdf8" iconBg="rgba(56,189,248,0.12)" />
-        <StatCard label="Dates" value={loading ? '…' : totals.dates.toLocaleString('en-IN')} icon={Calendar} color="#fbbf24" iconBg="rgba(251,191,36,0.12)" />
+        <StatCard label="Total orders" value={busy ? '…' : totals.orders.toLocaleString('en-IN')} icon={Package} />
+        <StatCard label="Active riders" value={busy ? '…' : totals.riders.toLocaleString('en-IN')} icon={Users} color="#a78bfa" iconBg="rgba(167,139,250,0.12)" />
+        <StatCard label="EV orders" value={busy ? '…' : totals.evOrders.toLocaleString('en-IN')} icon={Zap} color="#4ade80" iconBg="rgba(74,222,128,0.12)" />
+        <StatCard label="NON-EV orders" value={busy ? '…' : totals.nonEvOrders.toLocaleString('en-IN')} icon={Bike} color="#fb7185" iconBg="rgba(251,113,133,0.12)" />
+        <StatCard label="Rows" value={busy ? '…' : totals.rows.toLocaleString('en-IN')} icon={History} color="#38bdf8" iconBg="rgba(56,189,248,0.12)" />
+        <StatCard label="Dates" value={busy ? '…' : totals.dates.toLocaleString('en-IN')} icon={Calendar} color="#fbbf24" iconBg="rgba(251,191,36,0.12)" />
       </div>
 
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
@@ -415,11 +487,11 @@ export default function OrderHistory() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {showTableSpinner ? (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '2rem' }}>
                     <Loader size={18} className="spin" style={{ marginRight: 8 }} />
-                    Loading order history…
+                    {loadingMonths ? 'Loading months…' : `Loading ${selectedMonth || 'orders'}…`}
                   </td>
                 </tr>
               ) : paginated.length ? (
@@ -429,7 +501,9 @@ export default function OrderHistory() {
               ) : (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '2rem' }}>
-                    No order rows match the current filters. Upload data from Order Upload first.
+                    {selectedMonth
+                      ? 'No order rows match the current filters for this month.'
+                      : 'No months found. Upload data from Order Upload first.'}
                   </td>
                 </tr>
               )}

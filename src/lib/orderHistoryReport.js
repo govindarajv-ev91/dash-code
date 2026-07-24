@@ -19,35 +19,38 @@ function isEvType(type1) {
 }
 
 /** Normalize order_upload_data rows for history browsing. */
-export function buildOrderHistoryRows(uploadRows = []) {
-  return (uploadRows || [])
-    .map((row) => {
-      const workerCode = text(row.worker_code)
-      const dateKey = toMetricDateKey(row.date_record) || text(row.date_record)
-      if (!workerCode && !dateKey) return null
-      const type1 = text(row.type1)
-      const delivered = deliveredValue(row)
-      return {
-        id: row.id,
-        workerCode,
-        workerKey: normalizeRiderIdKey(workerCode),
-        dateKey,
-        dateDisplay: dateKey || text(row.date_record) || '—',
-        client: text(row.client) || '—',
-        city: text(row.city) || '—',
-        type1: type1 || '—',
-        isEv: isEvType(type1),
-        delivered,
-        month: text(row.month) || '',
-        createdAt: row.created_at || null,
-      }
+export function buildOrderHistoryRows(uploadRows = [], { sort = true } = {}) {
+  const out = []
+  for (const row of uploadRows || []) {
+    const workerCode = text(row.worker_code)
+    const dateKey = toMetricDateKey(row.date_record) || text(row.date_record)
+    if (!workerCode && !dateKey) continue
+    const type1 = text(row.type1)
+    const delivered = deliveredValue(row)
+    out.push({
+      id: row.id,
+      workerCode,
+      workerKey: normalizeRiderIdKey(workerCode),
+      dateKey,
+      dateDisplay: dateKey || text(row.date_record) || '—',
+      client: text(row.client) || '—',
+      city: text(row.city) || '—',
+      type1: type1 || '—',
+      isEv: isEvType(type1),
+      delivered,
+      month: text(row.month) || '',
+      createdAt: row.created_at || null,
     })
-    .filter(Boolean)
-    .sort((a, b) => {
+  }
+
+  if (sort) {
+    out.sort((a, b) => {
       const d = (b.dateKey || '').localeCompare(a.dateKey || '')
       if (d !== 0) return d
       return (a.workerCode || '').localeCompare(b.workerCode || '')
     })
+  }
+  return out
 }
 
 export function filterOrderHistory(

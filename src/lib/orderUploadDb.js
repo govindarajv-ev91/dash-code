@@ -5,6 +5,9 @@ import { toMetricDateKey } from './mergeRiderMetrics'
 
 export const ORDER_UPLOAD_TABLE = 'order_upload_data'
 export const ORDER_UPLOAD_COLUMNS = '*'
+/** Slim columns for Order History (faster than select *). */
+export const ORDER_HISTORY_COLUMNS =
+  'id,client,date_record,worker_code,delivered,city,type1,month'
 
 const MONTH_ABBR = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
@@ -188,6 +191,9 @@ export async function saveOrderUploadRows(rows, { replace = false } = {}) {
 
 let cachedOrders = null
 let ordersInflight = null
+/** Per-month cache for Order History (avoids loading the full table). */
+const historyMonthCache = new Map()
+const historyMonthInflight = new Map()
 
 export async function fetchAllOrderUploads({ force = false } = {}) {
   if (!force && cachedOrders) return cachedOrders
@@ -209,9 +215,62 @@ export async function fetchAllOrderUploads({ force = false } = {}) {
   return ordersInflight
 }
 
+/**
+ * Fast Order History fetch: one month only + slim columns.
+ * Optional onPage callback for progressive UI (first page shows quickly).
+ */
+export async function fetchOrderUploadsForHistory(month, { force = false, onPage } = {}) {
+  const label = (month ?? '').toString().trim()
+  if (!label) return []
+
+  if (!force && historyMonthCache.has(label)) {
+    const cached = historyMonthCache.get(label)
+    if (typeof onPage === 'function') onPage(cached)
+    return cached
+  }
+  if (!force && historyMonthInflight.has(label) && typeof onPage !== 'function') {
+    return historyMonthInflight.get(label)
+  }
+
+  const inflight = (async () => {
+    // Use indexed month column only — OR + LIKE patterns time out on large tables.
+    const pageSize = 1000
+    const byId = new Map()
+    let cursor = null
+
+    while (true) {
+      let q = supabase
+        .from(ORDER_UPLOAD_TABLE)
+        .select(ORDER_HISTORY_COLUMNS)
+        .eq('month', label)
+        .order('id', { ascending: true })
+        .limit(pageSize)
+      if (cursor != null) q = q.gt('id', cursor)
+      const { data, error } = await q
+      if (error) throw error
+      if (!data?.length) break
+      for (const row of data) byId.set(row.id, row)
+      cursor = data[data.length - 1].id
+      if (typeof onPage === 'function') onPage([...byId.values()])
+      if (data.length < pageSize) break
+    }
+
+    const rows = [...byId.values()]
+    historyMonthCache.set(label, rows)
+    return rows
+  })().finally(() => {
+    historyMonthInflight.delete(label)
+  })
+
+  historyMonthInflight.set(label, inflight)
+  return inflight
+}
+
 export function clearOrderUploadCache() {
   cachedOrders = null
   ordersInflight = null
+  historyMonthCache.clear()
+  historyMonthInflight.clear()
 }
 
 export async function loadOrderUploadSummary() {

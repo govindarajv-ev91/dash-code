@@ -152,6 +152,20 @@ body {
   box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.3);
 }
 
+.nav-item.nav-item-green {
+  color: var(--accent-green);
+}
+
+.nav-item.nav-item-green:hover {
+  color: #86efac;
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.nav-item.nav-item-green.active {
+  color: #fff;
+  background: var(--primary);
+}
+
 .main-content {
   flex: 1;
   min-height: 100vh;

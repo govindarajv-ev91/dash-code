@@ -394,7 +394,7 @@ function App() {
           </div>
           <nav className="nav-links">
           <button 
-            className={`nav-item ${activePage === 'dashboard' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActivePage('dashboard')}
           >
             <BarChart3 size={20} />
@@ -408,14 +408,14 @@ function App() {
             Rider Attendance
           </button>
           <button 
-            className={`nav-item ${activePage === 'tracking' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'tracking' ? 'active' : ''}`}
             onClick={() => setActivePage('tracking')}
           >
             <Truck size={20} />
             Vehicle Tracking
           </button>
           <button 
-            className={`nav-item ${activePage === 'riderperformance' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'riderperformance' ? 'active' : ''}`}
             onClick={() => setActivePage('riderperformance')}
           >
             <Activity size={20} />
@@ -450,7 +450,7 @@ function App() {
             Temp Parser
           </button>
           <button 
-            className={`nav-item ${activePage === 'riderdetails' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'riderdetails' ? 'active' : ''}`}
             onClick={() => setActivePage('riderdetails')}
           >
             <Users size={20} />
@@ -485,7 +485,7 @@ function App() {
             Order Upload
           </button>
           <button 
-            className={`nav-item ${activePage === 'orderhistory' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'orderhistory' ? 'active' : ''}`}
             onClick={() => setActivePage('orderhistory')}
           >
             <ClipboardList size={20} />
@@ -506,7 +506,7 @@ function App() {
             SD & EV Rent
           </button>
           <button 
-            className={`nav-item ${activePage === 'iotdata' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'iotdata' ? 'active' : ''}`}
             onClick={() => setActivePage('iotdata')}
           >
             <Radio size={20} />
@@ -520,7 +520,7 @@ function App() {
             Fleet Data
           </button>
           <button 
-            className={`nav-item ${activePage === 'fleetcitysummary' ? 'active' : ''}`}
+            className={`nav-item nav-item-green ${activePage === 'fleetcitysummary' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetcitysummary')}
           >
             <MapPin size={20} />

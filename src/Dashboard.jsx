@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useDeferredValue } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, Legend 
@@ -7,89 +7,107 @@ import {
   TrendingUp, Users, Truck, Calendar, Activity, 
   ArrowUpRight, ArrowDownRight, RefreshCw, Search, X
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import {
   toMetricDateKey,
-  mapOrderUploadToRiderMetric,
   selectOverviewOrderRows,
 } from './lib/mergeRiderMetrics';
-import { fetchAllOrderUploads } from './lib/orderUploadDb';
+import { buildMasterSheetRows, filterMasterSheetRows } from './lib/fleetMasterSheet';
+import { parseFleetDate } from './lib/fleetDeployReturnExport';
+import { getFleetDeployReturnCounts } from './lib/riderPerformanceReport';
 
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80'];
+const FLEET_TABLE_LIMIT = 10;
+
+function buildOrderDailyIndex(rows) {
+  const byDate = new Map();
+  const ridersByDate = new Map();
+
+  for (const curr of rows || []) {
+    const date = toMetricDateKey(curr.date_record);
+    if (!date) continue;
+
+    const delivered = parseInt(curr.delivered, 10) || 0;
+    if (!byDate.has(date)) byDate.set(date, { date, ev: 0, nonEv: 0, total: 0 });
+    const bucket = byDate.get(date);
+    bucket.total += delivered;
+
+    const t1 = String(curr.type1 || '').toUpperCase();
+    const t2 = String(curr.type2 || '').toUpperCase();
+    const isEv1 = t1.includes('EV') && !t1.includes('NON');
+    const isEv2 = t2.includes('EV') && !t2.includes('NON');
+    if (isEv1 || isEv2) bucket.ev += delivered;
+    else bucket.nonEv += delivered;
+
+    if (delivered > 0 && curr.worker_code) {
+      if (!ridersByDate.has(date)) ridersByDate.set(date, new Set());
+      ridersByDate.get(date).add(curr.worker_code);
+    }
+  }
+
+  return { byDate, ridersByDate };
+}
 
 const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) => {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [directUploads, setDirectUploads] = useState([]);
   const deferredRiderData = useDeferredValue(riderData);
   const deferredFleetData = useDeferredValue(fleetData);
-
-  const loadDirectUploads = useCallback(async () => {
-    try {
-      const rows = await fetchAllOrderUploads({ force: true })
-      setDirectUploads(rows || [])
-    } catch {
-      setDirectUploads([])
-    }
-  }, [])
-
-  useEffect(() => {
-    loadDirectUploads()
-  }, [loadDirectUploads, riderData])
+  const deferredSearch = useDeferredValue(searchTerm);
 
   // Effective filter: one date filled = that single day (not open-ended range).
   const filterFrom = startDate || endDate || ''
   const filterTo = endDate || startDate || ''
 
-  const overviewOrderRows = useMemo(() => {
-    if (directUploads.length) {
-      return directUploads.map(mapOrderUploadToRiderMetric).filter(Boolean)
-    }
-    return selectOverviewOrderRows(deferredRiderData)
-  }, [directUploads, deferredRiderData])
+  const overviewOrderRows = useMemo(
+    () => selectOverviewOrderRows(deferredRiderData),
+    [deferredRiderData]
+  );
 
-  const overviewOrdersFromUpload = directUploads.length > 0 ||
-    (deferredRiderData || []).some((r) => r?._data_source === 'order_upload')
+  const overviewOrdersFromUpload = useMemo(
+    () => (deferredRiderData || []).some((r) => r?._data_source === 'order_upload'),
+    [deferredRiderData]
+  );
 
-  // Process data for charts — upload-only when Order Upload has data
+  const orderDailyIndex = useMemo(
+    () => buildOrderDailyIndex(overviewOrderRows),
+    [overviewOrderRows]
+  );
+
   const ordersByDate = useMemo(() => {
-    const grouped = overviewOrderRows.reduce((acc, curr) => {
-      const date = toMetricDateKey(curr.date_record);
-      if (!date) return acc;
+    const out = [];
+    for (const bucket of orderDailyIndex.byDate.values()) {
+      const date = bucket.date;
+      if (filterFrom && date < filterFrom) continue;
+      if (filterTo && date > filterTo) continue;
+      out.push(bucket);
+    }
+    return out.sort((a, b) => a.date.localeCompare(b.date));
+  }, [orderDailyIndex, filterFrom, filterTo]);
 
-      if (filterFrom && date < filterFrom) return acc;
-      if (filterTo && date > filterTo) return acc;
+  const masterSheetRows = useMemo(
+    () => buildMasterSheetRows(deferredFleetData),
+    [deferredFleetData]
+  );
 
-      if (!acc[date]) acc[date] = { date, ev: 0, nonEv: 0, total: 0 };
-      
-      const delivered = parseInt(curr.delivered, 10) || 0;
-      acc[date].total += delivered;
-      
-      const t1 = String(curr.type1 || '').toUpperCase();
-      const t2 = String(curr.type2 || '').toUpperCase();
-      
-      const isEv1 = t1.includes('EV') && !t1.includes('NON');
-      const isEv2 = t2.includes('EV') && !t2.includes('NON');
+  const fleetSnapshot = useMemo(
+    () => getFleetDeployReturnCounts(deferredFleetData, new Date()),
+    [deferredFleetData]
+  );
 
-      if (isEv1 || isEv2) {
-        acc[date].ev += delivered;
-      } else {
-        acc[date].nonEv += delivered;
-      }
-      return acc;
-    }, {});
-
-    return Object.values(grouped)
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [overviewOrderRows, filterFrom, filterTo]);
-
-  const vehicleStatusDist = useMemo(() => {
-    // Moved below filteredFleet, will define it after filteredFleet.
-    return [];
-  }, []);
+  const fleetEventsInRange = useMemo(() => {
+    if (!filterFrom && !filterTo) return null;
+    const rangeFrom = filterFrom || filterTo;
+    const rangeTo = filterTo || filterFrom;
+    return filterMasterSheetRows(masterSheetRows, {
+      city: 'All',
+      startDate: rangeFrom,
+      endDate: rangeTo,
+    });
+  }, [masterSheetRows, filterFrom, filterTo]);
 
   const combinedVehicles = useMemo(() => {
     const map = new Map();
@@ -150,19 +168,20 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       // Track deployed/returned dates from dedicated date columns
       const deployDateVal = item.bike_deployed_date_sd_refund_request;
       const returnDateVal = item.bike_return_date_sd_refund_request;
-      const deployParsed = parseCustomDate(deployDateVal);
-      const returnParsed = parseCustomDate(returnDateVal);
+      const eventDate = parseFleetDate(item.date_record);
+      const deployParsed = parseCustomDate(deployDateVal) || (statusLower.includes('deploy') ? eventDate : null);
+      const returnParsed = parseCustomDate(returnDateVal) || (statusLower === 'return' ? eventDate : null);
 
       if (statusLower.includes('deploy')) {
          const parsedDate = deployParsed || createdAt;
          if (!record.deployed_obj || (parsedDate && parsedDate > record.deployed_obj)) {
-             record.deployed_date = deployDateVal || item.created_at;
+             record.deployed_date = item.date_record || deployDateVal || item.created_at;
              record.deployed_obj = parsedDate;
          }
       } else if (statusLower.includes('return')) {
          const parsedDate = returnParsed || createdAt;
          if (!record.returned_obj || (parsedDate && parsedDate > record.returned_obj)) {
-             record.returned_date = returnDateVal || item.created_at;
+             record.returned_date = item.date_record || returnDateVal || item.created_at;
              record.returned_obj = parsedDate;
          }
       }
@@ -190,44 +209,30 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     let totalOrders = 0;
     const activeCodes = new Set();
 
-    overviewOrderRows.forEach(r => {
-      const delivered = parseInt(r.delivered, 10) || 0;
-      const yyyy_mm_dd = toMetricDateKey(r.date_record);
-
-      const isWithinDateRange =
-        (!filterFrom || yyyy_mm_dd >= filterFrom) && (!filterTo || yyyy_mm_dd <= filterTo);
-
-      if (isWithinDateRange && yyyy_mm_dd) {
-         totalOrders += delivered;
-         if (delivered > 0 && r.worker_code) {
-           activeCodes.add(r.worker_code);
-         }
-      }
-    });
+    for (const [date, bucket] of orderDailyIndex.byDate) {
+      if (filterFrom && date < filterFrom) continue;
+      if (filterTo && date > filterTo) continue;
+      totalOrders += bucket.total;
+      const riders = orderDailyIndex.ridersByDate.get(date);
+      if (riders) riders.forEach((code) => activeCodes.add(code));
+    }
 
     let activeVehicles = 0;
     let returnedVehicles = 0;
 
-    // Count by current/latest status of each unique vehicle
-    combinedVehicles.forEach(item => {
-      const s = (item.status || '').toLowerCase().trim();
-
-      if (startDate || endDate) {
-        // When date filter is active: count vehicles whose latest status date is within range
-        const latestDateStr = item.latest_obj ? format(item.latest_obj, 'yyyy-MM-dd') : '';
-        const isWithin = latestDateStr &&
-          (!startDate || latestDateStr >= startDate) &&
-          (!endDate || latestDateStr <= endDate);
-        if (!isWithin) return;
+    if (fleetEventsInRange) {
+      const seen = new Set();
+      for (const row of fleetEventsInRange) {
+        const key = `${row.vehicleNumber}|${format(row.date, 'yyyy-MM-dd')}|${row.vehicleStatus}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (row.vehicleStatus === 'Deployee') activeVehicles++;
+        else if (row.vehicleStatus === 'Return') returnedVehicles++;
       }
-
-      // 'Deployee' + 'BGV' = deployed (bike is still with rider)
-      // 'Return' = returned units (excludes sub-statuses like 'Proof Return', 'SD Refund Request')
-      const isDeployed = s.includes('deployee') || s.includes('deploy') || s === 'bgv' || s === 'bgv done';
-      const isReturned = s === 'return';
-      if (isDeployed) activeVehicles++;
-      else if (isReturned) returnedVehicles++;
-    });
+    } else {
+      activeVehicles = fleetSnapshot.deployed;
+      returnedVehicles = fleetSnapshot.returned;
+    }
 
     let changeStr = 'All Time';
     if (filterFrom && filterTo && filterFrom === filterTo) changeStr = filterFrom;
@@ -241,27 +246,36 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       { label: 'Deployed Vehicles', value: activeVehicles.toLocaleString(), icon: Truck, change: changeStr, isPositive: true },
       { label: 'Returned Units', value: returnedVehicles.toLocaleString(), icon: Activity, change: changeStr, isPositive: false },
     ];
-  }, [overviewOrderRows, combinedVehicles, filterFrom, filterTo, startDate, endDate]);
+  }, [orderDailyIndex, fleetEventsInRange, fleetSnapshot, filterFrom, filterTo]);
 
   const filteredFleet = useMemo(() => {
-    return combinedVehicles.filter(item => {
-      if (startDate || endDate) {
-         let isDepWithin = false;
-         if (item.deployed_obj) {
-             const depDateStr = format(item.deployed_obj, 'yyyy-MM-dd');
-             isDepWithin = (!startDate || depDateStr >= startDate) && (!endDate || depDateStr <= endDate);
-         }
-         let isRetWithin = false;
-         if (item.returned_obj) {
-             const retDateStr = format(item.returned_obj, 'yyyy-MM-dd');
-             isRetWithin = (!startDate || retDateStr >= startDate) && (!endDate || retDateStr <= endDate);
-         }
-         if (!isDepWithin && !isRetWithin) return false;
+    const q = deferredSearch.trim().toLowerCase();
+    const out = [];
+    for (const item of combinedVehicles) {
+      if (filterFrom || filterTo) {
+        const rangeFrom = filterFrom || filterTo;
+        const rangeTo = filterTo || filterFrom;
+        let isDepWithin = false;
+        if (item.deployed_obj) {
+          const depDateStr = format(item.deployed_obj, 'yyyy-MM-dd');
+          isDepWithin = depDateStr >= rangeFrom && depDateStr <= rangeTo;
+        }
+        let isRetWithin = false;
+        if (item.returned_obj) {
+          const retDateStr = format(item.returned_obj, 'yyyy-MM-dd');
+          isRetWithin = retDateStr >= rangeFrom && retDateStr <= rangeTo;
+        }
+        if (!isDepWithin && !isRetWithin) continue;
       }
-      const searchContent = `${item.vehicle_number} ${item.rider_name} ${item.city} ${item.status}`.toLowerCase();
-      return searchContent.includes(searchTerm.toLowerCase());
-    });
-  }, [combinedVehicles, searchTerm, startDate, endDate]);
+      if (q) {
+        const searchContent = `${item.vehicle_number} ${item.rider_name} ${item.city} ${item.status}`.toLowerCase();
+        if (!searchContent.includes(q)) continue;
+      }
+      out.push(item);
+      if (out.length >= FLEET_TABLE_LIMIT) break;
+    }
+    return out;
+  }, [combinedVehicles, deferredSearch, filterFrom, filterTo]);
 
   const realVehicleStatusDist = useMemo(() => {
     const counts = filteredFleet.reduce((acc, curr) => {
@@ -319,7 +333,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               </button>
             )}
           </div>
-          <button className="glass" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }} onClick={() => { refreshData?.(); loadDirectUploads(); }}>
+          <button className="glass" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }} onClick={() => refreshData?.()}>
             <RefreshCw size={18} /> Refresh
           </button>
         </div>
@@ -327,7 +341,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
 
       <section className="stats-grid">
         {stats.map((stat, i) => (
-          <motion.div key={stat.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="stat-card glass">
+          <div key={stat.label} className="stat-card glass">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <stat.icon size={24} style={{ color: COLORS[i % COLORS.length] }} />
               <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.75rem', fontWeight: 600, color: stat.isPositive ? 'var(--accent-green)' : 'var(--accent-red)' }}>
@@ -338,7 +352,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               <div className="label">{stat.label}</div>
               <div className="value">{stat.value}</div>
             </div>
-          </motion.div>
+          </div>
         ))}
       </section>
 
@@ -403,18 +417,16 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               </tr>
             </thead>
             <tbody>
-              <AnimatePresence mode="popLayout">
-                {filteredFleet.slice(0, 10).map((item) => (
-                  <motion.tr key={item.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                    <td>{item.vehicle_number}</td>
-                    <td>{item.rider_name}</td>
-                    <td><span className={clsx('status-badge', item.status?.toLowerCase().replace(/\s+/g, '-'))}>{item.status}</span></td>
-                    <td>{item.deployed_date || 'N/A'}</td>
-                    <td>{item.returned_date || 'N/A'}</td>
-                    <td>{item.duration}</td>
-                  </motion.tr>
-                ))}
-              </AnimatePresence>
+              {filteredFleet.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.vehicle_number}</td>
+                  <td>{item.rider_name}</td>
+                  <td><span className={clsx('status-badge', item.status?.toLowerCase().replace(/\s+/g, '-'))}>{item.status}</span></td>
+                  <td>{item.deployed_date || 'N/A'}</td>
+                  <td>{item.returned_date || 'N/A'}</td>
+                  <td>{item.duration}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

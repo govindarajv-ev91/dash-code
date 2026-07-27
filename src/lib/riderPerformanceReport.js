@@ -238,6 +238,49 @@ export function buildVehicleAllotmentMap(fleetRows, asOfDate) {
   return allotmentByVehicle
 }
 
+/**
+ * Deployed / returned vehicle counts from Deployee+Return timeline (matches Rider Performance).
+ * Deployed = open deploy as of date. Returned = last event is Return with no open deploy.
+ */
+export function getFleetDeployReturnCounts(fleetRows, asOfDate = new Date()) {
+  const asOf = startOfDay(asOfDate)
+  const deployed = buildVehicleAllotmentMap(fleetRows, asOfDate).size
+
+  const byVehicle = new Map()
+  for (const row of fleetRows || []) {
+    const status = normalizeFleetStatus(row.vehicle_status)
+    if (status !== 'Deployee' && status !== 'Return') continue
+    const date = parseFleetDate(row.date_record)
+    const vehicleKey = vehiclePartitionKey(row.vehicle_number)
+    if (!date || !vehicleKey) continue
+    if (!byVehicle.has(vehicleKey)) byVehicle.set(vehicleKey, [])
+    byVehicle.get(vehicleKey).push({ status, date })
+  }
+
+  let returned = 0
+  for (const [, events] of byVehicle) {
+    events.sort((a, b) => {
+      const diff = a.date - b.date
+      if (diff !== 0) return diff
+      if (a.status === 'Return' && b.status === 'Deployee') return -1
+      if (a.status === 'Deployee' && b.status === 'Return') return 1
+      return 0
+    })
+
+    let openDeploy = null
+    let lastEvent = null
+    for (const event of events) {
+      if (event.date > asOf) continue
+      lastEvent = event
+      if (event.status === 'Deployee') openDeploy = event
+      else if (event.status === 'Return' && openDeploy) openDeploy = null
+    }
+    if (!openDeploy && lastEvent?.status === 'Return') returned++
+  }
+
+  return { deployed, returned }
+}
+
 /** Latest known contact on or before as-of date (deploy row may omit phone). */
 function buildFleetContactEnrichment(fleetRows, asOfDate) {
   const asOf = startOfDay(asOfDate)

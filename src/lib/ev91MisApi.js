@@ -145,33 +145,32 @@ async function fetchEv91MisViaLocalProxy(endpoint, params = {}) {
 }
 
 /**
- * AWS Amplify reverse-proxy path (same-origin, no CORS).
- * Requires Amplify rewrite (see amplify-redirects.json) BEFORE the SPA rule:
- *   /api/ev91/<*>  →  https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/<*>
+ * AWS Amplify reverse-proxy path (same-origin — no CORS).
+ * Send x-api-key here; Amplify should forward it to EV91.
+ * Rewrite must be above SPA, and SPA target must be /index.html
+ * (see amplify-redirects.json).
  */
 async function fetchEv91MisViaAmplifyRewrite(endpoint, params = {}) {
   const qs = buildEv91MisQuery(params)
   const key = getEv91MisApiKey()
-  // Forward key as query (Amplify reverse proxy cannot add request headers)
-  qs.set('api_key', key)
-  qs.set('apiKey', key)
   const res = await fetch(`/api/ev91/${endpoint}?${qs.toString()}`, {
-    headers: { Accept: 'application/json' },
+    headers: {
+      Accept: 'application/json',
+      'x-api-key': key,
+    },
     cache: 'no-store',
   })
-  // SPA catch-all often returns index.html 200 for unknown paths
   if (res.status === 404) throw new Error('Amplify EV91 rewrite not configured')
   const contentType = (res.headers.get('content-type') || '').toLowerCase()
   if (!contentType.includes('application/json')) {
-    throw new Error('Amplify EV91 rewrite not configured')
+    throw new Error('Amplify EV91 rewrite not configured (SPA rule catching /api)')
   }
   return readEv91Response(res)
 }
 
 /**
- * Direct browser → EV91 upstream (Amplify has no /api serverless).
- * Prefer header auth; if CORS preflight blocks ("Failed to fetch"), retry with
- * API key in query only (simple request, no custom headers).
+ * Direct browser → EV91 upstream.
+ * Avoid on Amplify when possible — upstream can 500 when Origin is *.amplifyapp.com.
  */
 async function fetchEv91MisDirect(endpoint, params = {}) {
   const key = getEv91MisApiKey()
@@ -191,7 +190,6 @@ async function fetchEv91MisDirect(endpoint, params = {}) {
     if (!isNetworkFetchError(err)) throw err
   }
 
-  // CORS-safe fallback: no custom headers (avoids preflight)
   const qs2 = buildEv91MisQuery(params)
   qs2.set('api_key', key)
   qs2.set('apiKey', key)
@@ -205,9 +203,9 @@ async function fetchEv91MisDirect(endpoint, params = {}) {
 
 /**
  * Fetch EV91 MIS rider-vehicle analytics.
- * - Local dev: Vite `/api/ev91-mis` proxy
- * - AWS Amplify: optional `/api/ev91/:endpoint` rewrite, else direct upstream
- * - Optional VITE_EV91_MIS_PROXY_URL absolute proxy
+ * - Local: Vite `/api/ev91-mis` proxy
+ * - Amplify: `/api/ev91/:endpoint` rewrite + x-api-key (same-origin)
+ * - Fallback: direct upstream
  */
 export async function fetchEv91MisData(endpoint, params = {}) {
   if (!EV91_MIS_ENDPOINTS[endpoint]) {
@@ -225,20 +223,19 @@ export async function fetchEv91MisData(endpoint, params = {}) {
     return readEv91Response(res)
   }
 
-  // Local Vite plugin
   if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
     try {
       return await fetchEv91MisViaLocalProxy(endpoint, params)
     } catch (err) {
-      console.warn('[EV91] local proxy unavailable, trying upstream:', err?.message || err)
+      console.warn('[EV91] local proxy unavailable:', err?.message || err)
     }
   }
 
-  // Amplify reverse proxy (if redirects configured)
+  // Prefer Amplify same-origin rewrite (works on main.*.amplifyapp.com)
   try {
     return await fetchEv91MisViaAmplifyRewrite(endpoint, params)
-  } catch {
-    /* rewrite not set up — use direct */
+  } catch (err) {
+    console.warn('[EV91] Amplify rewrite path failed:', err?.message || err)
   }
 
   return fetchEv91MisDirect(endpoint, params)

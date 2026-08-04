@@ -53,6 +53,92 @@ export function lookupClientMapping(index, clientId) {
   return null
 }
 
+function normalizePhoneDigits(value) {
+  const digits = (value ?? '').toString().replace(/\D/g, '')
+  if (digits.length >= 10) return digits.slice(-10)
+  return digits.length >= 6 ? digits : ''
+}
+
+function preferPublicRiderEntry(next, prev) {
+  if (!prev) return true
+  const nextHas = !!next.ev91RiderId
+  const prevHas = !!prev.ev91RiderId
+  if (nextHas && !prevHas) return true
+  if (prevHas && !nextHas) return false
+  return (next.ts || 0) >= (prev.ts || 0)
+}
+
+function setPublicRiderAliases(map, aliases, entry) {
+  for (const alias of aliases) {
+    if (!alias) continue
+    const prev = map.get(alias)
+    if (preferPublicRiderEntry(entry, prev)) map.set(alias, entry)
+  }
+}
+
+/**
+ * Index Client ID / phone → EV91 PublicRiderId (ev91RiderId)
+ * from Client Mapping History + Overall Vehicle Status.
+ */
+export function buildEv91PublicRiderIndex(overallRows = [], mappingRows = []) {
+  const byAlias = new Map()
+
+  for (const row of mappingRows || []) {
+    const clientId = (row.clientId || '').toString().trim()
+    const ev91RiderId = (row.ev91RiderId || '').toString().trim()
+    if (!clientId && !ev91RiderId) continue
+    const phone = normalizePhoneDigits(row.phoneNumber)
+    const entry = {
+      ev91RiderId,
+      clientId,
+      source: 'client-mapping',
+      ts: Date.parse(row.lastUpdated) || 0,
+    }
+    if (clientId) setPublicRiderAliases(byAlias, riderIdLookupKeys(clientId), entry)
+    if (phone) setPublicRiderAliases(byAlias, [`phone:${phone}`], entry)
+    if (ev91RiderId) {
+      setPublicRiderAliases(byAlias, [ev91RiderId, ev91RiderId.toUpperCase().replace(/[_\s-]+/g, '-')], entry)
+    }
+  }
+
+  for (const row of overallRows || []) {
+    const clientId = (row.clientId || row.clientRiderId || '').toString().trim()
+    const ev91RiderId = (row.ev91RiderId || '').toString().trim()
+    if (!clientId && !ev91RiderId) continue
+    const phone = normalizePhoneDigits(row.riderContact)
+    const entry = {
+      ev91RiderId,
+      clientId,
+      source: 'overall-status',
+      ts: Date.parse(row.statusDate) || 0,
+    }
+    if (clientId) setPublicRiderAliases(byAlias, riderIdLookupKeys(clientId), entry)
+    if (phone) setPublicRiderAliases(byAlias, [`phone:${phone}`], entry)
+    if (ev91RiderId) {
+      setPublicRiderAliases(byAlias, [ev91RiderId, ev91RiderId.toUpperCase().replace(/[_\s-]+/g, '-')], entry)
+    }
+  }
+
+  return byAlias
+}
+
+/** Resolve EV91 PublicRiderId for a fleet/client rider ID and optional phone. */
+export function lookupEv91PublicRiderId(index, riderId, phone = '') {
+  if (!index) return ''
+  if (riderId) {
+    for (const alias of riderIdLookupKeys(riderId)) {
+      const hit = index.get(alias)
+      if (hit?.ev91RiderId) return hit.ev91RiderId
+    }
+  }
+  const digits = normalizePhoneDigits(phone)
+  if (digits) {
+    const hit = index.get(`phone:${digits}`)
+    if (hit?.ev91RiderId) return hit.ev91RiderId
+  }
+  return ''
+}
+
 /**
  * Unique riders from order upload data (worker_code = Client ID side).
  */

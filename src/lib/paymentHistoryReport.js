@@ -223,20 +223,27 @@ export function buildOnboardingSourceIndex(onboardingRows) {
 
   for (const row of onboardingRows || []) {
     const source = pickText(row.source_name)
-    if (!source) continue
+    if (!source || source === '-') continue
 
-    const rawRider = pickText(row.rider_id_details)
-    if (!rawRider) continue
-
+    const idFields = [
+      row.rider_id_details,
+      row.rider_id,
+      row.worker_code,
+      row.client_rider_id,
+    ]
     const keys = new Set()
-    const normalized = normalizeRiderIdKey(rawRider)
-    if (normalized) keys.add(normalized)
-    const digits = rawRider.replace(/\D/g, '')
-    if (digits) keys.add(digits)
-    keys.add(rawRider.toUpperCase())
+    for (const field of idFields) {
+      const rawRider = pickText(field)
+      if (!rawRider) continue
+      const normalized = normalizeRiderIdKey(rawRider)
+      if (normalized) keys.add(normalized)
+      const digits = rawRider.replace(/\D/g, '')
+      if (digits) keys.add(digits)
+      keys.add(rawRider.toUpperCase())
+    }
 
     for (const key of keys) {
-      byRider.set(key, source)
+      if (!byRider.has(key)) byRider.set(key, source)
     }
   }
 
@@ -264,6 +271,15 @@ function resolveRiderSource(sourceIndex, _month, riderId) {
   }
 
   return 'Unknown'
+}
+
+/** Lookup source_name from rider_onboarding index; empty string when not found. */
+export function lookupOnboardingSourceName(sourceIndex, ...riderIds) {
+  for (const riderId of riderIds) {
+    const hit = resolveRiderSource(sourceIndex, null, riderId)
+    if (hit && hit !== 'Unknown') return hit
+  }
+  return ''
 }
 
 function lookupFleetSd(fleetSd, riderId, phone) {

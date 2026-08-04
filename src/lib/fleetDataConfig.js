@@ -65,5 +65,24 @@ export const FLEET_RIDER_LOOKUP_COLUMNS = [
   'rider_contact_number',
 ].join(',')
 
+/**
+ * Minimal columns for BigQuery Deploy/Return (smaller payloads = fewer round-trips).
+ */
+export const FLEET_BQ_DR_COLUMNS = [
+  'id',
+  'date_record',
+  'vehicle_number',
+  'vehicle_status',
+  'rider_id',
+  'rider_name',
+  'rider_contact_number',
+  'city_locations',
+  'city',
+  'client_name',
+  'hub_location',
+  'category',
+].join(',')
+
 export const FLEET_SLIM_PAGE_SIZE = 1000
+export const FLEET_BQ_DR_PAGE_SIZE = 1500
 export const FLEET_FULL_PAGE_SIZE = 250

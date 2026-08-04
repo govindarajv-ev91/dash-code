@@ -274,7 +274,8 @@ export async function fetchAllEv91MisData(endpoint, params = {}, pageSize = 1000
     summary = result.summary || summary
     pagination = result.pagination || {}
     if (!result.pagination?.hasMore || !result.data.length) break
-    offset += pageSize
+    // Advance by actual rows returned (API may cap below requested pageSize)
+    offset += result.data.length
   }
 
   const value = {

@@ -1,10 +1,27 @@
 import { supabase } from './supabaseClient'
+import {
+  FLEET_LEGACY_TABLE,
+  FLEET_FORM_TABLE,
+  FLEET_SLIM_COLUMNS,
+  FLEET_SLIM_PAGE_SIZE,
+  FLEET_BQ_DR_COLUMNS,
+  FLEET_BQ_DR_PAGE_SIZE,
+} from './fleetDataConfig'
+import { mergeFleetSources } from './fleetDataLoad'
 
 const DEFAULT_PAGE_SIZE = 1000
 const WIDE_PAGE_SIZE = 250
 
-const DEPLOY_RETURN_STATUS_FILTER =
-  'vehicle_status.eq.Deployee,vehicle_status.eq.Return,vehicle_status.eq.deployee,vehicle_status.eq.return'
+const DEPLOY_RETURN_STATUS_FILTER = [
+  'vehicle_status.eq.Deployee',
+  'vehicle_status.eq.Return',
+  'vehicle_status.eq.deployee',
+  'vehicle_status.eq.return',
+  'vehicle_status.eq.Deployed',
+  'vehicle_status.eq.Returned',
+  'vehicle_status.eq.deployed',
+  'vehicle_status.eq.returned',
+].join(',')
 
 /**
  * Paginated table fetch. Uses keyset (cursor) pagination when orderBy is set —
@@ -86,4 +103,17 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
   }
 
   return { data: allData, totalCount: allData.length }
+}
+
+/**
+ * Complete Deployee/Return rows from both fleet tables (narrow columns, larger pages).
+ * Prefer this for BigQuery Deploy/Return — full `*` fleet loads often time out incomplete.
+ */
+export async function fetchDeployReturnFleetRows() {
+  const opts = { pageSize: FLEET_BQ_DR_PAGE_SIZE, deployReturnOnly: true }
+  const [fleetRes, formFleetRes] = await Promise.all([
+    fetchAllData(FLEET_LEGACY_TABLE, FLEET_BQ_DR_COLUMNS, 'id', opts),
+    fetchAllData(FLEET_FORM_TABLE, FLEET_BQ_DR_COLUMNS, 'id', opts),
+  ])
+  return mergeFleetSources(fleetRes.data || [], formFleetRes.data || [])
 }

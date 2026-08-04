@@ -6,6 +6,12 @@ import {
 } from './riderPerformanceReport'
 import { fetchAllEv91MisData } from './ev91MisApi'
 import { lookupRentalPendingAmount } from './rentalPendingDb'
+import {
+  fillAssignmentSourceFromOnboarding,
+  isMissingSourceName,
+} from './onboardingSourceLookup'
+
+export { fillAssignmentSourceFromOnboarding } from './onboardingSourceLookup'
 
 /**
  * Placeholder for future EV91 Rider Detail API.
@@ -27,11 +33,17 @@ export function mergeEv91RiderDetailsIntoAssignments(assignments, detailsById) {
       detailsById.get(a.clientRiderId) ||
       detailsById.get(a.riderId)
     if (!detail) return a
+    const detailSource = (detail.source || '').toString().trim()
     return {
       ...a,
       hub: a.hub || detail.hub || detail.hubLocation || '',
       category: a.category || detail.category || '',
-      source: a.source || detail.source || '',
+      source:
+        !isMissingSourceName(a.source)
+          ? a.source
+          : !isMissingSourceName(detailSource)
+            ? detailSource
+            : a.source,
       riderName: a.riderName || detail.riderName || detail.name || '',
       mobile: a.mobile || detail.mobile || detail.phone || '',
       ...detail._assignmentExtras,
@@ -70,7 +82,7 @@ export function ev91CurrentStatusToAssignments(rows, asOfDate = new Date()) {
       : Math.max(0, differenceInCalendarDays(asOf, deployDate))
 
     const sourceRaw = (row.source || '').toString().trim()
-    const source = !sourceRaw || sourceRaw === '-' ? '' : sourceRaw
+    const source = isMissingSourceName(sourceRaw) ? '' : sourceRaw
 
     assignments.push({
       vehicleNumber: (row.vehicleNumber || '').toString().trim(),
@@ -113,11 +125,14 @@ export function buildEv91RiderPerformanceReport(
   ev91CurrentStatusRows,
   orderRows,
   asOfDate = new Date(),
-  { metricsIndex = null, riderDetailsById = null } = {}
+  { metricsIndex = null, riderDetailsById = null, onboardingRows = null } = {}
 ) {
   let assignments = ev91CurrentStatusToAssignments(ev91CurrentStatusRows, asOfDate)
   if (riderDetailsById?.size) {
     assignments = mergeEv91RiderDetailsIntoAssignments(assignments, riderDetailsById)
+  }
+  if (onboardingRows?.length) {
+    assignments = fillAssignmentSourceFromOnboarding(assignments, onboardingRows)
   }
   return buildRiderPerformanceReportFromAssignments(assignments, orderRows, asOfDate, {
     metricsIndex,

@@ -4,6 +4,8 @@ import { normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { formatInr } from './paymentHistoryReport'
 import { monthSortKey, normalizeMonthLabel } from './paymentMonthList'
+import { buildEv91SdByRiderIndex, lookupEv91SdRow } from './ev91SdDb'
+import { lookupEv91PublicRiderId } from './ev91OnboardingPending'
 
 export { formatInr }
 
@@ -370,12 +372,47 @@ function aggregateManualSd(collationRows, evRiders) {
   return byRider
 }
 
-/** Unique EV riders — fleet SD vs payment SD deduction vs manual SD (Purpose). */
-export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleetRows = []) {
+function ev91SdFields(ev91, apiPublicRiderId = '') {
+  if (!ev91) {
+    return {
+      ev91PublicRiderId: apiPublicRiderId || '',
+      ev91ClientRiderId: '',
+      ev91TotalSd: 0,
+      ev91PendingSd: 0,
+      ev91FixedDeposit: 0,
+    }
+  }
+  return {
+    ev91PublicRiderId: pickText(ev91.public_rider_id, apiPublicRiderId) || '',
+    ev91ClientRiderId: pickText(ev91.client_rider_id) || '',
+    ev91TotalSd: num(ev91.total_sd),
+    ev91PendingSd: num(ev91.pending_sd),
+    ev91FixedDeposit: num(ev91.fixed_deposit),
+  }
+}
+
+function resolveApiPublicRiderId(publicRiderIndex, candidates = []) {
+  for (const c of candidates) {
+    if (!c) continue
+    const hit = lookupEv91PublicRiderId(publicRiderIndex, c.riderId, c.phone)
+    if (hit) return hit
+  }
+  return ''
+}
+
+/** Unique EV riders — fleet SD vs payment SD deduction vs manual SD vs EV91 SD upload. */
+export function buildSdPaymentReport(
+  paymentRows = [],
+  collationRows = [],
+  fleetRows = [],
+  ev91SdRows = [],
+  publicRiderIndex = null
+) {
   const evRiders = buildEvRiderIdSet(fleetRows)
   const fleetIndex = buildFleetEvSdIndex(fleetRows)
   const latestDeployeeIndex = buildLatestDeployeeIndex(fleetRows)
   const firstDeployeeIndex = buildFirstDeployeeIndex(fleetRows)
+  const ev91Index = buildEv91SdByRiderIndex(ev91SdRows)
   const weekKeys = resolveLatestPaymentWeeks(paymentRows, 2)
   const paymentWeekLabels = weekKeys.map(formatPaymentWeekLabel)
   const sdWeeksByRider = aggregatePaymentSdWeeksPerRider(paymentRows, evRiders)
@@ -383,6 +420,7 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
   const manualSd = aggregateManualSd(collationRows, evRiders)
 
   const riderIds = new Set(evRiders)
+  const matchedEv91Ids = new Set()
   const rows = []
 
   for (const id of riderIds) {
@@ -392,7 +430,19 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
     const payTotal = paymentSdTotal.get(id)
     const manual = manualSd.get(id)
     const recentSdWeeks = riderRecentSdWeeks(sdWeeksByRider.get(id), 2)
-    if (!fleet && !recentSdWeeks.length && !payTotal && !manual) continue
+    const phone = pickText(firstDeployee?.phone, fleet?.phone) || ''
+    const apiPublicId = resolveApiPublicRiderId(publicRiderIndex, [
+      { riderId: id, phone },
+      { riderId: firstDeployee?.riderId, phone },
+      { riderId: fleet?.riderId, phone },
+    ])
+    const ev91 =
+      lookupEv91SdRow(ev91Index, id) ||
+      lookupEv91SdRow(ev91Index, firstDeployee?.riderId) ||
+      lookupEv91SdRow(ev91Index, fleet?.riderId) ||
+      (apiPublicId ? lookupEv91SdRow(ev91Index, apiPublicId) : null)
+    if (!fleet && !recentSdWeeks.length && !payTotal && !manual && !ev91) continue
+    if (ev91?.id != null) matchedEv91Ids.add(ev91.id)
 
     const fleetSdPaid = fleet?.sdPaid ?? 0
     const paymentSdLastWeek = recentSdWeeks[0]?.amount ?? 0
@@ -402,15 +452,16 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
     const paymentSdDeduction2Wks = paymentSdLastWeek + paymentSdPrevWeek
     const paymentSdDeductionTotal = payTotal?.amount ?? 0
     const manualSdPaid = manual?.amount ?? 0
+    const sdFields = ev91SdFields(ev91, apiPublicId)
 
     rows.push({
       rowKey: `sd-${id}`,
-      riderId: pickText(firstDeployee?.riderId, fleet?.riderId) || id,
+      riderId: pickText(firstDeployee?.riderId, fleet?.riderId, ev91?.client_rider_id) || id,
       riderName: pickText(fleet?.riderName, firstDeployee?.riderName, payTotal?.riderName, manual?.riderName) || 'N/A',
-      city: pickText(fleet?.city, payTotal?.city, manual?.city) || 'Unknown',
-      client: fleet?.client || payTotal?.client || 'Unknown',
+      city: pickText(fleet?.city, payTotal?.city, manual?.city, ev91?.city) || 'Unknown',
+      client: fleet?.client || payTotal?.client || pickText(ev91?.client_name) || 'Unknown',
       vehicleNumber: fleet?.vehicleNumber || '',
-      riderPhone: pickText(firstDeployee?.phone, fleet?.phone) || '',
+      riderPhone: phone,
       firstDeployeeDate: formatDeployedAt(firstDeployee?.dateRecord),
       vehicleDeployedAt: formatDeployedAt(fleet?.vehicleDeployedAt),
       fleetSdTotal: fleet?.sdTotal ?? 0,
@@ -426,10 +477,51 @@ export function buildSdPaymentReport(paymentRows = [], collationRows = [], fleet
       paymentSdDeductionTotal,
       manualSdPaid,
       sdGap: fleetSdPaid - paymentSdDeductionTotal - manualSdPaid,
+      ...sdFields,
     })
   }
 
-  rows.sort((a, b) => b.fleetSdPaid - a.fleetSdPaid || a.riderName.localeCompare(b.riderName))
+  for (const ev91 of ev91SdRows || []) {
+    if (ev91?.id != null && matchedEv91Ids.has(ev91.id)) continue
+    const clientId = normalizeRiderIdKey(ev91.client_rider_id)
+    const publicId = normalizeRiderIdKey(ev91.public_rider_id)
+    const id = clientId || publicId
+    if (!id) continue
+    if (riderIds.has(id) || (publicId && riderIds.has(publicId))) continue
+
+    const apiPublicId = resolveApiPublicRiderId(publicRiderIndex, [
+      { riderId: ev91.client_rider_id },
+      { riderId: ev91.public_rider_id },
+    ])
+
+    rows.push({
+      rowKey: `sd-ev91-${ev91.id ?? id}`,
+      riderId: pickText(ev91.client_rider_id, ev91.public_rider_id) || id,
+      riderName: 'N/A',
+      city: pickText(ev91.city) || 'Unknown',
+      client: pickText(ev91.client_name) || 'Unknown',
+      vehicleNumber: '',
+      riderPhone: '',
+      firstDeployeeDate: '',
+      vehicleDeployedAt: '',
+      fleetSdTotal: 0,
+      fleetSdPaid: 0,
+      fleetSdPending: 0,
+      sdUtr: '',
+      sdPaidScreenshot: '',
+      paymentSdLastWeek: 0,
+      paymentSdPrevWeek: 0,
+      paymentSdLastWeekLabel: '',
+      paymentSdPrevWeekLabel: '',
+      paymentSdDeduction2Wks: 0,
+      paymentSdDeductionTotal: 0,
+      manualSdPaid: 0,
+      sdGap: 0,
+      ...ev91SdFields(ev91, apiPublicId),
+    })
+  }
+
+  rows.sort((a, b) => b.fleetSdPaid - a.fleetSdPaid || b.ev91TotalSd - a.ev91TotalSd || a.riderName.localeCompare(b.riderName))
   return { rows, paymentWeekLabels }
 }
 
@@ -518,7 +610,9 @@ function sdRowMatchesSearch(row, q) {
     row.client.toLowerCase().includes(q) ||
     (row.vehicleNumber || '').toLowerCase().includes(q) ||
     (row.vehicleDeployedAt || '').toLowerCase().includes(q) ||
-    (row.sdUtr || '').toLowerCase().includes(q)
+    (row.sdUtr || '').toLowerCase().includes(q) ||
+    (row.ev91PublicRiderId || '').toLowerCase().includes(q) ||
+    (row.ev91ClientRiderId || '').toLowerCase().includes(q)
   )
 }
 

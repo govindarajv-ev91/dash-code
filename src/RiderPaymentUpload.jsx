@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle, CircleDollarSign, Clock } from 'lucide-react'
+import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle, CircleDollarSign, Clock, Shield } from 'lucide-react'
 import { formatLastUploadAt } from './lib/paymentMonthList'
 import {
   parseRiderPaymentFile,
   parseManualCollationFile,
   parseRentalPendingFile,
+  parseEv91SdFile,
   RIDER_PAYMENT_HEADER_LABELS,
   MANUAL_COLLATION_HEADER_LABELS,
   RENTAL_PENDING_HEADER_LABELS,
+  EV91_SD_HEADER_LABELS,
 } from './lib/paymentUploadParse'
 import {
   loadRiderPaymentSummary,
@@ -34,6 +36,13 @@ import {
   getRentalPendingDbSetupMessage,
   isMissingRentalPendingTable,
 } from './lib/rentalPendingDb'
+import {
+  loadEv91SdSummary,
+  saveEv91SdRows,
+  clearEv91SdData,
+  getEv91SdDbSetupMessage,
+  isMissingEv91SdTable,
+} from './lib/ev91SdDb'
 
 function ResetConfirmModal({ open, title, message, confirming, onCancel, onConfirm }) {
   if (!open) return null
@@ -143,6 +152,7 @@ function UploadSection({
   onResetMonthChange,
   onUpload,
   onReset,
+  showMonthReset = true,
 }) {
   return (
     <div className="glass" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
@@ -181,33 +191,35 @@ function UploadSection({
               hidden
             />
           </label>
-          <label
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.25rem',
-              fontSize: '0.7rem',
-              color: 'var(--text-dim)',
-              minWidth: '170px',
-            }}
-          >
-            <span>Reset month</span>
-            <select
-              className="fsr-select rpu-reset-select"
-              value={resetMonth}
-              onChange={(e) => onResetMonthChange?.(e.target.value)}
-              disabled={uploading || resetting || count === 0}
-              title="Choose a month to clear, or All months to clear everything"
+          {showMonthReset ? (
+            <label
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.25rem',
+                fontSize: '0.7rem',
+                color: 'var(--text-dim)',
+                minWidth: '170px',
+              }}
             >
-              <option value="">All months</option>
-              {resetMonths.length === 0 && count > 0 ? (
-                <option value="" disabled>No months found</option>
-              ) : null}
-              {resetMonths.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </label>
+              <span>Reset month</span>
+              <select
+                className="fsr-select rpu-reset-select"
+                value={resetMonth}
+                onChange={(e) => onResetMonthChange?.(e.target.value)}
+                disabled={uploading || resetting || count === 0}
+                title="Choose a month to clear, or All months to clear everything"
+              >
+                <option value="">All months</option>
+                {resetMonths.length === 0 && count > 0 ? (
+                  <option value="" disabled>No months found</option>
+                ) : null}
+                {resetMonths.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <button
             type="button"
             className="glass-btn"
@@ -216,7 +228,7 @@ function UploadSection({
             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem' }}
           >
             {resetting ? <Loader size={16} className="spin" /> : <RotateCcw size={16} />}
-            {resetMonth ? `Reset ${resetMonth}` : 'Reset all'}
+            {showMonthReset && resetMonth ? `Reset ${resetMonth}` : 'Reset all'}
           </button>
         </div>
       </div>
@@ -284,9 +296,12 @@ export default function RiderPaymentUpload() {
   const [rentalPreview, setRentalPreview] = useState([])
   const [rentalMonths, setRentalMonths] = useState([])
   const [rentalResetMonth, setRentalResetMonth] = useState('')
+  const [ev91SdCount, setEv91SdCount] = useState(0)
+  const [ev91SdPreview, setEv91SdPreview] = useState([])
   const [paymentLastUpload, setPaymentLastUpload] = useState(null)
   const [collationLastUpload, setCollationLastUpload] = useState(null)
   const [rentalLastUpload, setRentalLastUpload] = useState(null)
+  const [ev91SdLastUpload, setEv91SdLastUpload] = useState(null)
   const [loading, setLoading] = useState(true)
   const [paymentUploading, setPaymentUploading] = useState(false)
   const [paymentResetting, setPaymentResetting] = useState(false)
@@ -294,19 +309,23 @@ export default function RiderPaymentUpload() {
   const [collationResetting, setCollationResetting] = useState(false)
   const [rentalUploading, setRentalUploading] = useState(false)
   const [rentalResetting, setRentalResetting] = useState(false)
+  const [ev91SdUploading, setEv91SdUploading] = useState(false)
+  const [ev91SdResetting, setEv91SdResetting] = useState(false)
   const [paymentMessage, setPaymentMessage] = useState(null)
   const [collationMessage, setCollationMessage] = useState(null)
   const [rentalMessage, setRentalMessage] = useState(null)
+  const [ev91SdMessage, setEv91SdMessage] = useState(null)
   const [resetConfirm, setResetConfirm] = useState(null)
   const [loadError, setLoadError] = useState(null)
   const [missingTables, setMissingTables] = useState([])
 
   const refreshSummaries = useCallback(async () => {
     setLoadError(null)
-    const [payment, collation, rental] = await Promise.all([
+    const [payment, collation, rental, ev91Sd] = await Promise.all([
       loadRiderPaymentSummary(),
       loadManualCollationSummary(),
       loadRentalPendingSummary(),
+      loadEv91SdSummary(),
     ])
     setPaymentCount(payment.count)
     setPaymentPreview(payment.preview)
@@ -320,6 +339,9 @@ export default function RiderPaymentUpload() {
     setRentalPreview(rental.preview)
     setRentalMonths(rental.months || [])
     setRentalLastUpload(rental.lastUploadAt ?? null)
+    setEv91SdCount(ev91Sd.count)
+    setEv91SdPreview(ev91Sd.preview)
+    setEv91SdLastUpload(ev91Sd.lastUploadAt ?? null)
     setPaymentResetMonth((prev) => ((payment.months || []).includes(prev) ? prev : ''))
     setCollationResetMonth((prev) => ((collation.months || []).includes(prev) ? prev : ''))
     setRentalResetMonth((prev) => ((rental.months || []).includes(prev) ? prev : ''))
@@ -328,9 +350,10 @@ export default function RiderPaymentUpload() {
     if (payment.missingTable) missing.push('rider_payment_data')
     if (collation.missingTable) missing.push('manual_collation_data')
     if (rental.missingTable) missing.push('rental_pending_data')
+    if (ev91Sd.missingTable) missing.push('ev91_sd_data')
     setMissingTables(missing)
 
-    return { payment, collation, rental }
+    return { payment, collation, rental, ev91Sd }
   }, [])
 
   useEffect(() => {
@@ -552,12 +575,71 @@ export default function RiderPaymentUpload() {
     }
   }
 
+  const handleEv91SdUpload = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+
+    setEv91SdUploading(true)
+    setEv91SdMessage(null)
+    try {
+      const buffer = await file.arrayBuffer()
+      const { rows, sheetName } = parseEv91SdFile(buffer)
+      if (!rows.length) {
+        setEv91SdMessage({ type: 'error', text: 'No valid EV91 SD rows found. Check column headers.' })
+        return
+      }
+      const inserted = await saveEv91SdRows(rows, { replace: true })
+      await refreshSummaries()
+      setEv91SdMessage({
+        type: 'success',
+        text: `Saved ${inserted.toLocaleString()} EV91 SD row(s) from ${sheetName || file.name}.`,
+      })
+    } catch (err) {
+      const text = isMissingEv91SdTable(err)
+        ? getEv91SdDbSetupMessage()
+        : err?.message || 'Upload failed.'
+      setEv91SdMessage({ type: 'error', text })
+    } finally {
+      setEv91SdUploading(false)
+    }
+  }
+
+  const handleEv91SdReset = () => {
+    setResetConfirm({
+      type: 'ev91sd',
+      month: '',
+      title: 'Reset all EV91 SD data?',
+      message: 'Clear ALL EV91 SD data from the database.',
+    })
+  }
+
+  const runEv91SdReset = async () => {
+    setEv91SdResetting(true)
+    setEv91SdMessage(null)
+    try {
+      await clearEv91SdData()
+      await refreshSummaries()
+      setEv91SdMessage({ type: 'success', text: 'All EV91 SD data cleared.' })
+    } catch (err) {
+      const text = isMissingEv91SdTable(err)
+        ? getEv91SdDbSetupMessage()
+        : err?.message || 'Reset failed.'
+      setEv91SdMessage({ type: 'error', text })
+    } finally {
+      setEv91SdResetting(false)
+      setResetConfirm(null)
+    }
+  }
+
   const handleResetConfirm = async () => {
     if (!resetConfirm) return
     if (resetConfirm.type === 'payment') {
       await runPaymentReset(resetConfirm.month)
     } else if (resetConfirm.type === 'rental') {
       await runRentalReset(resetConfirm.month)
+    } else if (resetConfirm.type === 'ev91sd') {
+      await runEv91SdReset()
     } else {
       await runCollationReset(resetConfirm.month)
     }
@@ -703,13 +785,38 @@ export default function RiderPaymentUpload() {
         onReset={handleRentalReset}
       />
 
+      <UploadSection
+        title="EV91 SD"
+        icon={Shield}
+        iconColor="#a78bfa"
+        headerLabels={EV91_SD_HEADER_LABELS}
+        count={ev91SdCount}
+        lastUploadAt={ev91SdLastUpload}
+        preview={ev91SdPreview}
+        previewColumns={[
+          { key: 'public_rider_id', label: 'PublicRiderId' },
+          { key: 'client_rider_id', label: 'ClientRiderId' },
+          { key: 'city', label: 'City' },
+          { key: 'client_name', label: 'ClientName' },
+          { key: 'total_sd', label: 'TotalSd' },
+          { key: 'pending_sd', label: 'PendingSd' },
+          { key: 'fixed_deposit', label: 'FixedDeposit' },
+        ]}
+        message={ev91SdMessage}
+        uploading={ev91SdUploading}
+        resetting={ev91SdResetting}
+        showMonthReset={false}
+        onUpload={handleEv91SdUpload}
+        onReset={handleEv91SdReset}
+      />
+
       <ResetConfirmModal
         open={Boolean(resetConfirm)}
         title={resetConfirm?.title || ''}
         message={resetConfirm?.message || ''}
-        confirming={paymentResetting || collationResetting || rentalResetting}
+        confirming={paymentResetting || collationResetting || rentalResetting || ev91SdResetting}
         onCancel={() => {
-          if (!paymentResetting && !collationResetting && !rentalResetting) setResetConfirm(null)
+          if (!paymentResetting && !collationResetting && !rentalResetting && !ev91SdResetting) setResetConfirm(null)
         }}
         onConfirm={handleResetConfirm}
       />

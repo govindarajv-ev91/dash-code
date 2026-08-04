@@ -3,7 +3,10 @@ import { Shield, Zap, Search, Download, Landmark, Receipt, Wallet } from 'lucide
 import * as XLSX from 'xlsx'
 import { fetchAllRiderPayments } from './lib/riderPaymentDb'
 import { fetchAllManualCollation } from './lib/manualCollationDb'
+import { fetchAllEv91Sd } from './lib/ev91SdDb'
 import { fetchFleetSdRows } from './lib/fleetSdFetch'
+import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
+import { fetchEv91ClientMappingAll, buildEv91PublicRiderIndex } from './lib/ev91OnboardingPending'
 import {
   buildSdPaymentReport,
   buildEvRentMonthReport,
@@ -44,6 +47,9 @@ export default function SdPaymentViewer() {
   const [activeTab, setActiveTab] = useState('sd')
   const [paymentRows, setPaymentRows] = useState([])
   const [collationRows, setCollationRows] = useState([])
+  const [ev91SdRows, setEv91SdRows] = useState([])
+  const [overallRows, setOverallRows] = useState([])
+  const [mappingRows, setMappingRows] = useState([])
   const [fleetRows, setFleetRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [fleetLoading, setFleetLoading] = useState(true)
@@ -62,11 +68,17 @@ export default function SdPaymentViewer() {
     Promise.all([
       fetchAllRiderPayments().catch(() => []),
       fetchAllManualCollation().catch(() => []),
+      fetchAllEv91Sd().catch(() => []),
+      fetchEv91OverallStatusAll().then((r) => r?.data || []).catch(() => []),
+      fetchEv91ClientMappingAll().then((r) => r?.data || []).catch(() => []),
     ])
-      .then(([payments, collation]) => {
+      .then(([payments, collation, ev91Sd, overall, mapping]) => {
         if (cancelled) return
         setPaymentRows(payments)
         setCollationRows(collation)
+        setEv91SdRows(ev91Sd)
+        setOverallRows(overall)
+        setMappingRows(mapping)
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -88,9 +100,14 @@ export default function SdPaymentViewer() {
     }
   }, [])
 
+  const publicRiderIndex = useMemo(
+    () => buildEv91PublicRiderIndex(overallRows, mappingRows),
+    [overallRows, mappingRows]
+  )
+
   const sdReport = useMemo(
-    () => buildSdPaymentReport(paymentRows, collationRows, deferredFleet),
-    [paymentRows, collationRows, deferredFleet]
+    () => buildSdPaymentReport(paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex),
+    [paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex]
   )
   const sdRows = sdReport.rows
   const paymentWeekLabels = sdReport.paymentWeekLabels
@@ -143,13 +160,28 @@ export default function SdPaymentViewer() {
     let paymentDed2Wks = 0
     let paymentDedTotal = 0
     let manualPaid = 0
+    let ev91Total = 0
+    let ev91Pending = 0
+    let ev91FixedDeposit = 0
     for (const r of filteredSd) {
       fleetPaid += r.fleetSdPaid
       paymentDed2Wks += r.paymentSdDeduction2Wks
       paymentDedTotal += r.paymentSdDeductionTotal
       manualPaid += r.manualSdPaid
+      ev91Total += r.ev91TotalSd || 0
+      ev91Pending += r.ev91PendingSd || 0
+      ev91FixedDeposit += r.ev91FixedDeposit || 0
     }
-    return { fleetPaid, paymentDed2Wks, paymentDedTotal, manualPaid, riders: filteredSd.length }
+    return {
+      fleetPaid,
+      paymentDed2Wks,
+      paymentDedTotal,
+      manualPaid,
+      ev91Total,
+      ev91Pending,
+      ev91FixedDeposit,
+      riders: filteredSd.length,
+    }
   }, [filteredSd])
 
   const evTotals = useMemo(() => {
@@ -190,6 +222,11 @@ export default function SdPaymentViewer() {
         'Fleet SD Total': r.fleetSdTotal,
         'Fleet SD Paid': r.fleetSdPaid,
         'Fleet SD Pending': r.fleetSdPending,
+        'EV91 PublicRiderId': r.ev91PublicRiderId,
+        'EV91 ClientRiderId': r.ev91ClientRiderId,
+        'EV91 TotalSd': r.ev91TotalSd,
+        'EV91 PendingSd': r.ev91PendingSd,
+        'EV91 FixedDeposit': r.ev91FixedDeposit,
         'SD UTR': r.sdUtr,
         'SD Paid Screenshot (Last Deployee)': r.sdPaidScreenshot,
         [`Payment SD Ded. (${r.paymentSdLastWeekLabel || week1Label})`]: r.paymentSdLastWeek,
@@ -242,7 +279,7 @@ export default function SdPaymentViewer() {
             <div>
               <h1 style={{ margin: 0 }}>SD & EV Rent</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-                Unique EV riders · fleet SD · payment SD (last 2 weeks) · manual collation
+                Unique EV riders · fleet SD · EV91 SD · PublicRiderId from Overall / Client Mapping · payment SD
               </p>
             </div>
           </div>
@@ -276,6 +313,8 @@ export default function SdPaymentViewer() {
         <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
           <StatCard label="EV Riders" value={sdTotals.riders.toLocaleString('en-IN')} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
           <StatCard label="Fleet SD Paid" value={formatInr(sdTotals.fleetPaid)} icon={Landmark} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
+          <StatCard label="EV91 Total SD" value={formatInr(sdTotals.ev91Total)} icon={Shield} color="#c4b5fd" iconBg="rgba(196, 181, 253, 0.12)" />
+          <StatCard label="EV91 Pending SD" value={formatInr(sdTotals.ev91Pending)} icon={Wallet} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
           <StatCard label="Payment SD Ded. (2 wks)" value={formatInr(sdTotals.paymentDed2Wks)} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
           <StatCard label="Payment SD Ded. (Total)" value={formatInr(sdTotals.paymentDedTotal)} icon={Receipt} color="#f97316" iconBg="rgba(249, 115, 22, 0.12)" />
           <StatCard label="Manual SD Paid" value={formatInr(sdTotals.manualPaid)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
@@ -371,6 +410,10 @@ export default function SdPaymentViewer() {
                   <th>Fleet SD Total</th>
                   <th>Fleet SD Paid</th>
                   <th>Fleet SD Pending</th>
+                  <th title="From EV91 SD upload, or Overall / Client Mapping API">EV91 PublicRiderId</th>
+                  <th title="From EV91 SD upload">EV91 TotalSd</th>
+                  <th title="From EV91 SD upload">EV91 PendingSd</th>
+                  <th title="From EV91 SD upload">EV91 FixedDeposit</th>
                   <th title="Rider's most recent payment week with SD deduction">SD Ded. (Recent 1)</th>
                   <th title="Rider's previous payment week with SD deduction">SD Ded. (Recent 2)</th>
                   <th>SD Ded. (2 wks)</th>
@@ -402,6 +445,14 @@ export default function SdPaymentViewer() {
                       <td>
                         <div style={{ fontWeight: 600 }}>{r.riderName}</div>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }} title="First Deployee rider ID">{r.riderId}</div>
+                        {r.ev91PublicRiderId ? (
+                          <div
+                            style={{ fontSize: '0.7rem', color: '#c4b5fd', marginTop: 2 }}
+                            title="EV91 PublicRiderId (Overall / Client Mapping / SD upload)"
+                          >
+                            {r.ev91PublicRiderId}
+                          </div>
+                        ) : null}
                       </td>
                       <td style={{ fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{r.riderPhone || '—'}</td>
                       <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{r.firstDeployeeDate || '—'}</td>
@@ -412,6 +463,10 @@ export default function SdPaymentViewer() {
                       <td>{formatInr(r.fleetSdTotal)}</td>
                       <td style={{ color: '#4ade80', fontWeight: 600 }}>{formatInr(r.fleetSdPaid)}</td>
                       <td>{formatInr(r.fleetSdPending)}</td>
+                      <td style={{ fontSize: '0.75rem' }}>{r.ev91PublicRiderId || '—'}</td>
+                      <td style={{ color: '#c4b5fd', fontWeight: 600 }}>{formatInr(r.ev91TotalSd)}</td>
+                      <td style={{ color: '#fbbf24', fontWeight: 600 }}>{formatInr(r.ev91PendingSd)}</td>
+                      <td>{formatInr(r.ev91FixedDeposit)}</td>
                       <td style={{ color: '#fdba74', fontWeight: 600 }}>
                         <div>{formatInr(r.paymentSdLastWeek)}</div>
                         {r.paymentSdLastWeekLabel ? (

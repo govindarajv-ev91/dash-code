@@ -343,7 +343,8 @@ export async function fetchEv91OverallStatusAll({ force = false } = {}) {
 }
 
 /** Load all Current Status rows (for open-deploy safety net). */
-export async function fetchEv91CurrentStatusAll() {
+export async function fetchEv91CurrentStatusAll({ force = false } = {}) {
+  if (force) clearEv91AllCache('current-status')
   return fetchAllEv91MisData('current-status')
 }
 

@@ -50,11 +50,14 @@ import {
   getEv91ZeroOrderRiderPerformanceHeaders,
   lookupEv91RentalPending,
 } from './lib/ev91RiderPerformance'
+import { fillPerformanceRowSourceFromOnboarding } from './lib/onboardingSourceLookup'
+import { fetchAllData } from './lib/supabaseFetch'
 
 const ROWS_PER_PAGE = 80
 
 export default function Ev91RiderPerformance({
   riderData,
+  onboardingData = [],
   loading,
   refreshing = false,
   dataUpdatedAt = null,
@@ -75,6 +78,7 @@ export default function Ev91RiderPerformance({
   const [ev91Loading, setEv91Loading] = useState(true)
   const [ev91Error, setEv91Error] = useState('')
   const [riderDetailsById, setRiderDetailsById] = useState(new Map())
+  const [localOnboarding, setLocalOnboarding] = useState([])
   const [currentPage, setCurrentPage] = useState(1)
   const today = useMemo(() => new Date(), [])
 
@@ -130,6 +134,31 @@ export default function Ev91RiderPerformance({
     loadEv91Deployed()
   }, [loadEv91Deployed])
 
+  // Ensure rider_onboarding is available for Source lookup (App secondary load can lag / miss cache)
+  useEffect(() => {
+    if (onboardingData?.length) {
+      setLocalOnboarding([])
+      return
+    }
+    let cancelled = false
+    fetchAllData('rider_onboarding', 'rider_id_details,rider_id,worker_code,source_name,rider_mobile_number,merge', 'id', {
+      pageSize: 1000,
+      useKeyset: true,
+    })
+      .then((res) => {
+        if (!cancelled) setLocalOnboarding(res?.data || [])
+      })
+      .catch((err) => {
+        console.warn('rider_onboarding source lookup load failed:', err)
+        if (!cancelled) setLocalOnboarding([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [onboardingData])
+
+  const resolvedOnboarding = onboardingData?.length ? onboardingData : localOnboarding
+
   const loadRentalPending = useCallback((force = false) => {
     setRentalPendingLoading(true)
     return fetchAllRentalPending({ force })
@@ -184,8 +213,10 @@ export default function Ev91RiderPerformance({
     const base = buildEv91RiderPerformanceReport(ev91Rows, orderRowsForMetrics, reportAsOf, {
       metricsIndex,
       riderDetailsById,
+      onboardingRows: resolvedOnboarding,
     })
-    const withRental = base.map((row) => ({
+    const withSource = fillPerformanceRowSourceFromOnboarding(base, resolvedOnboarding)
+    const withRental = withSource.map((row) => ({
       ...row,
       'Rental Pending Amount': lookupEv91RentalPending(rentalPendingIndex, row) ?? '',
     }))
@@ -198,6 +229,7 @@ export default function Ev91RiderPerformance({
     rentalPendingIndex,
     iotKmIndex,
     riderDetailsById,
+    resolvedOnboarding,
   ])
 
   const cities = useMemo(() => {

@@ -403,3 +403,32 @@ export const RENTAL_PENDING_HEADER_LABELS = [
   'Actual pending for Week After SD', 'Payment Collected Date', 'In-active Days', 'Eff/inff',
   'Current week orders', 'Remarks', "Remarks BY FR 'S",
 ]
+
+const EV91_SD_FIELD_ALIASES = {
+  public_rider_id: ['public_rider_id', 'publicriderid'],
+  city: ['city'],
+  client_name: ['client_name', 'clientname', 'client'],
+  client_rider_id: ['client_rider_id', 'clientriderid'],
+  total_sd: ['total_sd', 'totalsd'],
+  pending_sd: ['pending_sd', 'pendingsd'],
+  fixed_deposit: ['fixed_deposit', 'fixeddeposit'],
+}
+
+const EV91_SD_NUMERIC = new Set(['total_sd', 'pending_sd', 'fixed_deposit'])
+
+export function parseEv91SdFile(arrayBuffer) {
+  return parseWorkbookArrayBuffer(arrayBuffer, {
+    mapFn: (row) => mapRow(row, EV91_SD_FIELD_ALIASES, EV91_SD_NUMERIC),
+    minFields: 2,
+  })
+}
+
+export const EV91_SD_HEADER_LABELS = [
+  'PublicRiderId',
+  'City',
+  'ClientName',
+  'ClientRiderId',
+  'TotalSd',
+  'PendingSd',
+  'FixedDeposit',
+]

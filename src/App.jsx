@@ -26,6 +26,7 @@ const Ev91RiderPerformance = lazy(() => import('./Ev91RiderPerformance'))
 const Ev91OnboardingPending = lazy(() => import('./Ev91OnboardingPending'))
 const Ev91EvLookup = lazy(() => import('./Ev91EvLookup'))
 const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
+const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -575,6 +576,13 @@ function App() {
             <PieChart size={20} />
             Client Summary
           </button>
+          <button
+            className={`nav-item nav-item-green ${activePage === 'bigquery' ? 'active' : ''}`}
+            onClick={() => setActivePage('bigquery')}
+          >
+            <Layers size={20} />
+            BigQuery Data
+          </button>
 
           <div className={`nav-folder ${ev91FolderOpen || EV91_PAGES.has(activePage) ? 'open' : ''}`}>
             <button
@@ -782,9 +790,18 @@ function App() {
             refreshData={fetchData}
             defaultTab="clientsummary"
           />
+        ) : activePage === 'bigquery' ? (
+          <BigQueryDeployReturn
+            fleetData={displayFleetData}
+            loading={loading || fleetLoading}
+            fleetFullLoading={fleetFullLoading}
+            fleetIsSlim={!fleetDataFull}
+            loadFullFleet={loadFullFleet}
+          />
         ) : activePage === 'ev91-performance' ? (
           <Ev91RiderPerformance
             riderData={riderData}
+            onboardingData={onboardingData}
             loading={loading}
             refreshing={refreshing}
             dataUpdatedAt={dataUpdatedAt}

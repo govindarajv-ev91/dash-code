@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useDeferredValue } from 'react';
+import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, Legend 
@@ -17,9 +17,33 @@ import {
 import { buildMasterSheetRows, filterMasterSheetRows } from './lib/fleetMasterSheet';
 import { parseFleetDate } from './lib/fleetDeployReturnExport';
 import { getFleetDeployReturnCounts } from './lib/riderPerformanceReport';
+import {
+  fetchEv91MisData,
+  fetchAllEv91MisData,
+  summarizeCurrentStatusRows,
+  currentStatusDistributionSeries,
+  countOverallDeployReturnInRange,
+  EV91_WEBAPP_CUTOVER_DATE,
+  EV91_FLEET_DATA_UNTIL_DATE,
+} from './lib/ev91MisApi';
+import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup';
 
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80'];
 const FLEET_TABLE_LIMIT = 10;
+
+function countFleetDeployReturnEvents(masterRows) {
+  let deployed = 0
+  let returned = 0
+  const seen = new Set()
+  for (const row of masterRows || []) {
+    const key = `${row.vehicleNumber}|${format(row.date, 'yyyy-MM-dd')}|${row.vehicleStatus}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (row.vehicleStatus === 'Deployee') deployed++
+    else if (row.vehicleStatus === 'Return') returned++
+  }
+  return { deployed, returned }
+}
 
 function buildOrderDailyIndex(rows) {
   const byDate = new Map();
@@ -54,9 +78,54 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [ev91StatusSummary, setEv91StatusSummary] = useState(null);
+  const [ev91StatusLoading, setEv91StatusLoading] = useState(true);
+  const [ev91StatusError, setEv91StatusError] = useState('');
+  const [ev91OverallRows, setEv91OverallRows] = useState([]);
+  const [ev91OverallLoading, setEv91OverallLoading] = useState(true);
   const deferredRiderData = useDeferredValue(riderData);
   const deferredFleetData = useDeferredValue(fleetData);
   const deferredSearch = useDeferredValue(searchTerm);
+
+  const loadEv91CurrentStatus = useCallback(async () => {
+    setEv91StatusLoading(true);
+    setEv91StatusError('');
+    try {
+      const page = await fetchEv91MisData('current-status', { limit: 1, offset: 0 });
+      let summary = summarizeCurrentStatusRows(page.data, page.summary);
+      const hasAny =
+        (summary.deployed || 0) + (summary.returned || 0) + (summary.yetNotDeployed || 0) > 0;
+      if (!hasAny) {
+        const all = await fetchAllEv91MisData('current-status');
+        summary = summarizeCurrentStatusRows(all.data, all.summary);
+      }
+      setEv91StatusSummary(summary);
+    } catch (err) {
+      console.warn('EV91 current-status load failed:', err);
+      setEv91StatusSummary(null);
+      setEv91StatusError(err?.message || 'Failed to load EV91 current status');
+    } finally {
+      setEv91StatusLoading(false);
+    }
+  }, []);
+
+  const loadEv91OverallStatus = useCallback(async () => {
+    setEv91OverallLoading(true);
+    try {
+      const result = await fetchEv91OverallStatusAll({ force: false });
+      setEv91OverallRows(result.data || []);
+    } catch (err) {
+      console.warn('EV91 overall-status load failed:', err);
+      setEv91OverallRows([]);
+    } finally {
+      setEv91OverallLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadEv91CurrentStatus();
+    loadEv91OverallStatus();
+  }, [loadEv91CurrentStatus, loadEv91OverallStatus]);
 
   // Effective filter: one date filled = that single day (not open-ended range).
   const filterFrom = startDate || endDate || ''
@@ -97,17 +166,6 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     () => getFleetDeployReturnCounts(deferredFleetData, new Date()),
     [deferredFleetData]
   );
-
-  const fleetEventsInRange = useMemo(() => {
-    if (!filterFrom && !filterTo) return null;
-    const rangeFrom = filterFrom || filterTo;
-    const rangeTo = filterTo || filterFrom;
-    return filterMasterSheetRows(masterSheetRows, {
-      city: 'All',
-      startDate: rangeFrom,
-      endDate: rangeTo,
-    });
-  }, [masterSheetRows, filterFrom, filterTo]);
 
   const combinedVehicles = useMemo(() => {
     const map = new Map();
@@ -219,34 +277,89 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
 
     let activeVehicles = 0;
     let returnedVehicles = 0;
+    let vehicleSource = 'fleet'; // fleet | api | mixed
 
-    if (fleetEventsInRange) {
-      const seen = new Set();
-      for (const row of fleetEventsInRange) {
-        const key = `${row.vehicleNumber}|${format(row.date, 'yyyy-MM-dd')}|${row.vehicleStatus}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (row.vehicleStatus === 'Deployee') activeVehicles++;
-        else if (row.vehicleStatus === 'Return') returnedVehicles++;
-      }
-    } else {
+    if (!filterFrom && !filterTo) {
       activeVehicles = fleetSnapshot.deployed;
       returnedVehicles = fleetSnapshot.returned;
+      vehicleSource = 'fleet';
+    } else {
+      const rangeFrom = filterFrom;
+      const rangeTo = filterTo;
+
+      // Before cutover → fleet master Deployee/Return
+      const fleetFrom = rangeFrom;
+      const fleetTo =
+        rangeTo < EV91_WEBAPP_CUTOVER_DATE ? rangeTo : EV91_FLEET_DATA_UNTIL_DATE;
+      if (fleetFrom <= fleetTo) {
+        const fleetSlice = filterMasterSheetRows(masterSheetRows, {
+          city: 'All',
+          startDate: fleetFrom,
+          endDate: fleetTo,
+        });
+        const fleetCounts = countFleetDeployReturnEvents(fleetSlice);
+        activeVehicles += fleetCounts.deployed;
+        returnedVehicles += fleetCounts.returned;
+      }
+
+      // On/after cutover → EV91 Overall Status API (status date in range)
+      const apiFrom =
+        rangeFrom > EV91_WEBAPP_CUTOVER_DATE ? rangeFrom : EV91_WEBAPP_CUTOVER_DATE;
+      const apiTo = rangeTo;
+      if (apiFrom <= apiTo) {
+        const apiCounts = countOverallDeployReturnInRange(ev91OverallRows, {
+          startDate: apiFrom,
+          endDate: apiTo,
+        });
+        activeVehicles += apiCounts.deployed;
+        returnedVehicles += apiCounts.returned;
+        vehicleSource = fleetFrom <= fleetTo ? 'mixed' : 'api';
+      } else {
+        vehicleSource = 'fleet';
+      }
     }
 
-    let changeStr = 'All Time';
-    if (filterFrom && filterTo && filterFrom === filterTo) changeStr = filterFrom;
-    else if (filterFrom && filterTo) changeStr = `${filterFrom} to ${filterTo}`;
-    else if (filterFrom) changeStr = `Since ${filterFrom}`;
-    else if (filterTo) changeStr = `Until ${filterTo}`;
+    let dateStr = 'All Time';
+    if (filterFrom && filterTo && filterFrom === filterTo) dateStr = filterFrom;
+    else if (filterFrom && filterTo) dateStr = `${filterFrom} to ${filterTo}`;
+    else if (filterFrom) dateStr = `Since ${filterFrom}`;
+    else if (filterTo) dateStr = `Until ${filterTo}`;
+
+    let vehicleChange = dateStr;
+    if (vehicleSource === 'api') vehicleChange = `${dateStr} · EV91 API`;
+    else if (vehicleSource === 'mixed') vehicleChange = `${dateStr} · Fleet+API`;
+    else if (filterFrom || filterTo) vehicleChange = `${dateStr} · Fleet`;
+    if (ev91OverallLoading && (filterFrom || filterTo) && filterTo >= EV91_WEBAPP_CUTOVER_DATE) {
+      vehicleChange = `${vehicleChange} · loading…`;
+    }
 
     return [
-      { label: 'Total Orders', value: totalOrders.toLocaleString(), icon: TrendingUp, change: changeStr, isPositive: true },
-      { label: 'Active Riders', value: activeCodes.size.toLocaleString(), icon: Users, change: changeStr, isPositive: true },
-      { label: 'Deployed Vehicles', value: activeVehicles.toLocaleString(), icon: Truck, change: changeStr, isPositive: true },
-      { label: 'Returned Units', value: returnedVehicles.toLocaleString(), icon: Activity, change: changeStr, isPositive: false },
+      { label: 'Total Orders', value: totalOrders.toLocaleString(), icon: TrendingUp, change: dateStr, isPositive: true },
+      { label: 'Active Riders', value: activeCodes.size.toLocaleString(), icon: Users, change: dateStr, isPositive: true },
+      {
+        label: 'Deployed Vehicles',
+        value: activeVehicles.toLocaleString(),
+        icon: Truck,
+        change: vehicleChange,
+        isPositive: true,
+      },
+      {
+        label: 'Returned Units',
+        value: returnedVehicles.toLocaleString(),
+        icon: Activity,
+        change: vehicleChange,
+        isPositive: false,
+      },
     ];
-  }, [orderDailyIndex, fleetEventsInRange, fleetSnapshot, filterFrom, filterTo]);
+  }, [
+    orderDailyIndex,
+    masterSheetRows,
+    fleetSnapshot,
+    filterFrom,
+    filterTo,
+    ev91OverallRows,
+    ev91OverallLoading,
+  ]);
 
   const filteredFleet = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
@@ -277,15 +390,10 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     return out;
   }, [combinedVehicles, deferredSearch, filterFrom, filterTo]);
 
-  const realVehicleStatusDist = useMemo(() => {
-    const counts = filteredFleet.reduce((acc, curr) => {
-      const status = curr.status || 'Unknown';
-      acc[status] = (acc[status] || 0) + 1;
-      return acc;
-    }, {});
-
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [filteredFleet]);
+  const realVehicleStatusDist = useMemo(
+    () => currentStatusDistributionSeries(ev91StatusSummary),
+    [ev91StatusSummary]
+  );
 
   if (loading && riderData.length === 0) {
     return (
@@ -309,6 +417,10 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
             ) : (
               <span style={{ marginLeft: 8 }}>· Orders from rider_metrics</span>
             )}
+            <span style={{ marginLeft: 8 }}>
+              · Deploy/Return: fleet before {EV91_WEBAPP_CUTOVER_DATE}, EV91 Overall Status API from{' '}
+              {EV91_WEBAPP_CUTOVER_DATE}
+            </span>
           </p>
         </div>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
@@ -381,16 +493,42 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
 
         <div className="chart-card glass">
           <h3>Vehicle Status Distribution</h3>
+          <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+            EV91 Current Vehicle Status · Deployed / Returned / Not yet to deploy
+            {ev91StatusLoading ? ' · Loading…' : ''}
+            {ev91StatusError ? ` · ${ev91StatusError}` : ''}
+          </p>
           <div style={{ height: '300px', width: '100%' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={realVehicleStatusDist} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
-                  {realVehicleStatusDist.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                </Pie>
-                <Tooltip />
-                <Legend verticalAlign="bottom" height={36}/>
-              </PieChart>
-            </ResponsiveContainer>
+            {ev91StatusLoading && realVehicleStatusDist.length === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+                Loading EV91 status…
+              </div>
+            ) : realVehicleStatusDist.length === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+                No current-status data
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={realVehicleStatusDist}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={100}
+                    paddingAngle={5}
+                    dataKey="value"
+                    nameKey="name"
+                  >
+                    {realVehicleStatusDist.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend verticalAlign="bottom" height={36} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       </div>

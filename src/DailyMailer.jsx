@@ -45,6 +45,7 @@ const DailyMailer = ({ riderData, loading, refreshData }) => {
         const clients = new Set();
         const cities = new Set();
         riderData.forEach(r => {
+            if (r?._ic_only) return
             if (r.client && r.client !== 'null') clients.add(r.client);
             if (r.city && r.city !== 'null') cities.add(r.city);
         });
@@ -78,6 +79,7 @@ const DailyMailer = ({ riderData, loading, refreshData }) => {
 
             // All riders global map for 'New Rider' detection
             riderData.forEach(r => {
+                if (r?._ic_only) return;
                 if (!r.worker_code) return;
                 const d = parseCustomDate(r.date_record);
                 if (!d) return;
@@ -90,6 +92,7 @@ const DailyMailer = ({ riderData, loading, refreshData }) => {
 
             // Filter data by selected clients AND cities
             const filteredData = riderData.filter(item => {
+                if (item?._ic_only) return false;
                 const clientMatch = selectedClients.includes('ALL') || selectedClients.includes(item.client);
                 const cityMatch = selectedCities.includes('ALL') || selectedCities.includes(item.city);
                 return clientMatch && cityMatch;

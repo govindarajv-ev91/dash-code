@@ -22,6 +22,7 @@ const CLIENT_CANONICAL_BY_KEY = {
 export const HIDDEN_SUMMARY_CLIENT_KEYS = new Set([
   'in-house ev91',
   'kwik',
+  'kuik',
   'rapido-gmv',
   'rental model',
   'rental_model',

@@ -23,6 +23,16 @@ function groupKey(row) {
   return `${worker}|${dateKey}|${client}`
 }
 
+/** Rows kept only so IC (FL=1) survives upload-preferred merge — skip in order totals. */
+export function isIcOnlyMetricRow(row) {
+  return Boolean(row?._ic_only)
+}
+
+/** Use for order / overview aggregations (excludes IC-only metric mirrors). */
+export function isOrderCountableRow(row) {
+  return Boolean(row) && !isIcOnlyMetricRow(row)
+}
+
 /** Map order_upload_data row → rider_metrics-shaped record. */
 export function mapOrderUploadToRiderMetric(row) {
   if (!row) return null
@@ -61,7 +71,8 @@ export function mapOrderUploadToRiderMetric(row) {
  * (same rider can have 11 and 5 orders on the same day — both kept).
  *
  * If uploads exist for a Date+Worker+Client group, metrics for that group are skipped
- * (avoids double-counting when rider_metrics later catches up).
+ * for order counts — except FL=1 rows, which are kept as `_ic_only` so IC Deployed
+ * still sees new NON-EV riders (order_upload has no `fl` column).
  */
 export function mergeRiderMetricSources(
   metricsRows = [],
@@ -90,12 +101,48 @@ export function mergeRiderMetricSources(
   const out = []
   const uploadGroupKeys = new Set(uploadGroups.keys())
 
-  for (const rowsByDelivered of uploadGroups.values()) {
-    out.push(...rowsByDelivered.values())
+  for (const [gkey, rowsByDelivered] of uploadGroups) {
+    // Uploads have no `fl` column — copy FL / type1 / phone from matching metrics
+    // so IC Deployed (FL=1 + NON-EV) still works on upload-preferred days.
+    const metricRows = metricsGroups.get(gkey) || []
+    const donor =
+      metricRows.find((r) => String(r?.fl ?? '').trim() !== '') || metricRows[0] || null
+
+    for (const row of rowsByDelivered.values()) {
+      if (donor) {
+        if (!String(row.fl ?? '').trim() && donor.fl != null && String(donor.fl).trim() !== '') {
+          row.fl = donor.fl
+        }
+        if (!String(row.type1 ?? '').trim() && donor.type1) {
+          row.type1 = donor.type1
+        }
+        if (!String(row.mob_number ?? '').trim() && donor.mob_number) {
+          row.mob_number = donor.mob_number
+        }
+        if (!String(row.worker_name ?? '').trim() && donor.worker_name) {
+          row.worker_name = donor.worker_name
+        }
+        if (!String(row.hub_name ?? '').trim() && donor.hub_name) {
+          row.hub_name = donor.hub_name
+        }
+        if (!String(row.city ?? '').trim() && donor.city) {
+          row.city = donor.city
+        }
+      }
+      out.push(row)
+    }
   }
 
   for (const [gkey, rows] of metricsGroups) {
-    if (prefer === 'order_upload' && uploadGroupKeys.has(gkey)) continue
+    if (prefer === 'order_upload' && uploadGroupKeys.has(gkey)) {
+      // Keep FL=1 metrics so IC Deployed is not limited to days without uploads
+      for (const row of rows) {
+        if (String(row.fl ?? '').trim() === '1') {
+          out.push({ ...row, _ic_only: true })
+        }
+      }
+      continue
+    }
     out.push(...rows)
   }
 
@@ -108,7 +155,7 @@ export function mergeRiderMetricSources(
  * If nothing uploaded yet, fall back to rider_metrics.
  */
 export function selectOverviewOrderRows(riderRows = []) {
-  const rows = riderRows || []
+  const rows = (riderRows || []).filter(isOrderCountableRow)
   const uploads = rows.filter((r) => r?._data_source === 'order_upload')
   if (uploads.length) return uploads
   return rows.filter((r) => r?._data_source !== 'order_upload')

@@ -21,6 +21,11 @@ const OrderHistory = lazy(() => import('./OrderHistory'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
 const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
 const IotData = lazy(() => import('./IotData'))
+const Ev91DbData = lazy(() => import('./Ev91DbData'))
+const Ev91RiderPerformance = lazy(() => import('./Ev91RiderPerformance'))
+const Ev91OnboardingPending = lazy(() => import('./Ev91OnboardingPending'))
+const Ev91EvLookup = lazy(() => import('./Ev91EvLookup'))
+const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -32,9 +37,27 @@ import {
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
 import { fetchAllOrderUploads, clearOrderUploadCache } from './lib/orderUploadDb'
 import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
+
+/** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
+const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase } from 'lucide-react'
 import './index.css'
+
+const EV91_PAGES = new Set([
+  'ev91-current',
+  'ev91-overall',
+  'ev91-mapping',
+  'ev91-performance',
+  'ev91-onboarding',
+  'ev91-evlookup',
+  'ev91-summary',
+])
+const EV91_ENDPOINT_BY_PAGE = {
+  'ev91-current': 'current-status',
+  'ev91-overall': 'overall-status',
+  'ev91-mapping': 'client-mapping-history',
+}
 
 const DB_NAME = 'DashFleetDB'
 const DB_VERSION = 1
@@ -138,7 +161,7 @@ async function fetchCoreDashboardData({ fullFleet = false } = {}) {
     fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', {
       pageSize: FLEET_SLIM_PAGE_SIZE,
     }),
-    fetchAllOrderUploads().catch((err) => {
+    fetchAllOrderUploads({ force: true }).catch((err) => {
       console.warn('order_upload_data load skipped:', err?.message || err)
       return []
     }),
@@ -165,6 +188,7 @@ async function fetchSecondaryTables() {
 
 function App() {
   const [activePage, setActivePage] = useState('dashboard')
+  const [ev91FolderOpen, setEv91FolderOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [riderData, setRiderData] = useState([])
   const [fleetData, setFleetData] = useState([])
@@ -240,7 +264,14 @@ function App() {
       setRefreshing(true)
       setFleetLoading(true)
       try {
-        await clearCacheKeys(['rider_metrics', 'order_upload_data', 'fleet_data', FLEET_FORM_CACHE_KEY, 'fleet_sheet_data'])
+        await clearCacheKeys([
+          RIDER_MERGED_CACHE_KEY,
+          'rider_metrics',
+          'order_upload_data',
+          'fleet_data',
+          FLEET_FORM_CACHE_KEY,
+          'fleet_sheet_data',
+        ])
         clearOrderUploadCache()
         clearIotRiderOrderCache()
         const { riderRes, uploadRows, fleetRes, formFleetRes } = await fetchCoreDashboardData({ fullFleet })
@@ -248,7 +279,7 @@ function App() {
         if (riderRes.data?.length) {
           startTransition(() => setRiderData(riderRes.data))
           scheduleCacheWrite(() => {
-            cacheData('rider_metrics', riderRes.data)
+            cacheData(RIDER_MERGED_CACHE_KEY, riderRes.data)
             if (uploadRows?.length) cacheData('order_upload_data', uploadRows)
           })
         }
@@ -280,7 +311,7 @@ function App() {
       cachedOnboarding,
       cachedInventory,
     ] = await Promise.all([
-      getCachedData('rider_metrics'),
+      getCachedData(RIDER_MERGED_CACHE_KEY),
       getCachedData('order_upload_data'),
       getCachedData('fleet_data'),
       getCachedData(FLEET_FORM_CACHE_KEY),
@@ -316,7 +347,7 @@ function App() {
     try {
       const [riderRes, uploadRows, slimFleet] = await Promise.all([
         fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', { pageSize: FLEET_SLIM_PAGE_SIZE }),
-        fetchAllOrderUploads().catch((err) => {
+        fetchAllOrderUploads({ force: true }).catch((err) => {
           console.warn('order_upload_data load skipped:', err?.message || err)
           return []
         }),
@@ -327,7 +358,7 @@ function App() {
       if (mergedRiders.length) {
         startTransition(() => setRiderData(mergedRiders))
         scheduleCacheWrite(() => {
-          cacheData('rider_metrics', mergedRiders)
+          cacheData(RIDER_MERGED_CACHE_KEY, mergedRiders)
           if (uploadRows?.length) cacheData('order_upload_data', uploadRows)
         })
       }
@@ -361,15 +392,18 @@ function App() {
     try {
       const [riderRes, uploadRows] = await Promise.all([
         fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', { pageSize: FLEET_SLIM_PAGE_SIZE }),
-        fetchAllOrderUploads().catch(() => []),
+        fetchAllOrderUploads({ force: true }).catch(() => []),
       ])
       const merged = mergeRiderMetricSources(riderRes.data || [], uploadRows || [])
       startTransition(() => setRiderData(merged))
       scheduleCacheWrite(() => {
-        cacheData('rider_metrics', merged)
+        cacheData(RIDER_MERGED_CACHE_KEY, merged)
         cacheData('order_upload_data', uploadRows || [])
       })
       setDataUpdatedAt(new Date())
+      console.info(
+        `[orders] refreshed after upload: ${uploadRows?.length ?? 0} uploads → ${merged.length} merged`
+      )
     } catch (err) {
       console.warn('Refresh after order upload failed:', err?.message || err)
     }
@@ -382,7 +416,15 @@ function App() {
     }
   }, [activePage, fleetDataFull, fleetFullLoading, loadFullFleet])
 
+  useEffect(() => {
+    if (EV91_PAGES.has(activePage)) setEv91FolderOpen(true)
+  }, [activePage])
+
   const displayFleetData = fleetDataFull ?? fleetData
+  const openEv91Page = (page) => {
+    setEv91FolderOpen(true)
+    setActivePage(page)
+  }
 
   return (
     <div className="app-layout app-layout-auto-sidebar">
@@ -533,6 +575,79 @@ function App() {
             <PieChart size={20} />
             Client Summary
           </button>
+
+          <div className={`nav-folder ${ev91FolderOpen || EV91_PAGES.has(activePage) ? 'open' : ''}`}>
+            <button
+              type="button"
+              className={`nav-item nav-folder-toggle ${EV91_PAGES.has(activePage) ? 'folder-active' : ''}`}
+              onClick={() => setEv91FolderOpen((v) => !v)}
+              aria-expanded={ev91FolderOpen}
+            >
+              {ev91FolderOpen || EV91_PAGES.has(activePage) ? <FolderOpen size={20} /> : <Folder size={20} />}
+              <span className="nav-folder-label">EV91 DB Data</span>
+              <ChevronDown size={16} className="nav-folder-chevron" />
+            </button>
+            {(ev91FolderOpen || EV91_PAGES.has(activePage)) && (
+              <div className="nav-folder-children">
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-summary' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-summary')}
+                >
+                  <Briefcase size={18} />
+                  City / Client Summary
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-performance' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-performance')}
+                >
+                  <Activity size={18} />
+                  Rider Performance
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-onboarding' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-onboarding')}
+                >
+                  <UserPlus size={18} />
+                  Onboarding Pending
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-evlookup' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-evlookup')}
+                >
+                  <Search size={18} />
+                  EV / NON-EV Lookup
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-current' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-current')}
+                >
+                  <Bike size={18} />
+                  Current Status
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-overall' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-overall')}
+                >
+                  <Layers size={18} />
+                  Overall Status
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-mapping' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-mapping')}
+                >
+                  <Link2 size={18} />
+                  Client Mapping
+                </button>
+              </div>
+            )}
+          </div>
         </nav>
         </aside>
       </div>
@@ -667,6 +782,34 @@ function App() {
             refreshData={fetchData}
             defaultTab="clientsummary"
           />
+        ) : activePage === 'ev91-performance' ? (
+          <Ev91RiderPerformance
+            riderData={riderData}
+            loading={loading}
+            refreshing={refreshing}
+            dataUpdatedAt={dataUpdatedAt}
+            refreshData={() => fetchData({ bypassCache: true })}
+          />
+        ) : activePage === 'ev91-onboarding' ? (
+          <Ev91OnboardingPending
+            riderData={riderData}
+            loading={loading}
+            refreshing={refreshing}
+            dataUpdatedAt={dataUpdatedAt}
+            refreshData={() => fetchData({ bypassCache: true })}
+          />
+        ) : activePage === 'ev91-evlookup' ? (
+          <Ev91EvLookup
+            riderData={riderData}
+            loading={loading}
+            refreshing={refreshing}
+            dataUpdatedAt={dataUpdatedAt}
+            refreshData={() => fetchData({ bypassCache: true })}
+          />
+        ) : activePage === 'ev91-summary' ? (
+          <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
+        ) : EV91_PAGES.has(activePage) ? (
+          <Ev91DbData endpoint={EV91_ENDPOINT_BY_PAGE[activePage]} />
         ) : null}
         </Suspense>
       </main>

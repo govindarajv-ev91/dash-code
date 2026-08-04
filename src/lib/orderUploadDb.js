@@ -4,7 +4,9 @@ import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAtSafe } from '.
 import { toMetricDateKey } from './mergeRiderMetrics'
 
 export const ORDER_UPLOAD_TABLE = 'order_upload_data'
-export const ORDER_UPLOAD_COLUMNS = '*'
+/** Slim columns for dashboard merge / overview (faster than select *). */
+export const ORDER_UPLOAD_COLUMNS =
+  'id,client,date_record,worker_code,delivered,city,type1,month'
 /** Slim columns for Order History (faster than select *). */
 export const ORDER_HISTORY_COLUMNS =
   'id,client,date_record,worker_code,delivered,city,type1,month'
@@ -191,25 +193,56 @@ export async function saveOrderUploadRows(rows, { replace = false } = {}) {
 
 let cachedOrders = null
 let ordersInflight = null
+/** Bumped on clear so in-flight fetches cannot overwrite cache with stale rows. */
+let ordersFetchGeneration = 0
 /** Per-month cache for Order History (avoids loading the full table). */
 const historyMonthCache = new Map()
 const historyMonthInflight = new Map()
 
 export async function fetchAllOrderUploads({ force = false } = {}) {
+  if (force) {
+    cachedOrders = null
+    ordersInflight = null
+    ordersFetchGeneration += 1
+  }
   if (!force && cachedOrders) return cachedOrders
   if (!force && ordersInflight) return ordersInflight
 
+  const gen = ++ordersFetchGeneration
   ordersInflight = (async () => {
     const probe = await supabase.from(ORDER_UPLOAD_TABLE).select('id').limit(1)
     if (probe.error) throw probe.error
     const { data } = await fetchAllData(ORDER_UPLOAD_TABLE, ORDER_UPLOAD_COLUMNS, 'id', {
       useKeyset: true,
       maxRetries: 10,
+      pageSize: 1000,
     })
-    cachedOrders = data || []
+    let rows = data || []
+
+    // If pagination stopped early (timeout), latest days like 31 Jul are missing
+    try {
+      const exact = await fetchOrderUploadCount()
+      if (exact > 0 && rows.length < exact) {
+        console.warn(
+          `[orders] incomplete fetch ${rows.length}/${exact} — retrying full pull`
+        )
+        const retry = await fetchAllData(ORDER_UPLOAD_TABLE, ORDER_UPLOAD_COLUMNS, 'id', {
+          useKeyset: true,
+          maxRetries: 12,
+          pageSize: 500,
+        })
+        if ((retry.data?.length || 0) > rows.length) rows = retry.data || rows
+      }
+    } catch (err) {
+      console.warn('[orders] count check skipped:', err?.message || err)
+    }
+
+    if (gen !== ordersFetchGeneration) return rows
+
+    cachedOrders = rows
     return cachedOrders
   })().finally(() => {
-    ordersInflight = null
+    if (gen === ordersFetchGeneration) ordersInflight = null
   })
 
   return ordersInflight
@@ -269,6 +302,7 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
 export function clearOrderUploadCache() {
   cachedOrders = null
   ordersInflight = null
+  ordersFetchGeneration += 1
   historyMonthCache.clear()
   historyMonthInflight.clear()
 }

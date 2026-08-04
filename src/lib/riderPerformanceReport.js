@@ -402,9 +402,17 @@ export function buildRiderMetricsIndex(riderRows) {
 export function resolveRiderMetricRecords(assignment, metricsIndex) {
   const { byWorker, byMobile, byName } = metricsIndex
 
-  for (const idKey of riderIdLookupKeys(assignment.riderId)) {
-    const byId = byWorker.get(idKey)
-    if (byId?.length) return mergeRecordsByDate(byId)
+  const idsToTry = [
+    assignment?.riderId,
+    assignment?.clientRiderId,
+    assignment?.ev91RiderId,
+  ].filter(Boolean)
+
+  for (const id of idsToTry) {
+    for (const idKey of riderIdLookupKeys(id)) {
+      const byId = byWorker.get(idKey)
+      if (byId?.length) return mergeRecordsByDate(byId)
+    }
   }
 
   const phone = normalizePhone(assignment.mobile)
@@ -582,10 +590,33 @@ export function buildRiderPerformanceReport(
   const metricsIndex = metricsIndexOpt || buildRiderMetricsIndex(riderRows)
   const fleetSourceByRider = fleetSourceOpt || buildFleetSourceByRider(fleetRows)
 
-  return deployed.map((assignment) => {
+  return buildRiderPerformanceReportFromAssignments(deployed, riderRows, asOf, {
+    metricsIndex,
+    fleetSourceByRider,
+  })
+}
+
+/**
+ * Build performance rows from pre-built assignments (EV91 or other sources).
+ */
+export function buildRiderPerformanceReportFromAssignments(
+  assignments,
+  riderRows,
+  asOfDate = new Date(),
+  { metricsIndex: metricsIndexOpt = null, fleetSourceByRider = null } = {}
+) {
+  const asOf = startOfDay(asOfDate)
+  const metricsIndex = metricsIndexOpt || buildRiderMetricsIndex(riderRows)
+  const sourceMap = fleetSourceByRider || new Map()
+
+  return (assignments || []).map((assignment) => {
     const records = resolveRiderMetricRecords(assignment, metricsIndex)
     const stats = computeOrderStats(records, assignment.deployDate, asOf)
-    return buildRowFromAssignment(assignment, stats, asOf, fleetSourceByRider, records)
+    const row = buildRowFromAssignment(assignment, stats, asOf, sourceMap, records)
+    if (assignment.ev91RiderId) row['EV91 ID'] = assignment.ev91RiderId
+    if (assignment.clientRiderId) row['Client Rider ID'] = assignment.clientRiderId
+    if (assignment.operationalStatus) row.Category = row.Category || assignment.operationalStatus
+    return row
   })
 }
 
@@ -729,6 +760,8 @@ export function filterRiderPerformanceRows(
     const blob = [
       row['V no'],
       row.ID,
+      row['EV91 ID'],
+      row['Client Rider ID'],
       row.Name,
       row.Client,
       row.City,

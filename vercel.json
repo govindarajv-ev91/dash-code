@@ -2,6 +2,9 @@
   "functions": {
     "api/rider-performance-csv.js": {
       "maxDuration": 60
+    },
+    "api/ev91-mis.js": {
+      "maxDuration": 30
     }
   },
   "rewrites": [

@@ -72,37 +72,111 @@ export const EV91_CITIES = [
   'Mysuru',
 ]
 
+const EV91_MIS_UPSTREAM =
+  'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics'
+
+function getEv91MisApiKey() {
+  return (
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_EV91_MIS_API_KEY) ||
+    'ev91-mis-public-2026'
+  )
+}
+
+function buildEv91MisQuery(params = {}) {
+  const qs = new URLSearchParams()
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  if (params.offset != null) qs.set('offset', String(params.offset))
+  if (params.search) qs.set('search', params.search)
+  if (params.city) qs.set('city', params.city)
+  if (params.status) qs.set('status', params.status)
+  return qs
+}
+
+function parseEv91MisBody(body, httpStatus) {
+  if (!body || body.success === false) {
+    throw new Error(body?.message || `EV91 API error (HTTP ${httpStatus || 'unknown'})`)
+  }
+  return {
+    data: Array.isArray(body.data) ? body.data : [],
+    pagination: body.pagination || {},
+    summary: body.summary || {},
+  }
+}
+
 /**
- * Fetch EV91 MIS rider-vehicle analytics via local proxy (keeps API key server-side).
- * @param {string} endpoint
- * @param {{ limit?: number, offset?: number, search?: string, city?: string, status?: string }} params
+ * Call EV91 MIS upstream directly (CORS allows *). Used in production when
+ * `/api/ev91-mis` serverless proxy is missing (HTTP 404).
+ */
+async function fetchEv91MisDirect(endpoint, params = {}) {
+  const qs = buildEv91MisQuery(params)
+  const url = `${EV91_MIS_UPSTREAM}/${endpoint}?${qs.toString()}`
+  const res = await fetch(url, {
+    headers: {
+      'x-api-key': getEv91MisApiKey(),
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    cache: 'no-store',
+  })
+  const body = await res.json().catch(() => ({
+    success: false,
+    message: `Upstream returned HTTP ${res.status}`,
+  }))
+  if (!res.ok) {
+    throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
+  }
+  return parseEv91MisBody(body, res.status)
+}
+
+/**
+ * Fetch EV91 MIS rider-vehicle analytics.
+ * Tries local `/api/ev91-mis` proxy first (dev / Vercel), then falls back to
+ * direct upstream so production still works when the proxy route 404s.
  */
 export async function fetchEv91MisData(endpoint, params = {}) {
   if (!EV91_MIS_ENDPOINTS[endpoint]) {
     throw new Error(`Unknown EV91 endpoint: ${endpoint}`)
   }
 
-  const qs = new URLSearchParams()
+  const qs = buildEv91MisQuery(params)
   qs.set('endpoint', endpoint)
-  if (params.limit != null) qs.set('limit', String(params.limit))
-  if (params.offset != null) qs.set('offset', String(params.offset))
-  if (params.search) qs.set('search', params.search)
-  if (params.city) qs.set('city', params.city)
-  if (params.status) qs.set('status', params.status)
 
-  const res = await fetch(`/api/ev91-mis?${qs.toString()}`, {
-    headers: { Accept: 'application/json' },
-  })
+  // Prefer proxy when available (keeps key server-side)
+  try {
+    const res = await fetch(`/api/ev91-mis?${qs.toString()}`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
 
-  const body = await res.json().catch(() => ({}))
-  if (!res.ok || body?.success === false) {
-    throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
-  }
+    // Missing serverless function / wrong host → use upstream
+    if (res.status === 404) {
+      return fetchEv91MisDirect(endpoint, params)
+    }
 
-  return {
-    data: Array.isArray(body.data) ? body.data : [],
-    pagination: body.pagination || {},
-    summary: body.summary || {},
+    const contentType = (res.headers.get('content-type') || '').toLowerCase()
+    if (!contentType.includes('application/json')) {
+      return fetchEv91MisDirect(endpoint, params)
+    }
+
+    const body = await res.json().catch(() => null)
+    if (!body || typeof body !== 'object') {
+      return fetchEv91MisDirect(endpoint, params)
+    }
+
+    if (!res.ok || body.success === false) {
+      // Proxy reached but upstream failed — don't mask real API errors
+      throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
+    }
+
+    return parseEv91MisBody(body, res.status)
+  } catch (err) {
+    // Network / proxy crash → try direct once
+    if (err?.message && String(err.message).includes('EV91 API error')) throw err
+    try {
+      return await fetchEv91MisDirect(endpoint, params)
+    } catch (directErr) {
+      throw directErr?.message ? directErr : err
+    }
   }
 }
 

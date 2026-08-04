@@ -1,0 +1,14 @@
+[
+  {
+    "source": "/api/ev91/<*>",
+    "target": "https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/<*>",
+    "status": "200",
+    "condition": null
+  },
+  {
+    "source": "</^[^.]+$|\\.(?!(css|gif|ico|jpg|js|png|txt|svg|woff|woff2|ttf|map|json|webp)$)([^.]+$)/>",
+    "target": "/index.html",
+    "status": "200",
+    "condition": null
+  }
+]

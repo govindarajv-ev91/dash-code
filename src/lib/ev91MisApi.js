@@ -93,9 +93,18 @@ function parseEv91MisBody(body, httpStatus) {
   }
 }
 
+const EV91_MIS_UPSTREAM =
+  'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics'
+
+function getEv91MisApiKey() {
+  return (
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_EV91_MIS_API_KEY) ||
+    'ev91-mis-public-2026'
+  )
+}
+
 /**
- * Same-origin proxy URL. Optional absolute override for production, e.g.
- * VITE_EV91_MIS_PROXY_URL=https://your-app.vercel.app/api/ev91-mis
+ * Optional absolute proxy (rare). Example: VITE_EV91_MIS_PROXY_URL=https://xxx/api/ev91-mis
  */
 function getEv91MisProxyBase() {
   const configured =
@@ -103,58 +112,136 @@ function getEv91MisProxyBase() {
   if (configured && String(configured).trim()) {
     return String(configured).trim().replace(/\/$/, '')
   }
-  return '/api/ev91-mis'
+  return ''
+}
+
+function isNetworkFetchError(err) {
+  const msg = String(err?.message || err || '')
+  return /failed to fetch|networkerror|load failed|network request failed/i.test(msg)
+}
+
+async function readEv91Response(res) {
+  const contentType = (res.headers.get('content-type') || '').toLowerCase()
+  if (!contentType.includes('application/json')) {
+    throw new Error(`EV91 API returned non-JSON (HTTP ${res.status})`)
+  }
+  const body = await res.json().catch(() => null)
+  if (!res.ok || !body || body.success === false) {
+    throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
+  }
+  return parseEv91MisBody(body, res.status)
+}
+
+/** Local Vite middleware: /api/ev91-mis?endpoint=… */
+async function fetchEv91MisViaLocalProxy(endpoint, params = {}) {
+  const qs = buildEv91MisQuery(params)
+  qs.set('endpoint', endpoint)
+  const res = await fetch(`/api/ev91-mis?${qs.toString()}`, {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  })
+  if (res.status === 404) throw new Error('Local EV91 proxy not found')
+  return readEv91Response(res)
 }
 
 /**
- * Fetch EV91 MIS via same-origin `/api/ev91-mis` proxy only.
- * Do not call upstream from the browser — `x-api-key` triggers CORS preflight
- * and causes "Failed to fetch" in production.
+ * AWS Amplify reverse-proxy path (same-origin, no CORS).
+ * Requires Amplify rewrite (see amplify-redirects.json) BEFORE the SPA rule:
+ *   /api/ev91/<*>  →  https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/<*>
+ */
+async function fetchEv91MisViaAmplifyRewrite(endpoint, params = {}) {
+  const qs = buildEv91MisQuery(params)
+  const key = getEv91MisApiKey()
+  // Forward key as query (Amplify reverse proxy cannot add request headers)
+  qs.set('api_key', key)
+  qs.set('apiKey', key)
+  const res = await fetch(`/api/ev91/${endpoint}?${qs.toString()}`, {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  })
+  // SPA catch-all often returns index.html 200 for unknown paths
+  if (res.status === 404) throw new Error('Amplify EV91 rewrite not configured')
+  const contentType = (res.headers.get('content-type') || '').toLowerCase()
+  if (!contentType.includes('application/json')) {
+    throw new Error('Amplify EV91 rewrite not configured')
+  }
+  return readEv91Response(res)
+}
+
+/**
+ * Direct browser → EV91 upstream (Amplify has no /api serverless).
+ * Prefer header auth; if CORS preflight blocks ("Failed to fetch"), retry with
+ * API key in query only (simple request, no custom headers).
+ */
+async function fetchEv91MisDirect(endpoint, params = {}) {
+  const key = getEv91MisApiKey()
+  const qs = buildEv91MisQuery(params)
+  const url = `${EV91_MIS_UPSTREAM}/${endpoint}?${qs.toString()}`
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'x-api-key': key,
+      },
+      cache: 'no-store',
+    })
+    return await readEv91Response(res)
+  } catch (err) {
+    if (!isNetworkFetchError(err)) throw err
+  }
+
+  // CORS-safe fallback: no custom headers (avoids preflight)
+  const qs2 = buildEv91MisQuery(params)
+  qs2.set('api_key', key)
+  qs2.set('apiKey', key)
+  qs2.set('x-api-key', key)
+  const res2 = await fetch(`${EV91_MIS_UPSTREAM}/${endpoint}?${qs2.toString()}`, {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  })
+  return readEv91Response(res2)
+}
+
+/**
+ * Fetch EV91 MIS rider-vehicle analytics.
+ * - Local dev: Vite `/api/ev91-mis` proxy
+ * - AWS Amplify: optional `/api/ev91/:endpoint` rewrite, else direct upstream
+ * - Optional VITE_EV91_MIS_PROXY_URL absolute proxy
  */
 export async function fetchEv91MisData(endpoint, params = {}) {
   if (!EV91_MIS_ENDPOINTS[endpoint]) {
     throw new Error(`Unknown EV91 endpoint: ${endpoint}`)
   }
 
-  const qs = buildEv91MisQuery(params)
-  qs.set('endpoint', endpoint)
-
-  const proxyBase = getEv91MisProxyBase()
-  const url = `${proxyBase}?${qs.toString()}`
-
-  let res
-  try {
-    res = await fetch(url, {
+  const absoluteProxy = getEv91MisProxyBase()
+  if (absoluteProxy) {
+    const qs = buildEv91MisQuery(params)
+    qs.set('endpoint', endpoint)
+    const res = await fetch(`${absoluteProxy}?${qs.toString()}`, {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
     })
-  } catch (err) {
-    throw new Error(
-      err?.message === 'Failed to fetch'
-        ? 'Failed to reach EV91 proxy (/api/ev91-mis). Redeploy so the Vercel API route is live, or set VITE_EV91_MIS_PROXY_URL.'
-        : err?.message || 'Failed to fetch EV91 data'
-    )
+    return readEv91Response(res)
   }
 
-  if (res.status === 404) {
-    throw new Error(
-      'EV91 API proxy not found (HTTP 404). Ensure api/ev91-mis.js is deployed on Vercel, then redeploy.'
-    )
+  // Local Vite plugin
+  if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+    try {
+      return await fetchEv91MisViaLocalProxy(endpoint, params)
+    } catch (err) {
+      console.warn('[EV91] local proxy unavailable, trying upstream:', err?.message || err)
+    }
   }
 
-  const contentType = (res.headers.get('content-type') || '').toLowerCase()
-  if (!contentType.includes('application/json')) {
-    throw new Error(
-      `EV91 proxy returned non-JSON (HTTP ${res.status}). Check that /api/ev91-mis is deployed.`
-    )
+  // Amplify reverse proxy (if redirects configured)
+  try {
+    return await fetchEv91MisViaAmplifyRewrite(endpoint, params)
+  } catch {
+    /* rewrite not set up — use direct */
   }
 
-  const body = await res.json().catch(() => null)
-  if (!res.ok || !body || body.success === false) {
-    throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
-  }
-
-  return parseEv91MisBody(body, res.status)
+  return fetchEv91MisDirect(endpoint, params)
 }
 
 /**

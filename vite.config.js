@@ -59,19 +59,50 @@ function ev91MisApiPlugin() {
   return {
     name: 'ev91-mis-api',
     configureServer(server) {
+      const mount = (middlewares) => {
+        middlewares.use('/api/ev91-mis', async (req, res, next) => {
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204
+            res.setHeader('Access-Control-Allow-Origin', '*')
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type')
+            res.end()
+            return
+          }
+          if (req.method !== 'GET') return next()
+
+          const env = loadEnv(server.config.mode, process.cwd(), '')
+          process.env.EV91_MIS_API_KEY =
+            env.EV91_MIS_API_KEY || env.VITE_EV91_MIS_API_KEY || process.env.EV91_MIS_API_KEY
+          process.env.VITE_EV91_MIS_API_KEY =
+            env.VITE_EV91_MIS_API_KEY || process.env.VITE_EV91_MIS_API_KEY
+
+          const url = new URL(req.url || '/', 'http://localhost')
+          const query = Object.fromEntries(url.searchParams.entries())
+          const mockRes = createMockRes(res)
+
+          try {
+            const { default: handler } = await import('./api/ev91-mis.js')
+            await handler({ method: 'GET', query, url: req.url }, mockRes)
+          } catch (err) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ success: false, message: err?.message || 'API error' }))
+          }
+        })
+      }
+      mount(server.middlewares)
+    },
+    configurePreviewServer(server) {
+      // Same proxy for `vite preview` / local prod builds
+      const env = loadEnv(server.config.mode, process.cwd(), '')
+      process.env.EV91_MIS_API_KEY =
+        env.EV91_MIS_API_KEY || env.VITE_EV91_MIS_API_KEY || process.env.EV91_MIS_API_KEY
       server.middlewares.use('/api/ev91-mis', async (req, res, next) => {
         if (req.method !== 'GET') return next()
-
-        const env = loadEnv(server.config.mode, process.cwd(), '')
-        process.env.EV91_MIS_API_KEY =
-          env.EV91_MIS_API_KEY || env.VITE_EV91_MIS_API_KEY || process.env.EV91_MIS_API_KEY
-        process.env.VITE_EV91_MIS_API_KEY =
-          env.VITE_EV91_MIS_API_KEY || process.env.VITE_EV91_MIS_API_KEY
-
         const url = new URL(req.url || '/', 'http://localhost')
         const query = Object.fromEntries(url.searchParams.entries())
         const mockRes = createMockRes(res)
-
         try {
           const { default: handler } = await import('./api/ev91-mis.js')
           await handler({ method: 'GET', query, url: req.url }, mockRes)

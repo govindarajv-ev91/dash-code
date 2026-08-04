@@ -72,16 +72,6 @@ export const EV91_CITIES = [
   'Mysuru',
 ]
 
-const EV91_MIS_UPSTREAM =
-  'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics'
-
-function getEv91MisApiKey() {
-  return (
-    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_EV91_MIS_API_KEY) ||
-    'ev91-mis-public-2026'
-  )
-}
-
 function buildEv91MisQuery(params = {}) {
   const qs = new URLSearchParams()
   if (params.limit != null) qs.set('limit', String(params.limit))
@@ -104,34 +94,22 @@ function parseEv91MisBody(body, httpStatus) {
 }
 
 /**
- * Call EV91 MIS upstream directly (CORS allows *). Used in production when
- * `/api/ev91-mis` serverless proxy is missing (HTTP 404).
+ * Same-origin proxy URL. Optional absolute override for production, e.g.
+ * VITE_EV91_MIS_PROXY_URL=https://your-app.vercel.app/api/ev91-mis
  */
-async function fetchEv91MisDirect(endpoint, params = {}) {
-  const qs = buildEv91MisQuery(params)
-  const url = `${EV91_MIS_UPSTREAM}/${endpoint}?${qs.toString()}`
-  const res = await fetch(url, {
-    headers: {
-      'x-api-key': getEv91MisApiKey(),
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    cache: 'no-store',
-  })
-  const body = await res.json().catch(() => ({
-    success: false,
-    message: `Upstream returned HTTP ${res.status}`,
-  }))
-  if (!res.ok) {
-    throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
+function getEv91MisProxyBase() {
+  const configured =
+    typeof import.meta !== 'undefined' && import.meta.env?.VITE_EV91_MIS_PROXY_URL
+  if (configured && String(configured).trim()) {
+    return String(configured).trim().replace(/\/$/, '')
   }
-  return parseEv91MisBody(body, res.status)
+  return '/api/ev91-mis'
 }
 
 /**
- * Fetch EV91 MIS rider-vehicle analytics.
- * Tries local `/api/ev91-mis` proxy first (dev / Vercel), then falls back to
- * direct upstream so production still works when the proxy route 404s.
+ * Fetch EV91 MIS via same-origin `/api/ev91-mis` proxy only.
+ * Do not call upstream from the browser — `x-api-key` triggers CORS preflight
+ * and causes "Failed to fetch" in production.
  */
 export async function fetchEv91MisData(endpoint, params = {}) {
   if (!EV91_MIS_ENDPOINTS[endpoint]) {
@@ -141,43 +119,42 @@ export async function fetchEv91MisData(endpoint, params = {}) {
   const qs = buildEv91MisQuery(params)
   qs.set('endpoint', endpoint)
 
-  // Prefer proxy when available (keeps key server-side)
+  const proxyBase = getEv91MisProxyBase()
+  const url = `${proxyBase}?${qs.toString()}`
+
+  let res
   try {
-    const res = await fetch(`/api/ev91-mis?${qs.toString()}`, {
+    res = await fetch(url, {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
     })
-
-    // Missing serverless function / wrong host → use upstream
-    if (res.status === 404) {
-      return fetchEv91MisDirect(endpoint, params)
-    }
-
-    const contentType = (res.headers.get('content-type') || '').toLowerCase()
-    if (!contentType.includes('application/json')) {
-      return fetchEv91MisDirect(endpoint, params)
-    }
-
-    const body = await res.json().catch(() => null)
-    if (!body || typeof body !== 'object') {
-      return fetchEv91MisDirect(endpoint, params)
-    }
-
-    if (!res.ok || body.success === false) {
-      // Proxy reached but upstream failed — don't mask real API errors
-      throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
-    }
-
-    return parseEv91MisBody(body, res.status)
   } catch (err) {
-    // Network / proxy crash → try direct once
-    if (err?.message && String(err.message).includes('EV91 API error')) throw err
-    try {
-      return await fetchEv91MisDirect(endpoint, params)
-    } catch (directErr) {
-      throw directErr?.message ? directErr : err
-    }
+    throw new Error(
+      err?.message === 'Failed to fetch'
+        ? 'Failed to reach EV91 proxy (/api/ev91-mis). Redeploy so the Vercel API route is live, or set VITE_EV91_MIS_PROXY_URL.'
+        : err?.message || 'Failed to fetch EV91 data'
+    )
   }
+
+  if (res.status === 404) {
+    throw new Error(
+      'EV91 API proxy not found (HTTP 404). Ensure api/ev91-mis.js is deployed on Vercel, then redeploy.'
+    )
+  }
+
+  const contentType = (res.headers.get('content-type') || '').toLowerCase()
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      `EV91 proxy returned non-JSON (HTTP ${res.status}). Check that /api/ev91-mis is deployed.`
+    )
+  }
+
+  const body = await res.json().catch(() => null)
+  if (!res.ok || !body || body.success === false) {
+    throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
+  }
+
+  return parseEv91MisBody(body, res.status)
 }
 
 /**

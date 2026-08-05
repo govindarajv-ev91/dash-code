@@ -61,6 +61,7 @@ export function buildOnboardingSourceLookupIndex(onboardingRows = []) {
     addRiderKeys(keys, row.worker_code)
     addRiderKeys(keys, row.client_rider_id)
     addRiderKeys(keys, row.merge)
+    addRiderKeys(keys, row.rider_name)
 
     for (const key of keys) {
       if (key && !byRider.has(key)) byRider.set(key, source)
@@ -123,5 +124,25 @@ export function fillPerformanceRowSourceFromOnboarding(rows, onboardingRows) {
     })
     if (!source) return row
     return { ...row, Source: source }
+  })
+}
+
+/**
+ * Fill blank EV91 Current Vehicle Status `source` from rider_onboarding.
+ * Lookup: clientRiderId, ev91RiderId, riderContact phone.
+ */
+export function fillEv91CurrentStatusSourceFromOnboarding(rows, onboardingRows) {
+  if (!rows?.length || !onboardingRows?.length) return rows || []
+  const index = buildOnboardingSourceLookupIndex(onboardingRows)
+  if (!index.byRider.size && !index.byPhone.size) return rows
+
+  return rows.map((row) => {
+    if (!isMissingSourceName(row.source)) return row
+    const source = lookupOnboardingSource(index, {
+      riderIds: [row.clientRiderId, row.clientId, row.ev91RiderId],
+      phone: row.riderContact,
+    })
+    if (!source) return row
+    return { ...row, source }
   })
 }

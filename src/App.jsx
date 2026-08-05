@@ -797,6 +797,7 @@ function App() {
             fleetFullLoading={fleetFullLoading}
             fleetIsSlim={!fleetDataFull}
             loadFullFleet={loadFullFleet}
+            onboardingData={onboardingData}
           />
         ) : activePage === 'ev91-performance' ? (
           <Ev91RiderPerformance
@@ -826,7 +827,10 @@ function App() {
         ) : activePage === 'ev91-summary' ? (
           <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
         ) : EV91_PAGES.has(activePage) ? (
-          <Ev91DbData endpoint={EV91_ENDPOINT_BY_PAGE[activePage]} />
+          <Ev91DbData
+            endpoint={EV91_ENDPOINT_BY_PAGE[activePage]}
+            onboardingData={onboardingData}
+          />
         ) : null}
         </Suspense>
       </main>

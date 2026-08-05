@@ -141,7 +141,7 @@ export default function Ev91RiderPerformance({
       return
     }
     let cancelled = false
-    fetchAllData('rider_onboarding', 'rider_id_details,rider_id,worker_code,source_name,rider_mobile_number,merge', 'id', {
+    fetchAllData('rider_onboarding', 'id,rider_id_details,source_name,rider_mobile_number,merge,rider_name,email_address', 'id', {
       pageSize: 1000,
       useKeyset: true,
     })

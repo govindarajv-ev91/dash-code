@@ -5,6 +5,9 @@
     },
     "api/ev91-mis.js": {
       "maxDuration": 30
+    },
+    "api/ev91-current-status-csv.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [

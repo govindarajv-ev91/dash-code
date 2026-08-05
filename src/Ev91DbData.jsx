@@ -25,8 +25,12 @@ import {
   statusBadgeClass,
   rowsToExportSheet,
 } from './lib/ev91MisApi'
+import { fetchAllData } from './lib/supabaseFetch'
+import { fillEv91CurrentStatusSourceFromOnboarding } from './lib/onboardingSourceLookup'
 
 const PAGE_SIZE = 50
+const ONBOARDING_SOURCE_COLS =
+  'id,rider_id_details,source_name,rider_mobile_number,merge,rider_name,email_address'
 
 const STATUS_OPTIONS = {
   'current-status': ['', 'Deployed', 'Returned', 'Yet Not Deployed'],
@@ -34,12 +38,14 @@ const STATUS_OPTIONS = {
   'client-mapping-history': [''],
 }
 
-export default function Ev91DbData({ endpoint = 'current-status' }) {
+export default function Ev91DbData({ endpoint = 'current-status', onboardingData = [] }) {
   const meta = EV91_MIS_ENDPOINTS[endpoint] || EV91_MIS_ENDPOINTS['current-status']
   const isOverall = endpoint === 'overall-status'
+  const isCurrentStatus = endpoint === 'current-status'
 
   const [rows, setRows] = useState([])
   const [fullRows, setFullRows] = useState(null)
+  const [localOnboarding, setLocalOnboarding] = useState([])
   const [pagination, setPagination] = useState({ total: 0, limit: PAGE_SIZE, offset: 0, hasMore: false })
   const [summary, setSummary] = useState({})
   const [loading, setLoading] = useState(true)
@@ -59,6 +65,32 @@ export default function Ev91DbData({ endpoint = 'current-status' }) {
   const filterFrom = appliedStartDate || appliedEndDate || ''
   const filterTo = appliedEndDate || appliedStartDate || ''
   const dateFilterActive = isOverall && !!(filterFrom || filterTo)
+
+  useEffect(() => {
+    if (!isCurrentStatus) return
+    if (onboardingData?.length) {
+      setLocalOnboarding([])
+      return
+    }
+    let cancelled = false
+    fetchAllData('rider_onboarding', ONBOARDING_SOURCE_COLS, 'id', { pageSize: 1000 })
+      .then((res) => {
+        if (!cancelled) setLocalOnboarding(res?.data || [])
+      })
+      .catch((err) => {
+        console.warn('rider_onboarding source lookup load failed:', err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isCurrentStatus, onboardingData])
+
+  const resolvedOnboarding = onboardingData?.length ? onboardingData : localOnboarding
+
+  const displayRows = useMemo(() => {
+    if (!isCurrentStatus) return rows || []
+    return fillEv91CurrentStatusSourceFromOnboarding(rows, resolvedOnboarding)
+  }, [rows, isCurrentStatus, resolvedOnboarding])
 
   const baseParams = useMemo(
     () => ({
@@ -232,6 +264,10 @@ export default function Ev91DbData({ endpoint = 'current-status' }) {
       if (!exportRows.length) {
         window.alert('No rows to export for the current filters.')
         return
+      }
+
+      if (isCurrentStatus) {
+        exportRows = fillEv91CurrentStatusSourceFromOnboarding(exportRows, resolvedOnboarding)
       }
 
       const sheetRows = rowsToExportSheet(exportRows, meta.columns)
@@ -452,14 +488,14 @@ export default function Ev91DbData({ endpoint = 'current-status' }) {
               </tr>
             </thead>
             <tbody>
-              {!loading && rows.length === 0 ? (
+              {!loading && displayRows.length === 0 ? (
                 <tr>
                   <td colSpan={meta.columns.length} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
                     No records found
                   </td>
                 </tr>
               ) : (
-                rows.map((row, idx) => (
+                displayRows.map((row, idx) => (
                   <tr
                     key={`${row.ev91RiderId || ''}-${row.vehicleNumber || ''}-${row.clientId || row.clientRiderId || ''}-${idx}`}
                   >

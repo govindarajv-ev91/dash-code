@@ -9,6 +9,7 @@ import {
   vehiclePartitionKey,
 } from './lib/fleetDeployReturnExport'
 import { fetchDeployReturnFleetRows } from './lib/supabaseFetch'
+import { fillEv91CurrentStatusSourceFromOnboarding } from './lib/onboardingSourceLookup'
 import {
   fetchEv91ClientMappingAll,
   buildEv91PublicRiderIndex,
@@ -154,6 +155,7 @@ export default function BigQueryDeployReturn({
   fleetFullLoading = false,
   fleetIsSlim = false,
   loadFullFleet,
+  onboardingData = [],
 }) {
   const [overallRows, setOverallRows] = useState(() => bqPageCache.overallRows || [])
   const [currentRows, setCurrentRows] = useState(() => bqPageCache.currentRows || [])
@@ -287,7 +289,11 @@ export default function BigQueryDeployReturn({
   const fleetForReport = bqFleetRows.length ? bqFleetRows : fleetData || []
   const deferredFleet = useDeferredValue(fleetForReport)
   const deferredOverall = useDeferredValue(overallRows)
-  const deferredCurrent = useDeferredValue(currentRows)
+  const enrichedCurrentRows = useMemo(
+    () => fillEv91CurrentStatusSourceFromOnboarding(currentRows, onboardingData),
+    [currentRows, onboardingData]
+  )
+  const deferredCurrent = useDeferredValue(enrichedCurrentRows)
 
   const reportRows = useMemo(() => {
     const base = buildMergedDeployReturnReport(deferredFleet, deferredOverall, {

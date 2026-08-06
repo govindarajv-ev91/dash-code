@@ -27,6 +27,7 @@ const Ev91OnboardingPending = lazy(() => import('./Ev91OnboardingPending'))
 const Ev91EvLookup = lazy(() => import('./Ev91EvLookup'))
 const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
+const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -42,7 +43,7 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
@@ -569,6 +570,13 @@ function App() {
             <MapPin size={20} />
             Fleet Summary
           </button>
+          <button
+            className={`nav-item nav-item-green ${activePage === 'serviceschedule' ? 'active' : ''}`}
+            onClick={() => setActivePage('serviceschedule')}
+          >
+            <Wrench size={20} />
+            Service Schedule
+          </button>
           <button 
             className={`nav-item ${activePage === 'fleetsummary' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetsummary')}
@@ -780,6 +788,8 @@ function App() {
             refreshData={fetchData}
             defaultTab="citysummary"
           />
+        ) : activePage === 'serviceschedule' ? (
+          <ServiceSchedule />
         ) : activePage === 'fleetsummary' ? (
           <FleetDataViewer
             fleetData={fleetData}

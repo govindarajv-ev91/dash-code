@@ -535,6 +535,101 @@ export function buildSourceRevenueReport(rows, { month = '', city = '' } = {}) {
   }
 }
 
+/**
+ * City + month top riders by Money In and by Orders.
+ * City and month are both required.
+ */
+export function buildTopPerformersReport(rows, { month = '', city = '', limit = 10 } = {}) {
+  const empty = {
+    byMoneyIn: [],
+    byOrders: [],
+    totals: { riders: 0, orders: 0, moneyIn: 0, paymentRows: 0 },
+  }
+  if (!month || !city) return empty
+
+  const map = new Map()
+  let grandOrders = 0
+  let grandMoneyIn = 0
+  let grandPaymentRows = 0
+
+  for (const r of rows || []) {
+    if (r.rowType !== 'payment') continue
+    if (r.month !== month) continue
+    if (r.city !== city) continue
+
+    const riderId = pickText(r.riderId)
+    const riderName = pickText(r.riderName) || 'N/A'
+    const key = riderId || `name:${riderName.toLowerCase()}`
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        riderId: riderId || '',
+        riderName,
+        phone: '',
+        client: '',
+        orders: 0,
+        moneyIn: 0,
+        paymentRows: 0,
+      })
+    }
+
+    const bucket = map.get(key)
+    if (!bucket.phone && pickText(r.riderPhone)) bucket.phone = pickText(r.riderPhone)
+    if (!bucket.client && pickText(r.client) && r.client !== 'Unknown') {
+      bucket.client = pickText(r.client)
+    }
+    if (bucket.riderName === 'N/A' && riderName !== 'N/A') bucket.riderName = riderName
+    if (!bucket.riderId && riderId) bucket.riderId = riderId
+
+    const orders = num(r.orders)
+    const moneyIn = num(r.moneyIn)
+    bucket.orders += orders
+    bucket.moneyIn += moneyIn
+    bucket.paymentRows += 1
+    grandOrders += orders
+    grandMoneyIn += moneyIn
+    grandPaymentRows += 1
+  }
+
+  const all = [...map.values()]
+  const byMoneyIn = [...all]
+    .sort((a, b) => b.moneyIn - a.moneyIn || b.orders - a.orders || a.riderName.localeCompare(b.riderName))
+    .slice(0, Math.max(1, limit))
+    .map((r, i) => ({ ...r, rank: i + 1 }))
+  const byOrders = [...all]
+    .sort((a, b) => b.orders - a.orders || b.moneyIn - a.moneyIn || a.riderName.localeCompare(b.riderName))
+    .slice(0, Math.max(1, limit))
+    .map((r, i) => ({ ...r, rank: i + 1 }))
+
+  return {
+    byMoneyIn,
+    byOrders,
+    totals: {
+      riders: all.length,
+      orders: grandOrders,
+      moneyIn: grandMoneyIn,
+      paymentRows: grandPaymentRows,
+    },
+  }
+}
+
+/** Payment rows for one rider in a city + month (for top-performer detail). */
+export function filterRiderHistoryForPeriod(rows, { month = '', city = '', riderId = '', riderKey = '' } = {}) {
+  const id = pickText(riderId)
+  const key = pickText(riderKey)
+  return (rows || []).filter((r) => {
+    if (r.rowType !== 'payment') return false
+    if (month && r.month !== month) return false
+    if (city && r.city !== city) return false
+    if (id) return pickText(r.riderId) === id
+    if (key) {
+      const nameKey = `name:${(pickText(r.riderName) || 'N/A').toLowerCase()}`
+      return nameKey === key || pickText(r.riderId) === key
+    }
+    return false
+  })
+}
+
 function filterPaymentRowsForSource(rows, { month, city }) {
   return (rows || []).filter((r) => {
     if (r.rowType !== 'payment') return false

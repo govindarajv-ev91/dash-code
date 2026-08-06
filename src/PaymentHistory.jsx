@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, memo } from 'react'
-import { History, MapPin, Briefcase, Search, Download, ArrowDownLeft, Wallet, Receipt, MinusCircle, Zap, Shield, Users } from 'lucide-react'
+import { History, MapPin, Briefcase, Search, Download, ArrowDownLeft, Wallet, Receipt, MinusCircle, Zap, Shield, Users, Trophy } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { fetchAllRiderPayments } from './lib/riderPaymentDb'
 import { fetchFleetRiderLookupRows } from './lib/fleetSdFetch'
@@ -13,6 +13,8 @@ import {
   buildSourceClientPivotSheets,
   buildSourceRevenueFlatRows,
   buildSourceDetailExportRows,
+  buildTopPerformersReport,
+  filterRiderHistoryForPeriod,
 } from './lib/paymentHistoryReport'
 
 const ROWS_PER_PAGE = 100
@@ -122,6 +124,9 @@ export default function PaymentHistory({ onboardingData = [] }) {
   const [selectedMonths, setSelectedMonths] = useState([])
   const [sourceMonth, setSourceMonth] = useState('')
   const [sourceCity, setSourceCity] = useState('')
+  const [topMonth, setTopMonth] = useState('')
+  const [topCity, setTopCity] = useState('')
+  const [selectedTopRider, setSelectedTopRider] = useState(null)
   const [currentPage, setCurrentPage] = useState(1)
   const deferredCities = useDeferredValue(selectedCities)
   const deferredClients = useDeferredValue(selectedClients)
@@ -204,6 +209,16 @@ export default function PaymentHistory({ onboardingData = [] }) {
     }
   }, [monthOptions, sourceMonth])
 
+  useEffect(() => {
+    if (!topMonth && monthOptions.length) {
+      setTopMonth(monthOptions[0])
+    }
+  }, [monthOptions, topMonth])
+
+  useEffect(() => {
+    setSelectedTopRider(null)
+  }, [topMonth, topCity])
+
   const sourceReport = useMemo(
     () => buildSourceRevenueReport(report.rows, { month: sourceMonth, city: sourceCity }),
     [report.rows, sourceMonth, sourceCity]
@@ -211,6 +226,21 @@ export default function PaymentHistory({ onboardingData = [] }) {
 
   const sourceRevenueRows = sourceReport.groups
   const sourceTotals = sourceReport.totals
+
+  const topReport = useMemo(
+    () => buildTopPerformersReport(report.rows, { month: topMonth, city: topCity, limit: 10 }),
+    [report.rows, topMonth, topCity]
+  )
+
+  const topRiderHistory = useMemo(() => {
+    if (!selectedTopRider || !topMonth || !topCity) return []
+    return filterRiderHistoryForPeriod(report.rows, {
+      month: topMonth,
+      city: topCity,
+      riderId: selectedTopRider.riderId,
+      riderKey: selectedTopRider.key,
+    })
+  }, [report.rows, selectedTopRider, topMonth, topCity])
 
   const totals = useMemo(() => {
     let moneyIn = 0
@@ -338,6 +368,35 @@ export default function PaymentHistory({ onboardingData = [] }) {
     XLSX.writeFile(wb, `Source_Rider_Detail_${sourceFileSuffix()}.xlsx`)
   }, [report.rows, sourceExportFilters, sourceFileSuffix])
 
+  const exportTopPerformers = useCallback(() => {
+    if (!topMonth || !topCity) {
+      window.alert('Please select both city and month before exporting.')
+      return
+    }
+    if (!topReport.byMoneyIn.length && !topReport.byOrders.length) {
+      window.alert('No top performer data for the selected city and month.')
+      return
+    }
+    const toSheetRows = (list) =>
+      list.map((r) => ({
+        City: topCity,
+        Month: topMonth,
+        Rank: r.rank,
+        'Rider ID': r.riderId || '',
+        'Rider Name': r.riderName,
+        Phone: r.phone || '',
+        Client: r.client || '',
+        Orders: r.orders,
+        'Money In': r.moneyIn,
+        'Payment Rows': r.paymentRows,
+      }))
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(toSheetRows(topReport.byMoneyIn)), 'Top Money In')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(toSheetRows(topReport.byOrders)), 'Top Orders')
+    const cityPart = topCity.replace(/\s+/g, '_')
+    XLSX.writeFile(wb, `Top_Performers_${cityPart}_${topMonth}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }, [topMonth, topCity, topReport])
+
   if (loading) {
     return (
       <div className="loading-container">
@@ -355,7 +414,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
             <div>
               <h1 style={{ margin: 0 }}>Payment History</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-                Rider payment history & source-wise revenue
+                Rider payment history, source revenue & city top performers
               </p>
             </div>
           </div>
@@ -363,6 +422,17 @@ export default function PaymentHistory({ onboardingData = [] }) {
             <button type="button" onClick={exportPaymentRows} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
               <Download size={18} />
               Export Excel
+            </button>
+          ) : activeTab === 'top' ? (
+            <button
+              type="button"
+              onClick={exportTopPerformers}
+              disabled={!topMonth || !topCity}
+              className="glass"
+              style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer', opacity: !topMonth || !topCity ? 0.5 : 1 }}
+            >
+              <Download size={18} />
+              Export Top 10
             </button>
           ) : null}
         </div>
@@ -382,6 +452,13 @@ export default function PaymentHistory({ onboardingData = [] }) {
           onClick={() => setActiveTab('source')}
         >
           Source revenue
+        </button>
+        <button
+          type="button"
+          className={`fdv-tab ${activeTab === 'top' ? 'fdv-tab-active' : ''}`}
+          onClick={() => setActiveTab('top')}
+        >
+          Top performers
         </button>
       </div>
 
@@ -511,7 +588,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
         </div>
       </div>
         </>
-      ) : (
+      ) : activeTab === 'source' ? (
         <>
           <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
             <StatCard label="Unique Riders" value={sourceTotals.riders.toLocaleString()} icon={Users} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
@@ -616,9 +693,217 @@ export default function PaymentHistory({ onboardingData = [] }) {
             </div>
           </div>
         </>
+      ) : (
+        <>
+          <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
+            <StatCard label="Riders" value={topReport.totals.riders.toLocaleString()} icon={Users} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
+            <StatCard label="Total Orders" value={topReport.totals.orders.toLocaleString()} icon={Receipt} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
+            <StatCard label="Money In" value={formatInr(topReport.totals.moneyIn)} icon={ArrowDownLeft} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
+            <StatCard label="Payment Rows" value={topReport.totals.paymentRows.toLocaleString()} icon={Trophy} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
+          </section>
+
+          <div className="filter-bar glass" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', padding: '0.75rem', marginBottom: '1rem', alignItems: 'center' }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              Month
+              <select
+                className="fsr-select"
+                value={topMonth}
+                onChange={(e) => setTopMonth(e.target.value)}
+                style={{ minWidth: '150px' }}
+              >
+                <option value="">Select month</option>
+                {monthOptions.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              City
+              <select
+                className="fsr-select"
+                value={topCity}
+                onChange={(e) => setTopCity(e.target.value)}
+                style={{ minWidth: '150px' }}
+              >
+                <option value="">Select city</option>
+                {cityOptions.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+            <div className="status-badge" style={{ alignSelf: 'flex-end', padding: '0.5rem 0.9rem' }}>
+              Top 10 by Money In & Orders
+            </div>
+          </div>
+
+          {!topMonth || !topCity ? (
+            <div className="table-card glass" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-dim)' }}>
+              Select a city and month to view top performers.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+                <TopPerformersTable
+                  title="Top 10 by Money In"
+                  rows={topReport.byMoneyIn}
+                  selectedKey={selectedTopRider?.key}
+                  onSelect={setSelectedTopRider}
+                  highlight="moneyIn"
+                />
+                <TopPerformersTable
+                  title="Top 10 by Orders"
+                  rows={topReport.byOrders}
+                  selectedKey={selectedTopRider?.key}
+                  onSelect={setSelectedTopRider}
+                  highlight="orders"
+                />
+              </div>
+
+              <div className="table-card glass">
+                <div style={{ padding: '0.85rem 1.25rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <History size={16} style={{ color: 'var(--accent-blue)' }} />
+                  <strong style={{ fontSize: '0.95rem' }}>
+                    {selectedTopRider
+                      ? `Rider history · ${selectedTopRider.riderName}${selectedTopRider.riderId ? ` (${selectedTopRider.riderId})` : ''} · ${topCity} · ${topMonth}`
+                      : 'Rider history'}
+                  </strong>
+                  {selectedTopRider ? (
+                    <button
+                      type="button"
+                      className="glass-btn"
+                      style={{ marginLeft: 'auto', fontSize: '0.75rem' }}
+                      onClick={() => setSelectedTopRider(null)}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </div>
+                <div className="table-container" style={{ maxHeight: 'calc(100vh - 520px)' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Rider</th>
+                        <th>Phone</th>
+                        <th>Week</th>
+                        <th>Client</th>
+                        <th>Orders</th>
+                        <th>Money In</th>
+                        <th>Net Payout</th>
+                        <th>Vehicle</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!selectedTopRider ? (
+                        <tr>
+                          <td colSpan={10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                            Click a rider in the Top 10 tables to see their payment history for this city and month.
+                          </td>
+                        </tr>
+                      ) : topRiderHistory.length ? (
+                        topRiderHistory.map((r) => (
+                          <tr key={r.rowKey}>
+                            <td>
+                              <span className="status-badge" style={{ fontSize: '0.7rem' }}>
+                                {r.type || 'Payment'}
+                              </span>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 600 }}>{r.riderName}</div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{r.riderId}</div>
+                            </td>
+                            <td>{r.riderPhone || '—'}</td>
+                            <td>{r.week ? `W${r.week}` : '—'}</td>
+                            <td>{r.client}</td>
+                            <td>{numDisplay(r.orders)}</td>
+                            <td style={{ color: 'var(--accent-green)', fontWeight: 600 }}>{formatInr(r.moneyIn)}</td>
+                            <td>{formatInr(r.finalNetPayout)}</td>
+                            <td>{r.vehicleNumber || '—'}</td>
+                            <td>
+                              <div>{r.paymentStatus || '—'}</div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>{r.paymentDate || r.transactionDate}</div>
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                            No payment rows for this rider in the selected city and month.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </>
       )}
     </div>
   )
+}
+
+function TopPerformersTable({ title, rows, selectedKey, onSelect, highlight }) {
+  return (
+    <div className="glass" style={{ padding: '1rem', flex: 1, minWidth: '320px' }}>
+      <h3 style={{ margin: '0 0 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1rem' }}>
+        <Trophy size={18} />
+        {title}
+        <span className="status-badge" style={{ marginLeft: 'auto' }}>{rows.length}</span>
+      </h3>
+      <div className="table-container" style={{ maxHeight: '360px' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Rider ID</th>
+              <th>Name</th>
+              <th>Orders</th>
+              <th>Money In</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? (
+              rows.map((row) => {
+                const selected = selectedKey === row.key
+                return (
+                  <tr
+                    key={`${highlight}-${row.key}`}
+                    onClick={() => onSelect(row)}
+                    style={{
+                      cursor: 'pointer',
+                      background: selected ? 'rgba(56, 189, 248, 0.12)' : undefined,
+                    }}
+                  >
+                    <td>{row.rank}</td>
+                    <td>{row.riderId || '—'}</td>
+                    <td style={{ fontWeight: 600 }}>{row.riderName}</td>
+                    <td style={{ fontWeight: highlight === 'orders' ? 700 : 400, color: highlight === 'orders' ? 'var(--accent-blue)' : undefined }}>
+                      {numDisplay(row.orders)}
+                    </td>
+                    <td style={{ fontWeight: highlight === 'moneyIn' ? 700 : 400, color: 'var(--accent-green)' }}>
+                      {formatInr(row.moneyIn)}
+                    </td>
+                  </tr>
+                )
+              })
+            ) : (
+              <tr>
+                <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>No data</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function numDisplay(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toLocaleString() : '0'
 }
 
 function cityLabel(city) {

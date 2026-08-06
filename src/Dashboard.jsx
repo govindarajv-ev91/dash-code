@@ -14,36 +14,18 @@ import {
   toMetricDateKey,
   selectOverviewOrderRows,
 } from './lib/mergeRiderMetrics';
-import { buildMasterSheetRows, filterMasterSheetRows } from './lib/fleetMasterSheet';
 import { parseFleetDate } from './lib/fleetDeployReturnExport';
-import { getFleetDeployReturnCounts } from './lib/riderPerformanceReport';
 import {
   fetchEv91MisData,
   fetchAllEv91MisData,
   summarizeCurrentStatusRows,
   currentStatusDistributionSeries,
   countOverallDeployReturnInRange,
-  EV91_WEBAPP_CUTOVER_DATE,
-  EV91_FLEET_DATA_UNTIL_DATE,
 } from './lib/ev91MisApi';
 import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup';
 
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80'];
 const FLEET_TABLE_LIMIT = 10;
-
-function countFleetDeployReturnEvents(masterRows) {
-  let deployed = 0
-  let returned = 0
-  const seen = new Set()
-  for (const row of masterRows || []) {
-    const key = `${row.vehicleNumber}|${format(row.date, 'yyyy-MM-dd')}|${row.vehicleStatus}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    if (row.vehicleStatus === 'Deployee') deployed++
-    else if (row.vehicleStatus === 'Return') returned++
-  }
-  return { deployed, returned }
-}
 
 function buildOrderDailyIndex(rows) {
   const byDate = new Map();
@@ -157,16 +139,6 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     return out.sort((a, b) => a.date.localeCompare(b.date));
   }, [orderDailyIndex, filterFrom, filterTo]);
 
-  const masterSheetRows = useMemo(
-    () => buildMasterSheetRows(deferredFleetData),
-    [deferredFleetData]
-  );
-
-  const fleetSnapshot = useMemo(
-    () => getFleetDeployReturnCounts(deferredFleetData, new Date()),
-    [deferredFleetData]
-  );
-
   const combinedVehicles = useMemo(() => {
     const map = new Map();
 
@@ -275,48 +247,25 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       if (riders) riders.forEach((code) => activeCodes.add(code));
     }
 
+    // Deployed / Returned — EV91 API only
     let activeVehicles = 0;
     let returnedVehicles = 0;
-    let vehicleSource = 'fleet'; // fleet | api | mixed
+    let vehicleLoading = false;
 
     if (!filterFrom && !filterTo) {
-      activeVehicles = fleetSnapshot.deployed;
-      returnedVehicles = fleetSnapshot.returned;
-      vehicleSource = 'fleet';
+      // No date filter → Current Vehicle Status snapshot
+      activeVehicles = Number(ev91StatusSummary?.deployed) || 0;
+      returnedVehicles = Number(ev91StatusSummary?.returned) || 0;
+      vehicleLoading = ev91StatusLoading;
     } else {
-      const rangeFrom = filterFrom;
-      const rangeTo = filterTo;
-
-      // Before cutover → fleet master Deployee/Return
-      const fleetFrom = rangeFrom;
-      const fleetTo =
-        rangeTo < EV91_WEBAPP_CUTOVER_DATE ? rangeTo : EV91_FLEET_DATA_UNTIL_DATE;
-      if (fleetFrom <= fleetTo) {
-        const fleetSlice = filterMasterSheetRows(masterSheetRows, {
-          city: 'All',
-          startDate: fleetFrom,
-          endDate: fleetTo,
-        });
-        const fleetCounts = countFleetDeployReturnEvents(fleetSlice);
-        activeVehicles += fleetCounts.deployed;
-        returnedVehicles += fleetCounts.returned;
-      }
-
-      // On/after cutover → EV91 Overall Status API (status date in range)
-      const apiFrom =
-        rangeFrom > EV91_WEBAPP_CUTOVER_DATE ? rangeFrom : EV91_WEBAPP_CUTOVER_DATE;
-      const apiTo = rangeTo;
-      if (apiFrom <= apiTo) {
-        const apiCounts = countOverallDeployReturnInRange(ev91OverallRows, {
-          startDate: apiFrom,
-          endDate: apiTo,
-        });
-        activeVehicles += apiCounts.deployed;
-        returnedVehicles += apiCounts.returned;
-        vehicleSource = fleetFrom <= fleetTo ? 'mixed' : 'api';
-      } else {
-        vehicleSource = 'fleet';
-      }
+      // Date range → Overall Status deploy/return events in range
+      const apiCounts = countOverallDeployReturnInRange(ev91OverallRows, {
+        startDate: filterFrom,
+        endDate: filterTo,
+      });
+      activeVehicles = apiCounts.deployed;
+      returnedVehicles = apiCounts.returned;
+      vehicleLoading = ev91OverallLoading;
     }
 
     let dateStr = 'All Time';
@@ -325,12 +274,10 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     else if (filterFrom) dateStr = `Since ${filterFrom}`;
     else if (filterTo) dateStr = `Until ${filterTo}`;
 
-    let vehicleChange = dateStr;
-    if (vehicleSource === 'api') vehicleChange = `${dateStr} · EV91 API`;
-    else if (vehicleSource === 'mixed') vehicleChange = `${dateStr} · Fleet+API`;
-    else if (filterFrom || filterTo) vehicleChange = `${dateStr} · Fleet`;
-    if (ev91OverallLoading && (filterFrom || filterTo) && filterTo >= EV91_WEBAPP_CUTOVER_DATE) {
-      vehicleChange = `${vehicleChange} · loading…`;
+    let vehicleChange = `${dateStr} · EV91 API`;
+    if (vehicleLoading) vehicleChange = `${vehicleChange} · loading…`;
+    if (!vehicleLoading && !filterFrom && !filterTo && ev91StatusError) {
+      vehicleChange = `EV91 API · ${ev91StatusError}`;
     }
 
     return [
@@ -338,14 +285,14 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
       { label: 'Active Riders', value: activeCodes.size.toLocaleString(), icon: Users, change: dateStr, isPositive: true },
       {
         label: 'Deployed Vehicles',
-        value: activeVehicles.toLocaleString(),
+        value: vehicleLoading ? '…' : activeVehicles.toLocaleString(),
         icon: Truck,
         change: vehicleChange,
         isPositive: true,
       },
       {
         label: 'Returned Units',
-        value: returnedVehicles.toLocaleString(),
+        value: vehicleLoading ? '…' : returnedVehicles.toLocaleString(),
         icon: Activity,
         change: vehicleChange,
         isPositive: false,
@@ -353,10 +300,11 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     ];
   }, [
     orderDailyIndex,
-    masterSheetRows,
-    fleetSnapshot,
     filterFrom,
     filterTo,
+    ev91StatusSummary,
+    ev91StatusLoading,
+    ev91StatusError,
     ev91OverallRows,
     ev91OverallLoading,
   ]);
@@ -418,8 +366,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               <span style={{ marginLeft: 8 }}>· Orders from rider_metrics</span>
             )}
             <span style={{ marginLeft: 8 }}>
-              · Deploy/Return: fleet before {EV91_WEBAPP_CUTOVER_DATE}, EV91 Overall Status API from{' '}
-              {EV91_WEBAPP_CUTOVER_DATE}
+              · Deployed / Returned from EV91 API (Current Status · Overall Status for date range)
             </span>
           </p>
         </div>

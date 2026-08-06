@@ -497,6 +497,23 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         </span>
       </div>
 
+      {selectedCity !== 'All' ? (
+        <div
+          className="glass"
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.75rem 1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+          }}
+        >
+          <MapPin size={18} style={{ color: 'var(--accent-green)' }} />
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>City</span>
+          <strong style={{ fontSize: '1.15rem', letterSpacing: '0.02em' }}>{selectedCity}</strong>
+        </div>
+      ) : null}
+
       <div className="fdv-summary-pivot-wrap glass">
         {hiddenClients.length > 0 && (
           <div className="fdv-summary-hidden-bar">

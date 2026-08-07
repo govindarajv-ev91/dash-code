@@ -406,8 +406,49 @@ export function normalizeCurrentVehicleStatus(status) {
   return ''
 }
 
-/** Count current-status rows (or API summary) into the three overview buckets. */
+/** True when Operational is exactly "Assigned" (not "Assigned - Team Use", etc.). */
+export function isOperationalAssigned(value) {
+  return (
+    String(value || '')
+      .trim()
+      .toLowerCase() === 'assigned'
+  )
+}
+
+/**
+ * Count current-status rows into overview buckets.
+ * deployedAssigned = Status Deployed AND Operational exactly "Assigned".
+ * Always prefer row-level counts when rows exist.
+ */
 export function summarizeCurrentStatusRows(rows = [], apiSummary = null) {
+  let deployed = 0
+  let returned = 0
+  let yetNotDeployed = 0
+  let deployedAssigned = 0
+
+  for (const row of rows || []) {
+    const label = normalizeCurrentVehicleStatus(row.currentStatus)
+    if (label === 'Deployed') {
+      deployed++
+      if (isOperationalAssigned(row.operationalStatus)) deployedAssigned++
+    } else if (label === 'Returned') {
+      returned++
+    } else if (label === 'Not yet to deploy') {
+      yetNotDeployed++
+    }
+  }
+
+  const countedFromRows = (rows || []).length > 0
+  if (countedFromRows) {
+    return {
+      total: (rows || []).length,
+      deployed,
+      returned,
+      yetNotDeployed,
+      deployedAssigned,
+    }
+  }
+
   const apiHasCounts =
     apiSummary != null &&
     (apiSummary.deployed != null ||
@@ -416,28 +457,32 @@ export function summarizeCurrentStatusRows(rows = [], apiSummary = null) {
 
   if (apiHasCounts) {
     return {
-      total: Number(apiSummary?.total) || (rows?.length ?? 0),
+      total: Number(apiSummary?.total) || 0,
       deployed: Number(apiSummary.deployed) || 0,
       returned: Number(apiSummary.returned) || 0,
       yetNotDeployed: Number(apiSummary.yetNotDeployed) || 0,
+      deployedAssigned: 0,
     }
   }
 
-  let deployed = 0
-  let returned = 0
-  let yetNotDeployed = 0
-  for (const row of rows || []) {
-    const label = normalizeCurrentVehicleStatus(row.currentStatus)
-    if (label === 'Deployed') deployed++
-    else if (label === 'Returned') returned++
-    else if (label === 'Not yet to deploy') yetNotDeployed++
-  }
   return {
-    total: (rows || []).length,
-    deployed,
-    returned,
-    yetNotDeployed,
+    total: 0,
+    deployed: 0,
+    returned: 0,
+    yetNotDeployed: 0,
+    deployedAssigned: 0,
   }
+}
+
+/** Count Deployed + Operational Assigned from Current Status rows. */
+export function countDeployedAssigned(rows = []) {
+  let n = 0
+  for (const row of rows || []) {
+    if (normalizeCurrentVehicleStatus(row.currentStatus) !== 'Deployed') continue
+    if (!isOperationalAssigned(row.operationalStatus)) continue
+    n++
+  }
+  return n
 }
 
 /** Pie-ready series for General Overview Vehicle Status Distribution. */

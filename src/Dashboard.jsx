@@ -16,7 +16,6 @@ import {
 } from './lib/mergeRiderMetrics';
 import { parseFleetDate } from './lib/fleetDeployReturnExport';
 import {
-  fetchEv91MisData,
   fetchAllEv91MisData,
   summarizeCurrentStatusRows,
   currentStatusDistributionSeries,
@@ -73,15 +72,9 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     setEv91StatusLoading(true);
     setEv91StatusError('');
     try {
-      const page = await fetchEv91MisData('current-status', { limit: 1, offset: 0 });
-      let summary = summarizeCurrentStatusRows(page.data, page.summary);
-      const hasAny =
-        (summary.deployed || 0) + (summary.returned || 0) + (summary.yetNotDeployed || 0) > 0;
-      if (!hasAny) {
-        const all = await fetchAllEv91MisData('current-status');
-        summary = summarizeCurrentStatusRows(all.data, all.summary);
-      }
-      setEv91StatusSummary(summary);
+      // Full Current Status list — count Status=Deployed + Operational="Assigned" exactly
+      const all = await fetchAllEv91MisData('current-status');
+      setEv91StatusSummary(summarizeCurrentStatusRows(all.data || [], all.summary));
     } catch (err) {
       console.warn('EV91 current-status load failed:', err);
       setEv91StatusSummary(null);
@@ -251,21 +244,24 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     let activeVehicles = 0;
     let returnedVehicles = 0;
     let vehicleLoading = false;
+    let deployedNote = 'EV91 API';
 
     if (!filterFrom && !filterTo) {
-      // No date filter → Current Vehicle Status snapshot
-      activeVehicles = Number(ev91StatusSummary?.deployed) || 0;
+      // Current Status: Deployed Vehicles = Deployed + Operational Assigned only
+      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0;
       returnedVehicles = Number(ev91StatusSummary?.returned) || 0;
       vehicleLoading = ev91StatusLoading;
+      deployedNote = 'Status Deployed · Operational Assigned';
     } else {
-      // Date range → Overall Status deploy/return events in range
+      // Date range → Overall Status for Returned; Deployed card stays Current Status Assigned
+      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0;
       const apiCounts = countOverallDeployReturnInRange(ev91OverallRows, {
         startDate: filterFrom,
         endDate: filterTo,
       });
-      activeVehicles = apiCounts.deployed;
       returnedVehicles = apiCounts.returned;
-      vehicleLoading = ev91OverallLoading;
+      vehicleLoading = ev91StatusLoading || ev91OverallLoading;
+      deployedNote = 'Status Deployed · Operational Assigned';
     }
 
     let dateStr = 'All Time';
@@ -274,9 +270,9 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
     else if (filterFrom) dateStr = `Since ${filterFrom}`;
     else if (filterTo) dateStr = `Until ${filterTo}`;
 
-    let vehicleChange = `${dateStr} · EV91 API`;
+    let vehicleChange = `${dateStr} · ${deployedNote}`;
     if (vehicleLoading) vehicleChange = `${vehicleChange} · loading…`;
-    if (!vehicleLoading && !filterFrom && !filterTo && ev91StatusError) {
+    if (!vehicleLoading && ev91StatusError) {
       vehicleChange = `EV91 API · ${ev91StatusError}`;
     }
 
@@ -294,7 +290,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
         label: 'Returned Units',
         value: vehicleLoading ? '…' : returnedVehicles.toLocaleString(),
         icon: Activity,
-        change: vehicleChange,
+        change: !filterFrom && !filterTo ? `${dateStr} · EV91 API` : `${dateStr} · EV91 API`,
         isPositive: false,
       },
     ];
@@ -366,7 +362,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
               <span style={{ marginLeft: 8 }}>· Orders from rider_metrics</span>
             )}
             <span style={{ marginLeft: 8 }}>
-              · Deployed / Returned from EV91 API (Current Status · Overall Status for date range)
+              · Deployed Vehicles = Current Status where Status=Deployed and Operational=Assigned (exact)
             </span>
           </p>
         </div>

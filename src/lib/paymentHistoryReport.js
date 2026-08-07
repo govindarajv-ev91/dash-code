@@ -410,10 +410,12 @@ export function buildPaymentHistoryReport(
   paymentRows = [],
   _collationRows = [],
   fleetRows = [],
-  onboardingRows = []
+  onboardingRows = [],
+  { includeFleetLookup = true } = {}
 ) {
-  const fleetRiders = fleetRows?.length ? buildFleetRiderIndex(fleetRows) : null
-  const fleetLookupIndex = getRiderFleetLookupIndex(fleetRows)
+  const useFleet = includeFleetLookup && fleetRows?.length
+  const fleetRiders = useFleet ? buildFleetRiderIndex(fleetRows) : null
+  const fleetLookupIndex = useFleet ? getRiderFleetLookupIndex(fleetRows) : null
   const sourceIndex = onboardingRows?.length ? buildOnboardingSourceIndex(onboardingRows) : null
   const rows = []
 
@@ -536,16 +538,28 @@ export function buildSourceRevenueReport(rows, { month = '', city = '' } = {}) {
 }
 
 /**
- * City + month top riders by Money In and by Orders.
- * City and month are both required.
+ * Top riders by Money In and by Orders.
+ * months / cities: arrays (or single string). Empty = overall (all months / all cities).
  */
-export function buildTopPerformersReport(rows, { month = '', city = '', limit = 10 } = {}) {
+export function buildTopPerformersReport(rows, { month = '', city = '', months = null, cities = null, limit = 10 } = {}) {
   const empty = {
     byMoneyIn: [],
     byOrders: [],
     totals: { riders: 0, orders: 0, moneyIn: 0, paymentRows: 0 },
   }
-  if (!month || !city) return empty
+
+  const monthList = Array.isArray(months)
+    ? months.filter(Boolean)
+    : month
+      ? [month]
+      : []
+  const cityList = Array.isArray(cities)
+    ? cities.filter(Boolean)
+    : city
+      ? [city]
+      : []
+  const monthSet = monthList.length ? new Set(monthList) : null
+  const citySet = cityList.length ? new Set(cityList) : null
 
   const map = new Map()
   let grandOrders = 0
@@ -554,8 +568,8 @@ export function buildTopPerformersReport(rows, { month = '', city = '', limit = 
 
   for (const r of rows || []) {
     if (r.rowType !== 'payment') continue
-    if (r.month !== month) continue
-    if (r.city !== city) continue
+    if (monthSet && !monthSet.has(r.month)) continue
+    if (citySet && !citySet.has(r.city)) continue
 
     const riderId = pickText(r.riderId)
     const riderName = pickText(r.riderName) || 'N/A'
@@ -591,6 +605,8 @@ export function buildTopPerformersReport(rows, { month = '', city = '', limit = 
     grandPaymentRows += 1
   }
 
+  if (!map.size && !(rows || []).length) return empty
+
   const all = [...map.values()]
   const byMoneyIn = [...all]
     .sort((a, b) => b.moneyIn - a.moneyIn || b.orders - a.orders || a.riderName.localeCompare(b.riderName))
@@ -613,14 +629,30 @@ export function buildTopPerformersReport(rows, { month = '', city = '', limit = 
   }
 }
 
-/** Payment rows for one rider in a city + month (for top-performer detail). */
-export function filterRiderHistoryForPeriod(rows, { month = '', city = '', riderId = '', riderKey = '' } = {}) {
+/** Payment rows for one rider; months/cities empty = no filter (overall). */
+export function filterRiderHistoryForPeriod(
+  rows,
+  { month = '', city = '', months = null, cities = null, riderId = '', riderKey = '' } = {}
+) {
   const id = pickText(riderId)
   const key = pickText(riderKey)
+  const monthList = Array.isArray(months)
+    ? months.filter(Boolean)
+    : month
+      ? [month]
+      : []
+  const cityList = Array.isArray(cities)
+    ? cities.filter(Boolean)
+    : city
+      ? [city]
+      : []
+  const monthSet = monthList.length ? new Set(monthList) : null
+  const citySet = cityList.length ? new Set(cityList) : null
+
   return (rows || []).filter((r) => {
     if (r.rowType !== 'payment') return false
-    if (month && r.month !== month) return false
-    if (city && r.city !== city) return false
+    if (monthSet && !monthSet.has(r.month)) return false
+    if (citySet && !citySet.has(r.city)) return false
     if (id) return pickText(r.riderId) === id
     if (key) {
       const nameKey = `name:${(pickText(r.riderName) || 'N/A').toLowerCase()}`

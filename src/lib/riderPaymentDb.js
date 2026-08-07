@@ -3,7 +3,37 @@ import { fetchAllData } from './supabaseFetch'
 import { collectMonthsFromRows, mergeMonthLists, fetchTableCount, fetchLastUploadAtSafe } from './paymentMonthList'
 
 export const RIDER_PAYMENT_TABLE = 'rider_payment_data'
-export const RIDER_PAYMENT_COLUMNS = '*'
+/** Slim select for Payment History (avoids pulling unused columns). */
+export const RIDER_PAYMENT_COLUMNS = [
+  'id',
+  'client_name',
+  'type',
+  'week',
+  'month',
+  'rider_id',
+  'rider_name',
+  'city',
+  'orders',
+  'payout_1',
+  'payout_2',
+  'gross_payout',
+  'tds',
+  'cod_deduction',
+  'cod_recovery',
+  'client_deductions',
+  'sd',
+  'damage',
+  'insurance',
+  'fleet',
+  'traffic',
+  'on_hold',
+  'ev_rent',
+  'final_net_payout',
+  'payment_status',
+  'payment_date',
+  'utr_number',
+  'vehicle_number',
+].join(',')
 
 export function isMissingRiderPaymentTable(error) {
   const msg = (error?.message || '').toLowerCase()
@@ -73,9 +103,17 @@ export async function saveRiderPaymentRows(rows, { replace = true } = {}) {
 
 let cachedPayments = null
 let paymentsInflight = null
+const PAYMENT_FETCH_CACHE_VERSION = 2
+let cachedPaymentsVersion = 0
 
 export async function fetchAllRiderPayments({ force = false } = {}) {
-  if (!force && cachedPayments) return cachedPayments
+  if (
+    !force &&
+    cachedPayments &&
+    cachedPaymentsVersion === PAYMENT_FETCH_CACHE_VERSION
+  ) {
+    return cachedPayments
+  }
   if (!force && paymentsInflight) return paymentsInflight
 
   paymentsInflight = (async () => {
@@ -86,6 +124,7 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
       maxRetries: 10,
     })
     cachedPayments = data || []
+    cachedPaymentsVersion = PAYMENT_FETCH_CACHE_VERSION
     return cachedPayments
   })().finally(() => {
     paymentsInflight = null
@@ -97,6 +136,7 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
 export function clearRiderPaymentCache() {
   cachedPayments = null
   paymentsInflight = null
+  cachedPaymentsVersion = 0
 }
 
 export async function loadRiderPaymentSummary() {

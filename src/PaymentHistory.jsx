@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, memo } from 'react'
-import { History, MapPin, Briefcase, Search, Download, ArrowDownLeft, Wallet, Receipt, MinusCircle, Zap, Shield, Users, Trophy } from 'lucide-react'
+import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, memo, useRef } from 'react'
+import { History, MapPin, Briefcase, Search, Download, ArrowDownLeft, Wallet, Receipt, MinusCircle, Zap, Shield, Users, Trophy, Calendar, Check } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { fetchAllRiderPayments } from './lib/riderPaymentDb'
 import { fetchFleetRiderLookupRows } from './lib/fleetSdFetch'
@@ -124,14 +124,19 @@ export default function PaymentHistory({ onboardingData = [] }) {
   const [selectedMonths, setSelectedMonths] = useState([])
   const [sourceMonth, setSourceMonth] = useState('')
   const [sourceCity, setSourceCity] = useState('')
-  const [topMonth, setTopMonth] = useState('')
-  const [topCity, setTopCity] = useState('')
+  const [topMonths, setTopMonths] = useState([])
+  const [topCities, setTopCities] = useState([])
+  const [topSearch, setTopSearch] = useState('')
+  const deferredTopMonths = useDeferredValue(topMonths)
+  const deferredTopCities = useDeferredValue(topCities)
+  const deferredTopSearch = useDeferredValue(topSearch)
   const [selectedTopRider, setSelectedTopRider] = useState(null)
   const [currentPage, setCurrentPage] = useState(1)
   const deferredCities = useDeferredValue(selectedCities)
   const deferredClients = useDeferredValue(selectedClients)
   const deferredMonths = useDeferredValue(selectedMonths)
 
+  // Payments first (blocks spinner). Fleet lookup deferred so first paint is faster.
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -148,32 +153,58 @@ export default function PaymentHistory({ onboardingData = [] }) {
         if (!cancelled) setLoading(false)
       })
 
-    fetchFleetRiderLookupRows()
-      .then((rows) => {
-        if (!cancelled) startTransition(() => setFleetLookupRows(rows || []))
-      })
-      .catch(() => {
-        if (!cancelled) startTransition(() => setFleetLookupRows([]))
-      })
-      .finally(() => {
-        if (!cancelled) setFleetLookupLoading(false)
-      })
-
     return () => {
       cancelled = true
     }
   }, [])
 
-  const report = useMemo(() => {
+  useEffect(() => {
+    if (activeTab !== 'payments') return undefined
+    let cancelled = false
+    setFleetLookupLoading(true)
+
+    const timer = window.setTimeout(() => {
+      fetchFleetRiderLookupRows()
+        .then((rows) => {
+          if (!cancelled) startTransition(() => setFleetLookupRows(rows || []))
+        })
+        .catch(() => {
+          if (!cancelled) startTransition(() => setFleetLookupRows([]))
+        })
+        .finally(() => {
+          if (!cancelled) setFleetLookupLoading(false)
+        })
+    }, 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [activeTab])
+
+  // Fast report (no fleet) — enough for Source / Top / filters
+  const reportBase = useMemo(() => {
     if (!paymentRows.length) return { rows: [] }
-    return buildPaymentHistoryReport(paymentRows, [], deferredFleetLookup, deferredOnboarding)
-  }, [paymentRows, deferredFleetLookup, deferredOnboarding])
+    return buildPaymentHistoryReport(paymentRows, [], [], deferredOnboarding, {
+      includeFleetLookup: false,
+    })
+  }, [paymentRows, deferredOnboarding])
+
+  // Fleet-enriched report only on Payment rows tab (vehicle/phone)
+  const reportEnriched = useMemo(() => {
+    if (activeTab !== 'payments' || !paymentRows.length || !deferredFleetLookup.length) return null
+    return buildPaymentHistoryReport(paymentRows, [], deferredFleetLookup, deferredOnboarding, {
+      includeFleetLookup: true,
+    })
+  }, [activeTab, paymentRows, deferredFleetLookup, deferredOnboarding])
+
+  const report = reportEnriched || reportBase
 
   const filterOptions = useMemo(() => {
     const cities = new Set()
     const clients = new Set()
     const months = new Set()
-    for (const r of report.rows) {
+    for (const r of reportBase.rows) {
       if (r.city && r.city !== 'Unknown') cities.add(r.city)
       if (r.client && r.client !== 'Unknown') clients.add(r.client)
       if (r.month) months.add(r.month)
@@ -183,7 +214,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
       clients: [...clients].sort(),
       months: [...months].sort().reverse(),
     }
-  }, [report.rows])
+  }, [reportBase.rows])
 
   const filtered = useMemo(
     () =>
@@ -196,8 +227,14 @@ export default function PaymentHistory({ onboardingData = [] }) {
     [report.rows, deferredSearch, deferredCities, deferredClients, deferredMonths]
   )
 
-  const citySummary = useMemo(() => summarizePaymentHistory(filtered, 'city'), [filtered])
-  const clientSummary = useMemo(() => summarizePaymentHistory(filtered, 'client'), [filtered])
+  const citySummary = useMemo(
+    () => (activeTab === 'payments' ? summarizePaymentHistory(filtered, 'city') : []),
+    [activeTab, filtered]
+  )
+  const clientSummary = useMemo(
+    () => (activeTab === 'payments' ? summarizePaymentHistory(filtered, 'client') : []),
+    [activeTab, filtered]
+  )
 
   const cityOptions = filterOptions.cities
   const clientOptions = filterOptions.clients
@@ -210,39 +247,75 @@ export default function PaymentHistory({ onboardingData = [] }) {
   }, [monthOptions, sourceMonth])
 
   useEffect(() => {
-    if (!topMonth && monthOptions.length) {
-      setTopMonth(monthOptions[0])
-    }
-  }, [monthOptions, topMonth])
-
-  useEffect(() => {
     setSelectedTopRider(null)
-  }, [topMonth, topCity])
+  }, [topMonths, topCities])
 
-  const sourceReport = useMemo(
-    () => buildSourceRevenueReport(report.rows, { month: sourceMonth, city: sourceCity }),
-    [report.rows, sourceMonth, sourceCity]
-  )
+  const sourceReport = useMemo(() => {
+    if (activeTab !== 'source') {
+      return { groups: [], totals: { riders: 0, orders: 0, grossPayout: 0, paymentRows: 0, groups: 0 } }
+    }
+    return buildSourceRevenueReport(reportBase.rows, { month: sourceMonth, city: sourceCity })
+  }, [activeTab, reportBase.rows, sourceMonth, sourceCity])
 
   const sourceRevenueRows = sourceReport.groups
   const sourceTotals = sourceReport.totals
 
-  const topReport = useMemo(
-    () => buildTopPerformersReport(report.rows, { month: topMonth, city: topCity, limit: 10 }),
-    [report.rows, topMonth, topCity]
+  const topFilterLabel = useMemo(() => {
+    const monthPart = deferredTopMonths.length ? deferredTopMonths.join(', ') : 'All months'
+    const cityPart = deferredTopCities.length ? deferredTopCities.join(', ') : 'All cities'
+    return `${cityPart} · ${monthPart}`
+  }, [deferredTopMonths, deferredTopCities])
+
+  const topReport = useMemo(() => {
+    if (activeTab !== 'top') {
+      return {
+        byMoneyIn: [],
+        byOrders: [],
+        totals: { riders: 0, orders: 0, moneyIn: 0, paymentRows: 0 },
+      }
+    }
+    return buildTopPerformersReport(reportBase.rows, {
+      months: deferredTopMonths,
+      cities: deferredTopCities,
+      limit: 10,
+    })
+  }, [activeTab, reportBase.rows, deferredTopMonths, deferredTopCities])
+
+  const filteredTopByMoneyIn = useMemo(
+    () => filterTopPerformerRows(topReport.byMoneyIn, deferredTopSearch),
+    [topReport.byMoneyIn, deferredTopSearch]
+  )
+  const filteredTopByOrders = useMemo(
+    () => filterTopPerformerRows(topReport.byOrders, deferredTopSearch),
+    [topReport.byOrders, deferredTopSearch]
   )
 
   const topRiderHistory = useMemo(() => {
-    if (!selectedTopRider || !topMonth || !topCity) return []
-    return filterRiderHistoryForPeriod(report.rows, {
-      month: topMonth,
-      city: topCity,
+    if (activeTab !== 'top' || !selectedTopRider) return []
+    const rows = filterRiderHistoryForPeriod(reportBase.rows, {
+      months: deferredTopMonths,
+      cities: deferredTopCities,
       riderId: selectedTopRider.riderId,
       riderKey: selectedTopRider.key,
     })
-  }, [report.rows, selectedTopRider, topMonth, topCity])
+    const q = deferredTopSearch.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter(
+      (r) =>
+        String(r.riderId || '').toLowerCase().includes(q) ||
+        String(r.riderName || '').toLowerCase().includes(q) ||
+        String(r.riderPhone || '').toLowerCase().includes(q) ||
+        String(r.client || '').toLowerCase().includes(q) ||
+        String(r.city || '').toLowerCase().includes(q) ||
+        String(r.month || '').toLowerCase().includes(q) ||
+        String(r.vehicleNumber || '').toLowerCase().includes(q)
+    )
+  }, [activeTab, reportBase.rows, selectedTopRider, deferredTopMonths, deferredTopCities, deferredTopSearch])
 
   const totals = useMemo(() => {
+    if (activeTab !== 'payments') {
+      return { moneyIn: 0, netPayout: 0, totalDed: 0, evRent: 0, codDed: 0, sdDed: 0, rows: 0, riders: 0 }
+    }
     let moneyIn = 0
     let netPayout = 0
     let totalDed = 0
@@ -262,7 +335,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
     }
 
     return { moneyIn, netPayout, totalDed, evRent, codDed, sdDed, rows: filtered.length, riders: riders.size }
-  }, [filtered])
+  }, [activeTab, filtered])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE))
   const paginated = useMemo(() => {
@@ -369,18 +442,16 @@ export default function PaymentHistory({ onboardingData = [] }) {
   }, [report.rows, sourceExportFilters, sourceFileSuffix])
 
   const exportTopPerformers = useCallback(() => {
-    if (!topMonth || !topCity) {
-      window.alert('Please select both city and month before exporting.')
-      return
-    }
     if (!topReport.byMoneyIn.length && !topReport.byOrders.length) {
-      window.alert('No top performer data for the selected city and month.')
+      window.alert('No top performer data for the selected filters.')
       return
     }
+    const cityLabel = topCities.length ? topCities.join(', ') : 'All cities'
+    const monthLabel = topMonths.length ? topMonths.join(', ') : 'All months'
     const toSheetRows = (list) =>
       list.map((r) => ({
-        City: topCity,
-        Month: topMonth,
+        City: cityLabel,
+        Month: monthLabel,
         Rank: r.rank,
         'Rider ID': r.riderId || '',
         'Rider Name': r.riderName,
@@ -393,9 +464,10 @@ export default function PaymentHistory({ onboardingData = [] }) {
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(toSheetRows(topReport.byMoneyIn)), 'Top Money In')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(toSheetRows(topReport.byOrders)), 'Top Orders')
-    const cityPart = topCity.replace(/\s+/g, '_')
-    XLSX.writeFile(wb, `Top_Performers_${cityPart}_${topMonth}_${new Date().toISOString().slice(0, 10)}.xlsx`)
-  }, [topMonth, topCity, topReport])
+    const cityPart = topCities.length ? topCities.join('_').replace(/\s+/g, '_') : 'All_Cities'
+    const monthPart = topMonths.length ? topMonths.join('_').replace(/\s+/g, '_') : 'All_Months'
+    XLSX.writeFile(wb, `Top_Performers_${cityPart}_${monthPart}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }, [topMonths, topCities, topReport])
 
   if (loading) {
     return (
@@ -427,9 +499,8 @@ export default function PaymentHistory({ onboardingData = [] }) {
             <button
               type="button"
               onClick={exportTopPerformers}
-              disabled={!topMonth || !topCity}
               className="glass"
-              style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer', opacity: !topMonth || !topCity ? 0.5 : 1 }}
+              style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}
             >
               <Download size={18} />
               Export Top 10
@@ -702,57 +773,87 @@ export default function PaymentHistory({ onboardingData = [] }) {
             <StatCard label="Payment Rows" value={topReport.totals.paymentRows.toLocaleString()} icon={Trophy} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
           </section>
 
-          <div className="filter-bar glass" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', padding: '0.75rem', marginBottom: '1rem', alignItems: 'center' }}>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              Month
-              <select
-                className="fsr-select"
-                value={topMonth}
-                onChange={(e) => setTopMonth(e.target.value)}
-                style={{ minWidth: '150px' }}
-              >
-                <option value="">Select month</option>
-                {monthOptions.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </label>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              City
-              <select
-                className="fsr-select"
-                value={topCity}
-                onChange={(e) => setTopCity(e.target.value)}
-                style={{ minWidth: '150px' }}
-              >
-                <option value="">Select city</option>
-                {cityOptions.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </label>
-            <div className="status-badge" style={{ alignSelf: 'flex-end', padding: '0.5rem 0.9rem' }}>
-              Top 10 by Money In & Orders
+          <div
+            className="filter-bar glass"
+            style={{
+              display: 'flex',
+              gap: '0.75rem',
+              flexWrap: 'wrap',
+              padding: '0.75rem',
+              marginBottom: '1rem',
+              alignItems: 'center',
+              position: 'relative',
+              zIndex: 50,
+              overflow: 'visible',
+            }}
+          >
+            <TopCheckboxSelect
+              label="Month"
+              options={monthOptions}
+              selected={topMonths}
+              onChange={setTopMonths}
+              emptyLabel="All months"
+              icon={Calendar}
+            />
+            <TopCheckboxSelect
+              label="City"
+              options={cityOptions}
+              selected={topCities}
+              onChange={setTopCities}
+              emptyLabel="All cities"
+              icon={MapPin}
+            />
+            <div style={{ flex: 1, minWidth: '220px', position: 'relative' }}>
+              <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+              <input
+                type="text"
+                placeholder="Search rider ID, name, phone, client…"
+                value={topSearch}
+                onChange={(e) => setTopSearch(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem 0.55rem 2.25rem',
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  color: '#fff',
+                  outline: 'none',
+                }}
+              />
             </div>
+            <div className="status-badge" style={{ padding: '0.5rem 0.9rem' }}>
+              {!topMonths.length && !topCities.length
+                ? 'Overall top riders (all cities · all months)'
+                : `Top 10 · ${topFilterLabel}`}
+            </div>
+            {(topMonths.length > 0 || topCities.length > 0 || topSearch) && (
+              <button
+                type="button"
+                className="glass-btn"
+                style={{ fontSize: '0.75rem' }}
+                onClick={() => {
+                  setTopMonths([])
+                  setTopCities([])
+                  setTopSearch('')
+                }}
+              >
+                Clear filters
+              </button>
+            )}
           </div>
 
-          {!topMonth || !topCity ? (
-            <div className="table-card glass" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-dim)' }}>
-              Select a city and month to view top performers.
-            </div>
-          ) : (
-            <>
+          <>
               <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
                 <TopPerformersTable
                   title="Top 10 by Money In"
-                  rows={topReport.byMoneyIn}
+                  rows={filteredTopByMoneyIn}
                   selectedKey={selectedTopRider?.key}
                   onSelect={setSelectedTopRider}
                   highlight="moneyIn"
                 />
                 <TopPerformersTable
                   title="Top 10 by Orders"
-                  rows={topReport.byOrders}
+                  rows={filteredTopByOrders}
                   selectedKey={selectedTopRider?.key}
                   onSelect={setSelectedTopRider}
                   highlight="orders"
@@ -764,7 +865,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
                   <History size={16} style={{ color: 'var(--accent-blue)' }} />
                   <strong style={{ fontSize: '0.95rem' }}>
                     {selectedTopRider
-                      ? `Rider history · ${selectedTopRider.riderName}${selectedTopRider.riderId ? ` (${selectedTopRider.riderId})` : ''} · ${topCity} · ${topMonth}`
+                      ? `Rider history · ${selectedTopRider.riderName}${selectedTopRider.riderId ? ` (${selectedTopRider.riderId})` : ''} · ${topFilterLabel}`
                       : 'Rider history'}
                   </strong>
                   {selectedTopRider ? (
@@ -785,6 +886,8 @@ export default function PaymentHistory({ onboardingData = [] }) {
                         <th>Type</th>
                         <th>Rider</th>
                         <th>Phone</th>
+                        <th>Month</th>
+                        <th>City</th>
                         <th>Week</th>
                         <th>Client</th>
                         <th>Orders</th>
@@ -797,8 +900,9 @@ export default function PaymentHistory({ onboardingData = [] }) {
                     <tbody>
                       {!selectedTopRider ? (
                         <tr>
-                          <td colSpan={10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
-                            Click a rider in the Top 10 tables to see their payment history for this city and month.
+                          <td colSpan={12} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                            Click a rider in the Top 10 tables to see their payment history
+                            {!topMonths.length && !topCities.length ? ' (overall)' : ` for ${topFilterLabel}`}.
                           </td>
                         </tr>
                       ) : topRiderHistory.length ? (
@@ -814,6 +918,8 @@ export default function PaymentHistory({ onboardingData = [] }) {
                               <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{r.riderId}</div>
                             </td>
                             <td>{r.riderPhone || '—'}</td>
+                            <td>{r.month || '—'}</td>
+                            <td>{r.city || '—'}</td>
                             <td>{r.week ? `W${r.week}` : '—'}</td>
                             <td>{r.client}</td>
                             <td>{numDisplay(r.orders)}</td>
@@ -828,8 +934,8 @@ export default function PaymentHistory({ onboardingData = [] }) {
                         ))
                       ) : (
                         <tr>
-                          <td colSpan={10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
-                            No payment rows for this rider in the selected city and month.
+                          <td colSpan={12} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                            No payment rows for this rider with the current filters.
                           </td>
                         </tr>
                       )}
@@ -837,10 +943,180 @@ export default function PaymentHistory({ onboardingData = [] }) {
                   </table>
                 </div>
               </div>
-            </>
-          )}
+          </>
         </>
       )}
+    </div>
+  )
+}
+
+function filterTopPerformerRows(rows, search) {
+  const q = String(search || '').trim().toLowerCase()
+  if (!q) return rows || []
+  return (rows || []).filter(
+    (r) =>
+      String(r.riderId || '').toLowerCase().includes(q) ||
+      String(r.riderName || '').toLowerCase().includes(q) ||
+      String(r.phone || '').toLowerCase().includes(q) ||
+      String(r.client || '').toLowerCase().includes(q)
+  )
+}
+
+function TopCheckboxSelect({ label, options, selected, onChange, emptyLabel = 'All', icon: Icon }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return options || []
+    return (options || []).filter((o) => String(o).toLowerCase().includes(q))
+  }, [options, query])
+
+  const toggle = (opt) => {
+    if (selected.includes(opt)) onChange(selected.filter((s) => s !== opt))
+    else onChange([...selected, opt])
+  }
+
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((opt) => selected.includes(opt))
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: 'relative',
+        minWidth: '150px',
+        zIndex: open ? 60 : 1,
+      }}
+    >
+      <button
+        type="button"
+        className="glass"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: '100%',
+          padding: '0.45rem 0.75rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          cursor: 'pointer',
+          color: '#fff',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          background: selected.length ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)',
+        }}
+      >
+        {Icon ? <Icon size={14} style={{ color: 'var(--text-dim)' }} /> : null}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+          <span style={{ fontSize: '0.65rem', color: 'var(--text-dim)', lineHeight: 1 }}>{label}</span>
+          <span style={{ fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>
+            {selected.length === 0 ? emptyLabel : selected.length === 1 ? selected[0] : `${selected.length} selected`}
+          </span>
+        </div>
+      </button>
+
+      {open ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 0.35rem)',
+            left: 0,
+            zIndex: 9999,
+            minWidth: '260px',
+            maxHeight: '320px',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            background: '#0f172a',
+            border: '1px solid rgba(255,255,255,0.16)',
+            borderRadius: '10px',
+            boxShadow: '0 16px 40px rgba(0,0,0,0.55)',
+            padding: '0.55rem',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(255,255,255,0.05)', borderRadius: '6px', padding: '0.35rem 0.55rem', marginBottom: '0.5rem' }}>
+            <Search size={12} style={{ color: 'var(--text-dim)' }} />
+            <input
+              autoFocus
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${label.toLowerCase()}…`}
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: '0.8rem' }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.45rem' }}>
+            <button
+              type="button"
+              className="glass-btn"
+              style={{ fontSize: '0.7rem', padding: '0.2rem 0.45rem' }}
+              onClick={() => {
+                if (allVisibleSelected) {
+                  const drop = new Set(filtered)
+                  onChange(selected.filter((s) => !drop.has(s)))
+                } else {
+                  onChange([...new Set([...selected, ...filtered])])
+                }
+              }}
+            >
+              {allVisibleSelected ? 'Uncheck all' : 'Check all'}
+            </button>
+            {selected.length > 0 ? (
+              <button
+                type="button"
+                className="glass-btn"
+                style={{ fontSize: '0.7rem', padding: '0.2rem 0.45rem' }}
+                onClick={() => onChange([])}
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          {filtered.length ? (
+            filtered.map((opt) => {
+              const checked = selected.includes(opt)
+              return (
+                <label
+                  key={opt}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.55rem',
+                    padding: '0.35rem 0.4rem',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    background: checked ? 'rgba(56, 189, 248, 0.12)' : 'transparent',
+                    fontSize: '0.85rem',
+                    color: '#fff',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(opt)}
+                    style={{ accentColor: 'var(--accent-blue)' }}
+                  />
+                  <span style={{ flex: 1 }}>{opt}</span>
+                  {checked ? <Check size={14} style={{ color: 'var(--accent-blue)' }} /> : null}
+                </label>
+              )
+            })
+          ) : (
+            <div style={{ padding: '0.6rem', color: 'var(--text-dim)', fontSize: '0.8rem', textAlign: 'center' }}>
+              No matches
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   )
 }

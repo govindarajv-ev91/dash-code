@@ -28,6 +28,7 @@ const Ev91EvLookup = lazy(() => import('./Ev91EvLookup'))
 const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
+const FullData = lazy(() => import('./FullData'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -43,7 +44,7 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2 } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
@@ -556,6 +557,13 @@ function App() {
             <Radio size={20} />
             IoT Data
           </button>
+          <button
+            className={`nav-item nav-item-green ${activePage === 'fulldata' ? 'active' : ''}`}
+            onClick={() => setActivePage('fulldata')}
+          >
+            <Table2 size={20} />
+            Full Data
+          </button>
           <button 
             className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetdata')}
@@ -765,6 +773,8 @@ function App() {
             riderData={riderData}
             loading={loading}
           />
+        ) : activePage === 'fulldata' ? (
+          <FullData />
         ) : activePage === 'fleetdata' ? (
           <FleetDataViewer
             fleetData={displayFleetData}

@@ -116,10 +116,36 @@ function pushVehicleInterval(map, vehicleKey, deployEvent, returnDate) {
 /** Parse API timestamp keeping real clock time for same-day ordering. */
 function parseEventInstant(value) {
   if (value == null || value === '') return null
-  const raw = new Date(value)
+  const s = String(value).trim()
+  if (!s) return null
+
+  // ISO / yyyy-MM-dd first (unambiguous).
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const iso = new Date(s)
+    if (!Number.isNaN(iso.getTime())) return iso
+  }
+
+  // DD/MM/YYYY (and similar) via fleet parser — do NOT use bare `new Date('03/08/2026')`
+  // which is locale-ambiguous (US = 8 Mar, intended often 3 Aug).
+  const day = parseFleetDate(s)
+  if (day) {
+    const timeMatch = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/)
+    if (timeMatch) {
+      const withTime = new Date(day)
+      withTime.setHours(
+        Number(timeMatch[1]) || 0,
+        Number(timeMatch[2]) || 0,
+        Number(timeMatch[3]) || 0,
+        0
+      )
+      return withTime
+    }
+    return day
+  }
+
+  const raw = new Date(s)
   if (!Number.isNaN(raw.getTime())) return raw
-  const day = parseFleetDate(value)
-  return day
+  return null
 }
 
 /**
@@ -264,7 +290,9 @@ export function mergeCurrentStatusIntoIndexes(indexes, currentRows = []) {
     const vehicleKey = vehiclePartitionKey(vehicleNumber)
     if (!vehicleKey) continue
 
-    const at = parseEventInstant(row.lastStatusDate) || new Date()
+    const at = parseEventInstant(row.lastStatusDate)
+    // Never invent "today" — that makes historical IoT days look Not deployed.
+    if (!at || Number.isNaN(at.getTime())) continue
     const day = startOfDay(at)
     const mappedRow = {
       vehicleNumber,

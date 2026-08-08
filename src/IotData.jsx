@@ -4,7 +4,6 @@ import {
   Radio,
   Search,
   Download,
-  Upload,
   Loader,
   Calendar,
   Truck,
@@ -13,17 +12,19 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
-import { parseIotDataFile, IOT_HEADER_LABELS } from './lib/iotDataParse'
 import {
   fetchIotDataInRange,
   loadIotSummary,
-  saveIotRows,
   fetchRiderOrdersForIot,
   getIotDbSetupMessage,
   isMissingIotTable,
 } from './lib/iotDataDb'
 import { buildIotVehicleReport, summarizeIotReport } from './lib/iotDataReport'
 import { formatLastUploadAt } from './lib/paymentMonthList'
+import {
+  fetchEv91OverallStatusAll,
+  fetchEv91CurrentStatusAll,
+} from './lib/ev91EvLookup'
 
 const ROWS_PER_PAGE = 50
 
@@ -41,11 +42,12 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const [lastUploadAt, setLastUploadAt] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
-  const [uploading, setUploading] = useState(false)
-  const [uploadMessage, setUploadMessage] = useState(null)
   const [riderOrderRows, setRiderOrderRows] = useState([])
   const [riderOrdersLoading, setRiderOrdersLoading] = useState(false)
   const [riderOrdersError, setRiderOrdersError] = useState(null)
+  const [ev91OverallRows, setEv91OverallRows] = useState([])
+  const [ev91CurrentRows, setEv91CurrentRows] = useState([])
+  const [ev91Loading, setEv91Loading] = useState(false)
   const riderDataRef = useRef(riderData)
   riderDataRef.current = riderData
 
@@ -57,6 +59,24 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
       setMissingTable(Boolean(summary.missingTable))
     } catch (err) {
       console.warn('IoT summary load failed:', err)
+    }
+  }, [])
+
+  const loadEv91DeployStatus = useCallback(async () => {
+    setEv91Loading(true)
+    try {
+      const [overall, current] = await Promise.all([
+        fetchEv91OverallStatusAll({ force: false }),
+        fetchEv91CurrentStatusAll({ force: false }).catch(() => ({ data: [] })),
+      ])
+      setEv91OverallRows(overall?.data || [])
+      setEv91CurrentRows(current?.data || [])
+    } catch (err) {
+      console.warn('IoT EV91 deploy status load failed:', err)
+      setEv91OverallRows([])
+      setEv91CurrentRows([])
+    } finally {
+      setEv91Loading(false)
     }
   }, [])
 
@@ -88,7 +108,8 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
 
   useEffect(() => {
     loadSummary()
-  }, [loadSummary])
+    loadEv91DeployStatus()
+  }, [loadSummary, loadEv91DeployStatus])
 
   const loadRiderOrders = useCallback(async () => {
     if (!dateFrom || !dateTo || dateFrom > dateTo) {
@@ -117,7 +138,8 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const applyRange = useCallback(() => {
     loadRangeData()
     loadRiderOrders()
-  }, [loadRangeData, loadRiderOrders])
+    loadEv91DeployStatus()
+  }, [loadRangeData, loadRiderOrders, loadEv91DeployStatus])
 
   useEffect(() => {
     if (!missingTable) {
@@ -131,8 +153,14 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   const deferredSearch = useDeferredValue(searchTerm)
 
   const reportRows = useMemo(
-    () => buildIotVehicleReport(iotRows, fleetData, riderOrderRows, { dateFrom, dateTo }),
-    [iotRows, fleetData, riderOrderRows, dateFrom, dateTo]
+    () =>
+      buildIotVehicleReport(iotRows, fleetData, riderOrderRows, {
+        dateFrom,
+        dateTo,
+        ev91OverallRows,
+        ev91CurrentRows,
+      }),
+    [iotRows, fleetData, riderOrderRows, dateFrom, dateTo, ev91OverallRows, ev91CurrentRows]
   )
 
   const stats = useMemo(() => summarizeIotReport(reportRows), [reportRows])
@@ -161,34 +189,6 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
   useEffect(() => {
     setCurrentPage(1)
   }, [searchTerm, dateFrom, dateTo, reportRows.length])
-
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-
-    setUploading(true)
-    setUploadMessage(null)
-    try {
-      const { rows, errors } = await parseIotDataFile(file)
-      if (!rows.length) {
-        setUploadMessage({ type: 'error', text: errors[0] || 'No valid rows found in file.' })
-        return
-      }
-      const saved = await saveIotRows(rows)
-      await loadSummary()
-      await loadRangeData()
-      const errNote = errors.length ? ` (${errors.length} row(s) skipped)` : ''
-      setUploadMessage({ type: 'success', text: `Uploaded ${saved.toLocaleString()} IoT row(s)${errNote}.` })
-    } catch (err) {
-      setUploadMessage({
-        type: 'error',
-        text: isMissingIotTable(err) ? getIotDbSetupMessage() : err.message || 'Upload failed',
-      })
-    } finally {
-      setUploading(false)
-    }
-  }
 
   const exportExcel = () => {
     if (!filtered.length) return
@@ -233,11 +233,6 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-            <label className="fsr-export-btn" style={{ cursor: uploading ? 'not-allowed' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
-              {uploading ? <Loader size={16} className="spin" /> : <Upload size={16} />}
-              Upload IoT file
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleUpload} disabled={uploading} hidden />
-            </label>
             <button
               type="button"
               onClick={exportExcel}
@@ -259,9 +254,11 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
             <>
               <span><strong>{dbCount.toLocaleString()}</strong> rows in <code style={{ color: '#fff' }}>iot_data</code></span>
               <span>· Orders from <code style={{ color: '#fff' }}>order_upload_data</code> only</span>
+              <span>· Deploy Status from EV91 Overall / Current API</span>
               {lastUploadAt && (
                 <span style={{ color: 'var(--accent-blue)' }}>· Last upload: {formatLastUploadAt(lastUploadAt)}</span>
               )}
+              {ev91Loading && <span>· Loading EV91 deploy status…</span>}
             </>
           )}
         </div>
@@ -298,8 +295,8 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
             style={{ padding: '0.45rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
           />
         </label>
-        <button type="button" className="btn-primary" onClick={applyRange} disabled={iotLoading || riderOrdersLoading} style={{ padding: '0.5rem 1rem' }}>
-          {iotLoading || riderOrdersLoading ? <Loader size={16} className="spin" /> : 'Apply range'}
+        <button type="button" className="btn-primary" onClick={applyRange} disabled={iotLoading || riderOrdersLoading || ev91Loading} style={{ padding: '0.5rem 1rem' }}>
+          {iotLoading || riderOrdersLoading || ev91Loading ? <Loader size={16} className="spin" /> : 'Apply range'}
         </button>
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
@@ -312,21 +309,6 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
           />
         </div>
       </div>
-
-      {uploadMessage && (
-        <div
-          className="glass"
-          style={{
-            marginBottom: '1rem',
-            padding: '0.65rem 0.85rem',
-            fontSize: '0.85rem',
-            color: uploadMessage.type === 'error' ? '#f87171' : '#4ade80',
-            background: uploadMessage.type === 'error' ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
-          }}
-        >
-          {uploadMessage.text}
-        </div>
-      )}
 
       {riderOrdersError && !riderOrdersLoading && (
         <div className="glass" style={{ marginBottom: '1rem', padding: '0.65rem 0.85rem', fontSize: '0.85rem', color: '#fbbf24', background: 'rgba(251, 191, 36, 0.1)' }}>
@@ -370,15 +352,6 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
           <div className="value" style={{ fontSize: '1rem' }}>{dateFrom} → {dateTo}</div>
         </div>
       </section>
-
-      <details className="glass" style={{ padding: '0.75rem 1rem', marginBottom: '1rem' }}>
-        <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-dim)' }}>
-          Upload file format ({IOT_HEADER_LABELS.length} columns)
-        </summary>
-        <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-          {IOT_HEADER_LABELS.join(' · ')} — maps to <code style={{ color: '#fff' }}>iot_data</code> columns: vehicle_number, run_date, total_distance.
-        </p>
-      </details>
 
       <div className="table-card glass">
         <div className="table-container" style={{ maxHeight: 'calc(100vh - 420px)' }}>

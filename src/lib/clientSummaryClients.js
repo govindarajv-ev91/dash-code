@@ -16,6 +16,8 @@ const CLIENT_CANONICAL_BY_KEY = {
   'flipkart-minutes': 'Flipkart-Minutes',
   'doc pharma': 'Doc Pharma',
   'inamo': 'INAMO',
+  swiggy: 'Swiggy Instamart',
+  'swiggy instamart': 'Swiggy Instamart',
 }
 
 /** Hidden by default on Client Summary — click + to show columns. */

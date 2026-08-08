@@ -11,6 +11,11 @@ import {
   findRiderForVehicleOnDate,
   prepareMergedFleetRows,
 } from './fleetInsightIndex'
+import {
+  buildEv91OverallIntervalIndexes,
+  mergeCurrentStatusIntoIndexes,
+  findEv91RiderForVehicleOnDate,
+} from './ev91EvLookup'
 
 function parseRangeDate(value) {
   if (!value) return null
@@ -100,7 +105,27 @@ export function lookupRiderDayOrders(assignment, dateKey, orderIndex) {
   return 0
 }
 
-function resolveIotAssignment(interval, openAssignment) {
+function assignmentFromEv91Interval(interval) {
+  if (!interval) return null
+  return {
+    vehicleNumber: interval.vehicleNumber || '',
+    riderId: interval.riderId || interval.clientId || interval.ev91RiderId || '',
+    riderName: interval.riderName || '—',
+    mobile: interval.mobile || '',
+    client: interval.clientName || '—',
+    city: interval.city || '—',
+    hub: '—',
+    source: 'ev91',
+  }
+}
+
+function resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91History) {
+  // Prefer EV91 Overall/Current intervals — fleet master often lags API deploy status.
+  if (ev91Interval) return assignmentFromEv91Interval(ev91Interval)
+
+  // Vehicle appears in EV91 history: trust API day-by-day (before deploy = Not deployed).
+  if (hasEv91History) return null
+
   if (interval) {
     return {
       vehicleNumber: interval.vehicleNumber,
@@ -110,9 +135,10 @@ function resolveIotAssignment(interval, openAssignment) {
       client: openAssignment?.client || '—',
       city: openAssignment?.city || '—',
       hub: openAssignment?.hub || '—',
+      source: 'fleet',
     }
   }
-  return openAssignment || null
+  return openAssignment ? { ...openAssignment, source: 'fleet' } : null
 }
 
 /** Pre-compute open fleet assignments per IoT run date (avoids O(rows × fleet) work). */
@@ -132,9 +158,15 @@ function buildAssignmentCacheByDate(fleetRows, runDates) {
 }
 
 /**
- * IoT rows by vehicle + run_date with fleet rider/client as of that date and rider order count.
+ * IoT rows by vehicle + run_date with fleet/EV91 rider/client as of that date and rider order count.
+ * Deploy Status uses EV91 Overall (+ Current) intervals first, then fleet.
  */
-export function buildIotVehicleReport(iotRows, fleetRows, riderRows, { dateFrom, dateTo } = {}) {
+export function buildIotVehicleReport(
+  iotRows,
+  fleetRows,
+  riderRows,
+  { dateFrom, dateTo, ev91OverallRows = [], ev91CurrentRows = [] } = {}
+) {
   void dateFrom
   void dateTo
 
@@ -143,6 +175,10 @@ export function buildIotVehicleReport(iotRows, fleetRows, riderRows, { dateFrom,
   const orderIndex = buildRiderDayOrderIndex(riderRows)
   const preparedFleet = prepareMergedFleetRows(fleetRows)
   const { vehicleIntervals } = buildFleetIntervalIndexes(preparedFleet)
+
+  const ev91Indexes = buildEv91OverallIntervalIndexes(ev91OverallRows || [])
+  mergeCurrentStatusIntoIndexes(ev91Indexes, ev91CurrentRows || [])
+  const ev91VehicleIntervals = ev91Indexes.vehicleIntervals
 
   const runDates = new Set()
   const parsedIot = []
@@ -159,10 +195,15 @@ export function buildIotVehicleReport(iotRows, fleetRows, riderRows, { dateFrom,
   const rows = []
 
   for (const { row, vehicleNumber, vehicleKey, runDate } of parsedIot) {
+    // Use noon-local then start-of-day semantics via Date; match EV91 interval calendar days.
     const asOf = parseRangeDate(runDate)
     const interval = asOf ? findRiderForVehicleOnDate(vehicleIntervals, vehicleKey, asOf) : null
+    const ev91Interval = asOf
+      ? findEv91RiderForVehicleOnDate(ev91VehicleIntervals, vehicleKey, asOf)
+      : null
+    const hasEv91History = ev91VehicleIntervals.has(vehicleKey)
     const openAssignment = assignmentByDate.get(runDate)?.get(vehicleKey)
-    const assignment = resolveIotAssignment(interval, openAssignment)
+    const assignment = resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91History)
     const orderCount = lookupRiderDayOrders(assignment, runDate, orderIndex)
 
     rows.push({
@@ -177,7 +218,9 @@ export function buildIotVehicleReport(iotRows, fleetRows, riderRows, { dateFrom,
       client: assignment?.client || '—',
       city: assignment?.city || '—',
       hub: assignment?.hub || '—',
+      // Day-wise: Deployed only on/after EV91 deploy date until Return (not before).
       deployStatus: assignment ? 'Deployed' : 'Not deployed',
+      deploySource: assignment?.source || '',
       orderCount,
     })
   }

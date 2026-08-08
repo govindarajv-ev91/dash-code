@@ -24,6 +24,7 @@ import {
   ArrowDownRight,
   RefreshCw,
   X,
+  Download,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { format, subDays, parseISO, startOfDay, eachDayOfInterval } from 'date-fns'
@@ -47,6 +48,13 @@ import {
   formatCompactCount,
   currentIndianFinancialYearLabel,
 } from './lib/paymentHistoryReport'
+import { fetchIotDataInRange } from './lib/iotDataDb'
+import {
+  KM_PRODUCTIVITY_BUCKETS,
+  buildVehicleKmProductivityTable,
+  buildKmProductivityDatePresets,
+  downloadVehicleKmProductivityDetails,
+} from './lib/vehicleKmProductivityReport'
 
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80']
 /** Line chart colors for client month-wise metrics. */
@@ -54,6 +62,184 @@ const CLIENT_LINE_COLORS = {
   revenue: '#38bdf8',
   orders: '#4ade80',
   riders: '#c084fc',
+}
+
+const KM_RANGE_PRESETS = [
+  { id: 'yesterday', label: 'Yesterday' },
+  { id: 'last7', label: 'Last 7 Days' },
+  { id: 'thisMonth', label: 'This Month' },
+  { id: 'lastMonth', label: 'Last Month' },
+  { id: 'custom', label: 'Custom' },
+]
+
+function KmProductivityTable({ title, report, loading, rowLabel = 'City' }) {
+  const rows = report?.rows || report?.cities || []
+  const totals = report?.totals || null
+  const vehicleCount = report?.vehicleCount || 0
+  const withKmCount = report?.withKmCount || 0
+  const isClient = rowLabel === 'Client'
+
+  const stickyCity = {
+    position: 'sticky',
+    left: 0,
+    zIndex: 3,
+    textAlign: 'left',
+    padding: '0.5rem 0.65rem',
+    whiteSpace: 'nowrap',
+    minWidth: isClient ? 140 : 110,
+    maxWidth: isClient ? 220 : 140,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    background: '#0f172a',
+    boxShadow: '4px 0 8px rgba(0,0,0,0.25)',
+  }
+
+  const stickyHead = {
+    position: 'sticky',
+    top: 0,
+    zIndex: 2,
+    textAlign: 'center',
+    padding: '0.5rem 0.4rem',
+    whiteSpace: 'nowrap',
+    background: '#1e293b',
+    minWidth: 72,
+  }
+
+  const stickyCityHead = {
+    ...stickyCity,
+    top: 0,
+    zIndex: 4,
+    background: '#1e293b',
+    fontWeight: 700,
+  }
+
+  const cell = {
+    textAlign: 'center',
+    padding: '0.45rem 0.4rem',
+    whiteSpace: 'nowrap',
+    minWidth: 72,
+  }
+
+  return (
+    <div
+      className="glass"
+      style={{
+        padding: '1rem',
+        width: '100%',
+        minWidth: 0,
+        overflow: 'hidden',
+      }}
+    >
+      <h4 style={{ margin: '0 0 0.35rem', fontSize: '0.95rem' }}>{title}</h4>
+      <p style={{ margin: '0 0 0.75rem', fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+        {loading
+          ? 'Loading…'
+          : `${vehicleCount.toLocaleString('en-IN')} vehicles · ${withKmCount.toLocaleString('en-IN')} with KM > 0`}
+      </p>
+      <div
+        style={{
+          maxHeight: '420px',
+          overflow: 'auto',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 8,
+          width: '100%',
+        }}
+      >
+        <table
+          style={{
+            width: 'max-content',
+            minWidth: '100%',
+            borderCollapse: 'separate',
+            borderSpacing: 0,
+            fontSize: '0.78rem',
+          }}
+        >
+          <thead>
+            {totals && (
+              <tr>
+                <th style={stickyCityHead}>TOTAL</th>
+                {KM_PRODUCTIVITY_BUCKETS.map((b) => (
+                  <th key={`t-${b.key}`} style={stickyHead} title={b.label}>
+                    {(totals[b.key] || 0).toLocaleString('en-IN')}
+                  </th>
+                ))}
+                <th style={{ ...stickyHead, fontWeight: 700 }}>
+                  {(totals.total || 0).toLocaleString('en-IN')}
+                </th>
+              </tr>
+            )}
+            <tr>
+              <th
+                style={{
+                  ...stickyCityHead,
+                  top: totals ? 34 : 0,
+                }}
+              >
+                {rowLabel}
+              </th>
+              {KM_PRODUCTIVITY_BUCKETS.map((b) => (
+                <th
+                  key={b.key}
+                  style={{
+                    ...stickyHead,
+                    top: totals ? 34 : 0,
+                    background: '#0f172a',
+                    fontSize: '0.7rem',
+                  }}
+                  title={b.label}
+                >
+                  {b.label.replace(' TO ', '–').replace(' KM', '')}
+                </th>
+              ))}
+              <th
+                style={{
+                  ...stickyHead,
+                  top: totals ? 34 : 0,
+                  background: '#0f172a',
+                }}
+              >
+                Total
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={KM_PRODUCTIVITY_BUCKETS.length + 2} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '1.5rem' }}>
+                  Loading…
+                </td>
+              </tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={KM_PRODUCTIVITY_BUCKETS.length + 2} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: '1.5rem' }}>
+                  No vehicles in this range
+                </td>
+              </tr>
+            ) : (
+              rows.map((row) => {
+                const name = row.name || row.client || row.city || 'Unknown'
+                return (
+                  <tr key={name}>
+                    <td style={{ ...stickyCity, background: '#111827' }} title={name}>
+                      {name}
+                    </td>
+                    {KM_PRODUCTIVITY_BUCKETS.map((b) => (
+                      <td key={b.key} style={cell}>
+                        {(row[b.key] || 0).toLocaleString('en-IN')}
+                      </td>
+                    ))}
+                    <td style={{ ...cell, fontWeight: 600 }}>
+                      {(row.total || 0).toLocaleString('en-IN')}
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 /** Active Riders = unique riders with delivered orders in this many days. */
 const ACTIVE_RIDER_DAYS = 5
@@ -315,6 +501,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [ev91StatusSummary, setEv91StatusSummary] = useState(null)
+  const [ev91CurrentRows, setEv91CurrentRows] = useState([])
   const [ev91StatusLoading, setEv91StatusLoading] = useState(true)
   const [ev91StatusError, setEv91StatusError] = useState('')
   const [ev91OverallRows, setEv91OverallRows] = useState([])
@@ -324,16 +511,60 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [paymentError, setPaymentError] = useState('')
   const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
   const [paymentClient, setPaymentClient] = useState('All')
+  const [kmPreset, setKmPreset] = useState('yesterday')
+  const [kmCustomFrom, setKmCustomFrom] = useState('')
+  const [kmCustomTo, setKmCustomTo] = useState('')
+  const [kmIotRows, setKmIotRows] = useState([])
+  const [kmIotLoading, setKmIotLoading] = useState(false)
+  const [kmIotError, setKmIotError] = useState('')
   const deferredRiderData = useDeferredValue(riderData)
+
+  const kmDatePresets = useMemo(() => buildKmProductivityDatePresets(new Date()), [])
+
+  const kmDateRange = useMemo(() => {
+    if (kmPreset === 'custom') {
+      const from = kmCustomFrom || kmCustomTo || ''
+      const to = kmCustomTo || kmCustomFrom || ''
+      return { from, to }
+    }
+    const p = kmDatePresets[kmPreset]
+    return p ? { from: p.from, to: p.to } : { from: '', to: '' }
+  }, [kmPreset, kmCustomFrom, kmCustomTo, kmDatePresets])
+
+  const loadKmIot = useCallback(async (from, to) => {
+    if (!from || !to) {
+      setKmIotRows([])
+      setKmIotError('')
+      return
+    }
+    setKmIotLoading(true)
+    setKmIotError('')
+    try {
+      const rows = await fetchIotDataInRange(from, to)
+      setKmIotRows(rows || [])
+    } catch (err) {
+      console.warn('KM productivity IoT load failed:', err)
+      setKmIotRows([])
+      setKmIotError(err?.message || 'Failed to load IoT KM')
+    } finally {
+      setKmIotLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadKmIot(kmDateRange.from, kmDateRange.to)
+  }, [kmDateRange.from, kmDateRange.to, loadKmIot])
 
   const loadEv91CurrentStatus = useCallback(async () => {
     setEv91StatusLoading(true)
     setEv91StatusError('')
     try {
       const all = await fetchAllEv91MisData('current-status')
+      setEv91CurrentRows(all.data || [])
       setEv91StatusSummary(summarizeCurrentStatusRows(all.data || [], all.summary))
     } catch (err) {
       console.warn('EV91 current-status load failed:', err)
+      setEv91CurrentRows([])
       setEv91StatusSummary(null)
       setEv91StatusError(err?.message || 'Failed to load EV91 current status')
     } finally {
@@ -593,6 +824,54 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
     }
   }, [clientMonthLine.clients, paymentClient])
 
+  const kmDeployedTable = useMemo(
+    () =>
+      buildVehicleKmProductivityTable(ev91OverallRows, kmIotRows, {
+        startDate: kmDateRange.from,
+        endDate: kmDateRange.to,
+        kind: 'deployed',
+        currentRows: ev91CurrentRows,
+      }),
+    [ev91OverallRows, ev91CurrentRows, kmIotRows, kmDateRange.from, kmDateRange.to]
+  )
+
+  const kmReturnedTable = useMemo(
+    () =>
+      buildVehicleKmProductivityTable(ev91OverallRows, kmIotRows, {
+        startDate: kmDateRange.from,
+        endDate: kmDateRange.to,
+        kind: 'returned',
+        currentRows: ev91CurrentRows,
+      }),
+    [ev91OverallRows, ev91CurrentRows, kmIotRows, kmDateRange.from, kmDateRange.to]
+  )
+
+  const kmDeployedClientTable = useMemo(
+    () =>
+      buildVehicleKmProductivityTable(ev91OverallRows, kmIotRows, {
+        startDate: kmDateRange.from,
+        endDate: kmDateRange.to,
+        kind: 'deployed',
+        currentRows: ev91CurrentRows,
+        groupBy: 'client',
+      }),
+    [ev91OverallRows, ev91CurrentRows, kmIotRows, kmDateRange.from, kmDateRange.to]
+  )
+
+  const kmReturnedClientTable = useMemo(
+    () =>
+      buildVehicleKmProductivityTable(ev91OverallRows, kmIotRows, {
+        startDate: kmDateRange.from,
+        endDate: kmDateRange.to,
+        kind: 'returned',
+        currentRows: ev91CurrentRows,
+        groupBy: 'client',
+      }),
+    [ev91OverallRows, ev91CurrentRows, kmIotRows, kmDateRange.from, kmDateRange.to]
+  )
+
+  const kmTablesLoading = kmIotLoading || ev91OverallLoading
+
   if (loading && riderData.length === 0) {
     return (
       <div className="loading-container">
@@ -682,6 +961,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               loadEv91CurrentStatus()
               loadEv91OverallStatus()
               loadMonthlyRevenue(true)
+              loadKmIot(kmDateRange.from, kmDateRange.to)
             }}
           >
             <RefreshCw size={18} /> Refresh
@@ -865,7 +1145,17 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
         </div>
       </div>
 
-      <div className="chart-card glass" style={{ marginTop: '1.25rem' }}>
+      <div
+        className="glass"
+        style={{
+          marginTop: '1.25rem',
+          padding: '1.5rem',
+          height: 'auto',
+          overflow: 'visible',
+          minWidth: 0,
+          width: '100%',
+        }}
+      >
         <div
           style={{
             display: 'flex',
@@ -1229,6 +1519,141 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               </LineChart>
             </ResponsiveContainer>
           )}
+        </div>
+      </div>
+
+      <div
+        className="glass"
+        style={{
+          marginTop: '1.25rem',
+          padding: '1.5rem',
+          overflow: 'visible',
+          minWidth: 0,
+          width: '100%',
+          height: 'auto',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: '1rem',
+            flexWrap: 'wrap',
+            marginBottom: '0.85rem',
+          }}
+        >
+          <div>
+            <h3 style={{ margin: 0 }}>Vehicle Kilometer Productivity Analysis</h3>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              City-wise vehicle count by IoT KM · vehicles deployed (or returned) during the range
+              {kmDateRange.from && kmDateRange.to ? ` · ${kmDateRange.from} → ${kmDateRange.to}` : ''}
+              {kmTablesLoading ? ' · Loading…' : ''}
+              {kmIotError ? ` · ${kmIotError}` : ''}
+            </p>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="glass"
+              disabled={kmTablesLoading || !kmDateRange.from || !kmDateRange.to}
+              onClick={() =>
+                downloadVehicleKmProductivityDetails(ev91OverallRows, kmIotRows, {
+                  startDate: kmDateRange.from,
+                  endDate: kmDateRange.to,
+                  currentRows: ev91CurrentRows,
+                })
+              }
+              style={{
+                padding: '0.4rem 0.8rem',
+                color: '#fff',
+                cursor: kmTablesLoading ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                fontSize: '0.75rem',
+                opacity: kmTablesLoading ? 0.6 : 1,
+              }}
+              title="Download vehicle-level detail (City + Client)"
+            >
+              <Download size={14} /> Export Details
+            </button>
+            {KM_RANGE_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="glass-btn"
+                onClick={() => setKmPreset(p.id)}
+                style={{
+                  padding: '0.4rem 0.75rem',
+                  fontSize: '0.75rem',
+                  border:
+                    kmPreset === p.id
+                      ? '1px solid var(--accent-blue)'
+                      : '1px solid var(--border-color)',
+                  color: kmPreset === p.id ? 'var(--accent-blue)' : '#fff',
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+            {kmPreset === 'custom' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <input
+                  type="date"
+                  value={kmCustomFrom}
+                  onChange={(e) => setKmCustomFrom(e.target.value)}
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: 8,
+                    color: '#fff',
+                    padding: '0.35rem 0.5rem',
+                  }}
+                />
+                <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>to</span>
+                <input
+                  type="date"
+                  value={kmCustomTo}
+                  onChange={(e) => setKmCustomTo(e.target.value)}
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: 8,
+                    color: '#fff',
+                    padding: '0.35rem 0.5rem',
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', minWidth: 0 }}>
+          <KmProductivityTable
+            title="Deployed — Vehicle Kilometer Productivity Analysis"
+            report={kmDeployedTable}
+            loading={kmTablesLoading}
+            rowLabel="City"
+          />
+          <KmProductivityTable
+            title="Return — Vehicle Kilometer Productivity Analysis"
+            report={kmReturnedTable}
+            loading={kmTablesLoading}
+            rowLabel="City"
+          />
+          <KmProductivityTable
+            title="Deployed — Client-wise Kilometer Productivity"
+            report={kmDeployedClientTable}
+            loading={kmTablesLoading}
+            rowLabel="Client"
+          />
+          <KmProductivityTable
+            title="Return — Client-wise Kilometer Productivity"
+            report={kmReturnedClientTable}
+            loading={kmTablesLoading}
+            rowLabel="Client"
+          />
         </div>
       </div>
     </motion.div>

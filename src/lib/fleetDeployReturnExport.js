@@ -60,9 +60,14 @@ export function normalizeVehicleNumber(value) {
   return (value ?? '').toString().trim()
 }
 
-/** Case-insensitive key so typos like DL4SdX8338 vs DL4SDX8338 still pair. */
+/**
+ * Case-insensitive match key. Strips spaces/hyphens so
+ * "KA01AS4402" and "KA 01 AS 4402" resolve to the same vehicle.
+ */
 export function vehiclePartitionKey(value) {
-  return normalizeVehicleNumber(value).toUpperCase()
+  return normalizeVehicleNumber(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
 }
 
 export function normalizeDeployReturnStatus(value) {

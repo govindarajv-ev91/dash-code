@@ -1,284 +1,487 @@
-import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  LineChart, Line, PieChart, Pie, Cell, Legend 
-} from 'recharts';
-import { 
-  TrendingUp, Users, Truck, Calendar, Activity, 
-  ArrowUpRight, ArrowDownRight, RefreshCw, Search, X
-} from 'lucide-react';
-import { motion } from 'framer-motion';
-import { format } from 'date-fns';
-import { clsx } from 'clsx';
+import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react'
+import {
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  Legend,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts'
+import {
+  TrendingUp,
+  Users,
+  Truck,
+  Calendar,
+  Activity,
+  ArrowUpRight,
+  ArrowDownRight,
+  RefreshCw,
+  X,
+} from 'lucide-react'
+import { motion } from 'framer-motion'
+import { format, subDays, parseISO, startOfDay, eachDayOfInterval } from 'date-fns'
 import {
   toMetricDateKey,
   selectOverviewOrderRows,
-} from './lib/mergeRiderMetrics';
-import { parseFleetDate } from './lib/fleetDeployReturnExport';
+} from './lib/mergeRiderMetrics'
 import {
   fetchAllEv91MisData,
   summarizeCurrentStatusRows,
   currentStatusDistributionSeries,
   countOverallDeployReturnInRange,
-} from './lib/ev91MisApi';
-import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup';
+} from './lib/ev91MisApi'
+import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
+import { fetchRiderPaymentsForRevenue } from './lib/riderPaymentDb'
+import {
+  buildMonthlyRevenueSeries,
+  buildFyCompareMetric,
+  buildClientMonthLineSeries,
+  formatInr,
+  formatCompactCount,
+  currentIndianFinancialYearLabel,
+} from './lib/paymentHistoryReport'
 
-const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80'];
-const FLEET_TABLE_LIMIT = 10;
+const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80']
+/** Line chart colors for client month-wise metrics. */
+const CLIENT_LINE_COLORS = {
+  revenue: '#38bdf8',
+  orders: '#4ade80',
+  riders: '#c084fc',
+}
+/** Active Riders = unique riders with delivered orders in this many days. */
+const ACTIVE_RIDER_DAYS = 5
+
+function FyTrendMetricCard({ title, loading, empty, compare }) {
+  const pct = compare?.vsPyPct
+  const isUp = pct != null && pct >= 0
+  const peakIdx = compare?.peakIdx ?? -1
+  const lowIdx = compare?.lowIdx ?? -1
+
+  const CurrentDot = (props) => {
+    const { cx, cy, index } = props
+    if (cx == null || cy == null) return null
+    if (index === peakIdx) {
+      return <circle cx={cx} cy={cy} r={5} fill="#3b82f6" stroke="#fff" strokeWidth={1.5} />
+    }
+    if (index === lowIdx) {
+      return <circle cx={cx} cy={cy} r={5} fill="#f97316" stroke="#fff" strokeWidth={1.5} />
+    }
+    return null
+  }
+
+  return (
+    <div
+      className="glass"
+      style={{
+        flex: 1,
+        minWidth: '280px',
+        padding: '1.1rem 1.15rem 0.75rem',
+        borderRadius: '14px',
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.08)',
+      }}
+    >
+      <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', fontWeight: 500 }}>{title}</div>
+      <div style={{ fontSize: '1.75rem', fontWeight: 700, marginTop: '0.35rem', letterSpacing: '-0.02em' }}>
+        {loading ? '…' : empty ? '—' : formatCompactCount(compare?.total || 0)}
+      </div>
+      <div
+        style={{
+          marginTop: '0.25rem',
+          fontSize: '0.78rem',
+          fontWeight: 600,
+          color: pct == null ? 'var(--text-dim)' : isUp ? '#22c55e' : '#f43f5e',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.25rem',
+        }}
+      >
+        {loading || empty || pct == null ? (
+          <span style={{ color: 'var(--text-dim)', fontWeight: 500 }}>
+            {compare?.hasPrevious ? 'vs prior FY' : 'No prior FY data'}
+          </span>
+        ) : (
+          <>
+            <span>{isUp ? '▲' : '▼'}</span>
+            <span>
+              {Math.abs(pct).toFixed(2)}% vs. PY
+              {compare?.prevFy ? ` (${compare.prevFy})` : ''}
+            </span>
+          </>
+        )}
+      </div>
+      <div style={{ height: '140px', width: '100%', marginTop: '0.65rem' }}>
+        {loading ? (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+            Loading…
+          </div>
+        ) : empty ? (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+            No data
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={compare.spark} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <XAxis
+                dataKey="month"
+                stroke="var(--text-dim)"
+                fontSize={10}
+                tickLine={false}
+                axisLine={false}
+                interval={0}
+              />
+              <YAxis hide domain={['auto', 'auto']} />
+              <Tooltip
+                formatter={(value, name) => [
+                  Number(value).toLocaleString('en-IN'),
+                  name === 'current' ? 'Current FY' : 'Prior FY',
+                ]}
+                labelFormatter={(label) => label}
+                contentStyle={{
+                  background: '#0f172a',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '8px',
+                  fontSize: '0.75rem',
+                }}
+              />
+              <Line
+                type="monotone"
+                dataKey="previous"
+                name="previous"
+                stroke="rgba(148,163,184,0.55)"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 3 }}
+              />
+              <Line
+                type="monotone"
+                dataKey="current"
+                name="current"
+                stroke="#e2e8f0"
+                strokeWidth={2.25}
+                dot={(props) => <CurrentDot {...props} />}
+                activeDot={{ r: 4, fill: '#e2e8f0' }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          gap: '0.85rem',
+          fontSize: '0.65rem',
+          color: 'var(--text-dim)',
+          marginTop: '0.15rem',
+          flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e2e8f0', display: 'inline-block' }} />
+          Current FY
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'rgba(148,163,184,0.55)', display: 'inline-block' }} />
+          Prior FY
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#3b82f6', display: 'inline-block' }} />
+          Peak
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f97316', display: 'inline-block' }} />
+          Low
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function isEvOrderRow(curr) {
+  const t1 = String(curr.type1 || '').toUpperCase()
+  const t2 = String(curr.type2 || '').toUpperCase()
+  const isEv1 = t1.includes('EV') && !t1.includes('NON')
+  const isEv2 = t2.includes('EV') && !t2.includes('NON')
+  return isEv1 || isEv2
+}
 
 function buildOrderDailyIndex(rows) {
-  const byDate = new Map();
-  const ridersByDate = new Map();
+  const byDate = new Map()
+  /** date → { all: Set, ev: Set, nonEv: Set } of worker_code */
+  const ridersByDate = new Map()
 
   for (const curr of rows || []) {
-    const date = toMetricDateKey(curr.date_record);
-    if (!date) continue;
+    const date = toMetricDateKey(curr.date_record)
+    if (!date) continue
 
-    const delivered = parseInt(curr.delivered, 10) || 0;
-    if (!byDate.has(date)) byDate.set(date, { date, ev: 0, nonEv: 0, total: 0 });
-    const bucket = byDate.get(date);
-    bucket.total += delivered;
+    const delivered = parseInt(curr.delivered, 10) || 0
+    if (!byDate.has(date)) byDate.set(date, { date, ev: 0, nonEv: 0, total: 0 })
+    const bucket = byDate.get(date)
+    bucket.total += delivered
 
-    const t1 = String(curr.type1 || '').toUpperCase();
-    const t2 = String(curr.type2 || '').toUpperCase();
-    const isEv1 = t1.includes('EV') && !t1.includes('NON');
-    const isEv2 = t2.includes('EV') && !t2.includes('NON');
-    if (isEv1 || isEv2) bucket.ev += delivered;
-    else bucket.nonEv += delivered;
+    const isEv = isEvOrderRow(curr)
+    if (isEv) bucket.ev += delivered
+    else bucket.nonEv += delivered
 
     if (delivered > 0 && curr.worker_code) {
-      if (!ridersByDate.has(date)) ridersByDate.set(date, new Set());
-      ridersByDate.get(date).add(curr.worker_code);
+      if (!ridersByDate.has(date)) {
+        ridersByDate.set(date, { all: new Set(), ev: new Set(), nonEv: new Set() })
+      }
+      const day = ridersByDate.get(date)
+      day.all.add(curr.worker_code)
+      if (isEv) day.ev.add(curr.worker_code)
+      else day.nonEv.add(curr.worker_code)
     }
   }
 
-  return { byDate, ridersByDate };
+  return { byDate, ridersByDate }
 }
 
-const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) => {
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [ev91StatusSummary, setEv91StatusSummary] = useState(null);
-  const [ev91StatusLoading, setEv91StatusLoading] = useState(true);
-  const [ev91StatusError, setEv91StatusError] = useState('');
-  const [ev91OverallRows, setEv91OverallRows] = useState([]);
-  const [ev91OverallLoading, setEv91OverallLoading] = useState(true);
-  const deferredRiderData = useDeferredValue(riderData);
-  const deferredFleetData = useDeferredValue(fleetData);
-  const deferredSearch = useDeferredValue(searchTerm);
+/**
+ * Active rider date window (today is never included):
+ * - No date filter → last 5 completed days (yesterday back 5 days)
+ * - Date range selected → 5 days immediately before the range start (or single selected day)
+ */
+function getActiveRiderWindow(filterFrom, filterTo) {
+  if (!filterFrom && !filterTo) {
+    const asOf = startOfDay(new Date())
+    const to = format(subDays(asOf, 1), 'yyyy-MM-dd')
+    const from = format(subDays(asOf, ACTIVE_RIDER_DAYS), 'yyyy-MM-dd')
+    return {
+      from,
+      to,
+      label: `Last ${ACTIVE_RIDER_DAYS} days excl. today (${from} → ${to})`,
+    }
+  }
+
+  const anchorStr = filterFrom || filterTo
+  const anchor = startOfDay(parseISO(anchorStr))
+  const to = format(subDays(anchor, 1), 'yyyy-MM-dd')
+  const from = format(subDays(anchor, ACTIVE_RIDER_DAYS), 'yyyy-MM-dd')
+  return {
+    from,
+    to,
+    label: `${ACTIVE_RIDER_DAYS} days before ${anchorStr} (${from} → ${to})`,
+  }
+}
+
+function countActiveRidersInWindow(ridersByDate, from, to) {
+  const all = new Set()
+  const ev = new Set()
+  const nonEv = new Set()
+  for (const [date, day] of ridersByDate || []) {
+    if (date < from || date > to) continue
+    const sets = day?.all ? day : { all: day, ev: new Set(), nonEv: new Set() }
+    for (const code of sets.all || []) all.add(code)
+    for (const code of sets.ev || []) ev.add(code)
+    for (const code of sets.nonEv || []) nonEv.add(code)
+  }
+  return { total: all.size, ev: ev.size, nonEv: nonEv.size }
+}
+
+function buildActiveRiderDailySeries(ridersByDate, from, to) {
+  try {
+    const start = parseISO(from)
+    const end = parseISO(to)
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return []
+    return eachDayOfInterval({ start, end }).map((d) => {
+      const key = format(d, 'yyyy-MM-dd')
+      const day = ridersByDate.get(key)
+      if (!day) return { date: key, riders: 0, ev: 0, nonEv: 0 }
+      if (day.all) {
+        return {
+          date: key,
+          riders: day.all.size,
+          ev: day.ev.size,
+          nonEv: day.nonEv.size,
+        }
+      }
+      // Legacy shape: plain Set
+      return { date: key, riders: day.size, ev: 0, nonEv: 0 }
+    })
+  } catch {
+    return []
+  }
+}
+
+const Dashboard = ({ riderData, loading, refreshData }) => {
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [ev91StatusSummary, setEv91StatusSummary] = useState(null)
+  const [ev91StatusLoading, setEv91StatusLoading] = useState(true)
+  const [ev91StatusError, setEv91StatusError] = useState('')
+  const [ev91OverallRows, setEv91OverallRows] = useState([])
+  const [ev91OverallLoading, setEv91OverallLoading] = useState(true)
+  const [paymentRows, setPaymentRows] = useState([])
+  const [paymentLoading, setPaymentLoading] = useState(true)
+  const [paymentError, setPaymentError] = useState('')
+  const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
+  const [paymentClient, setPaymentClient] = useState('All')
+  const deferredRiderData = useDeferredValue(riderData)
 
   const loadEv91CurrentStatus = useCallback(async () => {
-    setEv91StatusLoading(true);
-    setEv91StatusError('');
+    setEv91StatusLoading(true)
+    setEv91StatusError('')
     try {
-      // Full Current Status list — count Status=Deployed + Operational="Assigned" exactly
-      const all = await fetchAllEv91MisData('current-status');
-      setEv91StatusSummary(summarizeCurrentStatusRows(all.data || [], all.summary));
+      const all = await fetchAllEv91MisData('current-status')
+      setEv91StatusSummary(summarizeCurrentStatusRows(all.data || [], all.summary))
     } catch (err) {
-      console.warn('EV91 current-status load failed:', err);
-      setEv91StatusSummary(null);
-      setEv91StatusError(err?.message || 'Failed to load EV91 current status');
+      console.warn('EV91 current-status load failed:', err)
+      setEv91StatusSummary(null)
+      setEv91StatusError(err?.message || 'Failed to load EV91 current status')
     } finally {
-      setEv91StatusLoading(false);
+      setEv91StatusLoading(false)
     }
-  }, []);
+  }, [])
 
   const loadEv91OverallStatus = useCallback(async () => {
-    setEv91OverallLoading(true);
+    setEv91OverallLoading(true)
     try {
-      const result = await fetchEv91OverallStatusAll({ force: false });
-      setEv91OverallRows(result.data || []);
+      const result = await fetchEv91OverallStatusAll({ force: false })
+      setEv91OverallRows(result.data || [])
     } catch (err) {
-      console.warn('EV91 overall-status load failed:', err);
-      setEv91OverallRows([]);
+      console.warn('EV91 overall-status load failed:', err)
+      setEv91OverallRows([])
     } finally {
-      setEv91OverallLoading(false);
+      setEv91OverallLoading(false)
     }
-  }, []);
+  }, [])
+
+  const loadMonthlyRevenue = useCallback(async (force = false) => {
+    setPaymentLoading(true)
+    setPaymentError('')
+    try {
+      const rows = await fetchRiderPaymentsForRevenue({ force })
+      setPaymentRows(rows || [])
+    } catch (err) {
+      console.warn('Monthly revenue load failed:', err)
+      setPaymentRows([])
+      setPaymentError(err?.message || 'Failed to load payment revenue')
+    } finally {
+      setPaymentLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    loadEv91CurrentStatus();
-    loadEv91OverallStatus();
-  }, [loadEv91CurrentStatus, loadEv91OverallStatus]);
+    loadEv91CurrentStatus()
+    loadEv91OverallStatus()
+    loadMonthlyRevenue(false)
+  }, [loadEv91CurrentStatus, loadEv91OverallStatus, loadMonthlyRevenue])
 
-  // Effective filter: one date filled = that single day (not open-ended range).
   const filterFrom = startDate || endDate || ''
   const filterTo = endDate || startDate || ''
 
   const overviewOrderRows = useMemo(
     () => selectOverviewOrderRows(deferredRiderData),
     [deferredRiderData]
-  );
+  )
 
   const overviewOrdersFromUpload = useMemo(
     () => (deferredRiderData || []).some((r) => r?._data_source === 'order_upload'),
     [deferredRiderData]
-  );
+  )
 
   const orderDailyIndex = useMemo(
     () => buildOrderDailyIndex(overviewOrderRows),
     [overviewOrderRows]
-  );
+  )
 
   const ordersByDate = useMemo(() => {
-    const out = [];
+    const out = []
     for (const bucket of orderDailyIndex.byDate.values()) {
-      const date = bucket.date;
-      if (filterFrom && date < filterFrom) continue;
-      if (filterTo && date > filterTo) continue;
-      out.push(bucket);
+      const date = bucket.date
+      if (filterFrom && date < filterFrom) continue
+      if (filterTo && date > filterTo) continue
+      out.push(bucket)
     }
-    return out.sort((a, b) => a.date.localeCompare(b.date));
-  }, [orderDailyIndex, filterFrom, filterTo]);
+    return out.sort((a, b) => a.date.localeCompare(b.date))
+  }, [orderDailyIndex, filterFrom, filterTo])
 
-  const combinedVehicles = useMemo(() => {
-    const map = new Map();
+  const activeRiderWindow = useMemo(
+    () => getActiveRiderWindow(filterFrom, filterTo),
+    [filterFrom, filterTo]
+  )
 
-    const parseCustomDate = (dateStr) => {
-      if (!dateStr) return null;
-      if (dateStr.includes('/')) {
-        const [dd, mm, part] = dateStr.split('/');
-        if (!part) return null;
-        const yyyy = part.split(' ')[0] || new Date().getFullYear();
-        const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-        return isNaN(d.getTime()) ? null : d;
-      }
-      if (dateStr.includes('-')) {
-        const parts = dateStr.split('-');
-        let d;
-        if (parts[0].length === 4) d = new Date(dateStr);
-        else d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}T00:00:00`);
-        return isNaN(d.getTime()) ? null : d;
-      }
-      const plainDate = new Date(dateStr);
-      return isNaN(plainDate.getTime()) ? null : plainDate;
-    };
+  const activeRiderCounts = useMemo(
+    () =>
+      countActiveRidersInWindow(
+        orderDailyIndex.ridersByDate,
+        activeRiderWindow.from,
+        activeRiderWindow.to
+      ),
+    [orderDailyIndex.ridersByDate, activeRiderWindow]
+  )
 
-    deferredFleetData.forEach(item => {
-      const vNum = item.vehicle_number || 'Unknown Vehicle';
-      const rName = item.rider_name || item.rider_id || 'Unknown Rider';
-      const key = vNum; 
-      
-      if (!map.has(key)) {
-        map.set(key, {
-            id: item.id || key,
-            vehicle_number: vNum,
-            rider_name: rName,
-            city: item.city_locations,
-            deployed_date: null,
-            returned_date: null,
-            deployed_obj: null,
-            returned_obj: null,
-            status: item.vehicle_status || 'Unknown',
-            latest_obj: null
-        });
-      }
-      
-      const record = map.get(key);
-      const rawStatus = item.vehicle_status || '';
-      const statusLower = rawStatus.toLowerCase();
-
-      // Use created_at (ISO timestamp) for reliable ordering of latest status
-      const createdAt = item.created_at ? new Date(item.created_at) : null;
-      if (createdAt && (!record.latest_obj || createdAt > record.latest_obj)) {
-          record.status = rawStatus;
-          record.latest_obj = createdAt;
-      } else if (!record.latest_obj && rawStatus) {
-          record.status = rawStatus;
-      }
-
-      // Track deployed/returned dates from dedicated date columns
-      const deployDateVal = item.bike_deployed_date_sd_refund_request;
-      const returnDateVal = item.bike_return_date_sd_refund_request;
-      const eventDate = parseFleetDate(item.date_record);
-      const deployParsed = parseCustomDate(deployDateVal) || (statusLower.includes('deploy') ? eventDate : null);
-      const returnParsed = parseCustomDate(returnDateVal) || (statusLower === 'return' ? eventDate : null);
-
-      if (statusLower.includes('deploy')) {
-         const parsedDate = deployParsed || createdAt;
-         if (!record.deployed_obj || (parsedDate && parsedDate > record.deployed_obj)) {
-             record.deployed_date = item.date_record || deployDateVal || item.created_at;
-             record.deployed_obj = parsedDate;
-         }
-      } else if (statusLower.includes('return')) {
-         const parsedDate = returnParsed || createdAt;
-         if (!record.returned_obj || (parsedDate && parsedDate > record.returned_obj)) {
-             record.returned_date = item.date_record || returnDateVal || item.created_at;
-             record.returned_obj = parsedDate;
-         }
-      }
-    });
-
-    return Array.from(map.values()).map(record => {
-       let duration = 'N/A';
-       if (record.deployed_obj && record.returned_obj) {
-           const diffTime = record.returned_obj - record.deployed_obj;
-           if (diffTime >= 0) duration = `${Math.ceil(diffTime / (1000 * 60 * 60 * 24))} Days`;
-           else duration = '0 Days';
-       } else if (record.deployed_obj) {
-           const diffTime = new Date() - record.deployed_obj;
-           duration = `${Math.floor(diffTime / (1000 * 60 * 60 * 24))} Days (Active)`;
-       }
-       return { ...record, duration };
-    }).sort((a,b) => {
-       const timeA = a.deployed_obj ? a.deployed_obj.getTime() : 0;
-       const timeB = b.deployed_obj ? b.deployed_obj.getTime() : 0;
-       return timeB - timeA;
-    });
-  }, [deferredFleetData]);
+  const activeRiderDaily = useMemo(
+    () =>
+      buildActiveRiderDailySeries(
+        orderDailyIndex.ridersByDate,
+        activeRiderWindow.from,
+        activeRiderWindow.to
+      ),
+    [orderDailyIndex.ridersByDate, activeRiderWindow]
+  )
 
   const stats = useMemo(() => {
-    let totalOrders = 0;
-    const activeCodes = new Set();
-
+    let totalOrders = 0
     for (const [date, bucket] of orderDailyIndex.byDate) {
-      if (filterFrom && date < filterFrom) continue;
-      if (filterTo && date > filterTo) continue;
-      totalOrders += bucket.total;
-      const riders = orderDailyIndex.ridersByDate.get(date);
-      if (riders) riders.forEach((code) => activeCodes.add(code));
+      if (filterFrom && date < filterFrom) continue
+      if (filterTo && date > filterTo) continue
+      totalOrders += bucket.total
     }
 
-    // Deployed / Returned — EV91 API only
-    let activeVehicles = 0;
-    let returnedVehicles = 0;
-    let vehicleLoading = false;
-    let deployedNote = 'EV91 API';
+    let activeVehicles = 0
+    let returnedVehicles = 0
+    let vehicleLoading = false
 
     if (!filterFrom && !filterTo) {
-      // Current Status: Deployed Vehicles = Deployed + Operational Assigned only
-      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0;
-      returnedVehicles = Number(ev91StatusSummary?.returned) || 0;
-      vehicleLoading = ev91StatusLoading;
-      deployedNote = 'Status Deployed · Operational Assigned';
+      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0
+      returnedVehicles = Number(ev91StatusSummary?.returned) || 0
+      vehicleLoading = ev91StatusLoading
     } else {
-      // Date range → Overall Status for Returned; Deployed card stays Current Status Assigned
-      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0;
+      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0
       const apiCounts = countOverallDeployReturnInRange(ev91OverallRows, {
         startDate: filterFrom,
         endDate: filterTo,
-      });
-      returnedVehicles = apiCounts.returned;
-      vehicleLoading = ev91StatusLoading || ev91OverallLoading;
-      deployedNote = 'Status Deployed · Operational Assigned';
+      })
+      returnedVehicles = apiCounts.returned
+      vehicleLoading = ev91StatusLoading || ev91OverallLoading
     }
 
-    let dateStr = 'All Time';
-    if (filterFrom && filterTo && filterFrom === filterTo) dateStr = filterFrom;
-    else if (filterFrom && filterTo) dateStr = `${filterFrom} to ${filterTo}`;
-    else if (filterFrom) dateStr = `Since ${filterFrom}`;
-    else if (filterTo) dateStr = `Until ${filterTo}`;
+    let dateStr = 'All Time'
+    if (filterFrom && filterTo && filterFrom === filterTo) dateStr = filterFrom
+    else if (filterFrom && filterTo) dateStr = `${filterFrom} to ${filterTo}`
+    else if (filterFrom) dateStr = `Since ${filterFrom}`
+    else if (filterTo) dateStr = `Until ${filterTo}`
 
-    let vehicleChange = `${dateStr} · ${deployedNote}`;
-    if (vehicleLoading) vehicleChange = `${vehicleChange} · loading…`;
+    let vehicleChange = ''
+    if (vehicleLoading) vehicleChange = 'Loading…'
     if (!vehicleLoading && ev91StatusError) {
-      vehicleChange = `EV91 API · ${ev91StatusError}`;
+      vehicleChange = `EV91 API · ${ev91StatusError}`
     }
 
     return [
-      { label: 'Total Orders', value: totalOrders.toLocaleString(), icon: TrendingUp, change: dateStr, isPositive: true },
-      { label: 'Active Riders', value: activeCodes.size.toLocaleString(), icon: Users, change: dateStr, isPositive: true },
+      {
+        label: 'Total Orders',
+        value: totalOrders.toLocaleString(),
+        icon: TrendingUp,
+        change: dateStr,
+        isPositive: true,
+      },
+      {
+        label: 'Active Riders',
+        value: activeRiderCounts.total.toLocaleString(),
+        icon: Users,
+        change: `EV ${activeRiderCounts.ev.toLocaleString()} · Non-EV ${activeRiderCounts.nonEv.toLocaleString()} · ${activeRiderWindow.label}`,
+        isPositive: true,
+      },
       {
         label: 'Deployed Vehicles',
         value: vehicleLoading ? '…' : activeVehicles.toLocaleString(),
@@ -290,61 +493,112 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
         label: 'Returned Units',
         value: vehicleLoading ? '…' : returnedVehicles.toLocaleString(),
         icon: Activity,
-        change: !filterFrom && !filterTo ? `${dateStr} · EV91 API` : `${dateStr} · EV91 API`,
+        change: `${dateStr} · EV91 API`,
         isPositive: false,
       },
-    ];
+    ]
   }, [
     orderDailyIndex,
     filterFrom,
     filterTo,
+    activeRiderCounts,
+    activeRiderWindow,
     ev91StatusSummary,
     ev91StatusLoading,
     ev91StatusError,
     ev91OverallRows,
     ev91OverallLoading,
-  ]);
-
-  const filteredFleet = useMemo(() => {
-    const q = deferredSearch.trim().toLowerCase();
-    const out = [];
-    for (const item of combinedVehicles) {
-      if (filterFrom || filterTo) {
-        const rangeFrom = filterFrom || filterTo;
-        const rangeTo = filterTo || filterFrom;
-        let isDepWithin = false;
-        if (item.deployed_obj) {
-          const depDateStr = format(item.deployed_obj, 'yyyy-MM-dd');
-          isDepWithin = depDateStr >= rangeFrom && depDateStr <= rangeTo;
-        }
-        let isRetWithin = false;
-        if (item.returned_obj) {
-          const retDateStr = format(item.returned_obj, 'yyyy-MM-dd');
-          isRetWithin = retDateStr >= rangeFrom && retDateStr <= rangeTo;
-        }
-        if (!isDepWithin && !isRetWithin) continue;
-      }
-      if (q) {
-        const searchContent = `${item.vehicle_number} ${item.rider_name} ${item.city} ${item.status}`.toLowerCase();
-        if (!searchContent.includes(q)) continue;
-      }
-      out.push(item);
-      if (out.length >= FLEET_TABLE_LIMIT) break;
-    }
-    return out;
-  }, [combinedVehicles, deferredSearch, filterFrom, filterTo]);
+  ])
 
   const realVehicleStatusDist = useMemo(
     () => currentStatusDistributionSeries(ev91StatusSummary),
     [ev91StatusSummary]
-  );
+  )
+
+  const monthlyRevenueAll = useMemo(
+    () => buildMonthlyRevenueSeries(paymentRows, {}),
+    [paymentRows]
+  )
+
+  const revenueFyOptions = monthlyRevenueAll.financialYears?.length
+    ? monthlyRevenueAll.financialYears
+    : [currentIndianFinancialYearLabel()]
+
+  useEffect(() => {
+    if (!revenueFyOptions.length) return
+    if (!revenueFyOptions.includes(revenueFy)) {
+      setRevenueFy(revenueFyOptions[0])
+    }
+  }, [revenueFyOptions, revenueFy])
+
+  const monthlyRevenue = useMemo(
+    () =>
+      buildMonthlyRevenueSeries(paymentRows, {
+        dateFrom: filterFrom,
+        dateTo: filterTo,
+        financialYear: revenueFy,
+        sortBy: 'revenue',
+      }),
+    [paymentRows, filterFrom, filterTo, revenueFy]
+  )
+
+  const monthlyRevenueByFy = useMemo(
+    () =>
+      buildMonthlyRevenueSeries(paymentRows, {
+        dateFrom: filterFrom,
+        dateTo: filterTo,
+        financialYear: revenueFy,
+        sortBy: 'fy',
+      }),
+    [paymentRows, filterFrom, filterTo, revenueFy]
+  )
+
+  const monthlyOrdersCompare = useMemo(
+    () =>
+      buildFyCompareMetric(paymentRows, {
+        financialYear: revenueFy,
+        dateFrom: filterFrom,
+        dateTo: filterTo,
+        metric: 'orders',
+      }),
+    [paymentRows, revenueFy, filterFrom, filterTo]
+  )
+
+  const monthlyRidersCompare = useMemo(
+    () =>
+      buildFyCompareMetric(paymentRows, {
+        financialYear: revenueFy,
+        dateFrom: filterFrom,
+        dateTo: filterTo,
+        metric: 'riders',
+      }),
+    [paymentRows, revenueFy, filterFrom, filterTo]
+  )
+
+  const clientMonthLine = useMemo(
+    () =>
+      buildClientMonthLineSeries(paymentRows, {
+        financialYear: revenueFy,
+        dateFrom: filterFrom,
+        dateTo: filterTo,
+        client: paymentClient,
+      }),
+    [paymentRows, revenueFy, filterFrom, filterTo, paymentClient]
+  )
+
+  useEffect(() => {
+    const names = clientMonthLine.clients?.map((c) => c.name) || []
+    if (paymentClient !== 'All' && names.length && !names.includes(paymentClient)) {
+      setPaymentClient('All')
+    }
+  }, [clientMonthLine.clients, paymentClient])
 
   if (loading && riderData.length === 0) {
     return (
       <div className="loading-container">
-        <span className="loader"></span>
+        <span className="loader" />
       </div>
-    );
+    )
   }
 
   return (
@@ -356,39 +610,80 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
             Fleet & Rider Performance Metrics
             {overviewOrdersFromUpload ? (
               <span style={{ marginLeft: 8, color: 'var(--accent-blue)' }}>
-                · Orders from Order Upload only (days not uploaded are hidden)
+                · Orders from Order Upload only
               </span>
             ) : (
               <span style={{ marginLeft: 8 }}>· Orders from rider_metrics</span>
             )}
             <span style={{ marginLeft: 8 }}>
-              · Deployed Vehicles = Current Status where Status=Deployed and Operational=Assigned (exact)
+              · Active Riders = ordered in last {ACTIVE_RIDER_DAYS} days excluding today (or{' '}
+              {ACTIVE_RIDER_DAYS} days before selected date)
             </span>
           </p>
         </div>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.05)', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              background: 'rgba(255,255,255,0.05)',
+              padding: '0.5rem',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+            }}
+          >
             <Calendar size={18} style={{ color: 'var(--text-dim)' }} />
-            <input 
-              type="date" 
-              value={startDate} 
+            <input
+              type="date"
+              value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
               style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none' }}
             />
             <span style={{ color: 'var(--text-dim)' }}>to</span>
-            <input 
-              type="date" 
-              value={endDate} 
+            <input
+              type="date"
+              value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
               style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none' }}
             />
             {(startDate || endDate) && (
-              <button onClick={() => { setStartDate(''); setEndDate(''); }} style={{ background: 'transparent', border: 'none', color: 'var(--accent-red)', cursor: 'pointer', padding: '0 0.5rem' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setStartDate('')
+                  setEndDate('')
+                }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--accent-red)',
+                  cursor: 'pointer',
+                  padding: '0 0.5rem',
+                }}
+              >
                 <X size={16} />
               </button>
             )}
           </div>
-          <button className="glass" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }} onClick={() => refreshData?.()}>
+          <button
+            type="button"
+            className="glass"
+            style={{
+              padding: '0.75rem 1.25rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              color: '#fff',
+              cursor: 'pointer',
+            }}
+            onClick={() => {
+              refreshData?.()
+              loadEv91CurrentStatus()
+              loadEv91OverallStatus()
+              loadMonthlyRevenue(true)
+            }}
+          >
             <RefreshCw size={18} /> Refresh
           </button>
         </div>
@@ -399,8 +694,23 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
           <div key={stat.label} className="stat-card glass">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <stat.icon size={24} style={{ color: COLORS[i % COLORS.length] }} />
-              <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.75rem', fontWeight: 600, color: stat.isPositive ? 'var(--accent-green)' : 'var(--accent-red)' }}>
-                {stat.change} {stat.isPositive ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  color: stat.isPositive ? 'var(--accent-green)' : 'var(--accent-red)',
+                  maxWidth: '70%',
+                  textAlign: 'right',
+                }}
+              >
+                {stat.change ? (
+                  <>
+                    {stat.change}{' '}
+                    {stat.isPositive ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
+                  </>
+                ) : null}
               </div>
             </div>
             <div>
@@ -416,7 +726,7 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
           <h3>Orders Performance</h3>
           {overviewOrdersFromUpload && (
             <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              Showing uploaded order dates only — not rider_metrics fill-in days
+              Showing uploaded order dates only
             </p>
           )}
           <div style={{ height: '300px', width: '100%' }}>
@@ -425,10 +735,41 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
-                <Legend verticalAlign="top" height={36}/>
-                <Line type="monotone" name="EV Orders" dataKey="ev" stroke="#4ade80" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                <Line type="monotone" name="Non-EV Orders" dataKey="nonEv" stroke="#f43f5e" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                <Tooltip
+                  contentStyle={{
+                    background: '#0f172a',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                  }}
+                />
+                <Legend verticalAlign="top" height={36} />
+                <Line
+                  type="monotone"
+                  name="Total"
+                  dataKey="total"
+                  stroke="#38bdf8"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  name="EV Orders"
+                  dataKey="ev"
+                  stroke="#4ade80"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  name="Non-EV Orders"
+                  dataKey="nonEv"
+                  stroke="#f43f5e"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -443,11 +784,27 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
           </p>
           <div style={{ height: '300px', width: '100%' }}>
             {ev91StatusLoading && realVehicleStatusDist.length === 0 ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  color: 'var(--text-dim)',
+                }}
+              >
                 Loading EV91 status…
               </div>
             ) : realVehicleStatusDist.length === 0 ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  color: 'var(--text-dim)',
+                }}
+              >
                 No current-status data
               </div>
             ) : (
@@ -476,44 +833,406 @@ const Dashboard = ({ riderData, fleetData, weeklyData, loading, refreshData }) =
         </div>
       </div>
 
-      <section className="table-card glass">
-        <div className="table-header">
-          <h3 style={{ fontSize: '1.25rem' }}>Vehicle Fleet Data</h3>
-          <div style={{ position: 'relative' }}>
-            <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
-            <input type="text" placeholder="Search by ID or Status..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.6rem 1rem 0.6rem 2.5rem', color: '#fff', width: '300px' }} />
-          </div>
+      <div className="chart-card glass" style={{ marginTop: '1.25rem' }}>
+        <h3>Active Riders — {ACTIVE_RIDER_DAYS}-day window</h3>
+        <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+          Unique riders with delivered orders · {activeRiderWindow.label}
+          {' · '}
+          Total {activeRiderCounts.total.toLocaleString()}
+          {' · '}
+          <span style={{ color: '#4ade80' }}>EV {activeRiderCounts.ev.toLocaleString()}</span>
+          {' · '}
+          <span style={{ color: '#f43f5e' }}>Non-EV {activeRiderCounts.nonEv.toLocaleString()}</span>
+        </p>
+        <div style={{ height: '280px', width: '100%' }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={activeRiderDaily}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+              <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+              <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{
+                  background: '#0f172a',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '8px',
+                }}
+              />
+              <Legend verticalAlign="top" height={36} />
+              <Bar dataKey="ev" name="EV" fill="#4ade80" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="nonEv" name="Non-EV" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
-        <div className="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Vehicle No.</th>
-                <th>Rider Name</th>
-                <th>Status</th>
-                <th>Deployed Date</th>
-                <th>Return Date</th>
-                <th>Duration</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredFleet.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.vehicle_number}</td>
-                  <td>{item.rider_name}</td>
-                  <td><span className={clsx('status-badge', item.status?.toLowerCase().replace(/\s+/g, '-'))}>{item.status}</span></td>
-                  <td>{item.deployed_date || 'N/A'}</td>
-                  <td>{item.returned_date || 'N/A'}</td>
-                  <td>{item.duration}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </motion.div>
-  );
-};
+      </div>
 
-export default Dashboard;
+      <div className="chart-card glass" style={{ marginTop: '1.25rem' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: '1rem',
+            flexWrap: 'wrap',
+            marginBottom: '0.35rem',
+          }}
+        >
+          <div>
+            <h3 style={{ margin: 0 }}>Rider Payment Data</h3>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              From <code style={{ color: '#fff' }}>rider_payment_data</code> upload · Indian FY (Apr → Mar)
+              {paymentLoading ? ' · Loading…' : ''}
+              {paymentError ? ` · ${paymentError}` : ''}
+            </p>
+          </div>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              fontSize: '0.8rem',
+              color: 'var(--text-dim)',
+            }}
+          >
+            Financial Year
+            <select
+              value={revenueFy}
+              onChange={(e) => setRevenueFy(e.target.value)}
+              className="fsr-select"
+              style={{
+                padding: '0.35rem 0.6rem',
+                color: '#fff',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+              }}
+            >
+              {revenueFyOptions.map((fy) => (
+                <option key={fy} value={fy}>
+                  {fy}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <h4 style={{ margin: '1rem 0 0.5rem', fontSize: '0.95rem', fontWeight: 600 }}>
+          Month-wise Revenue · {revenueFy}
+        </h4>
+        <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+          Sorted by revenue (high → low)
+          {!paymentLoading && !paymentError && (
+            <>
+              {' · '}
+              Total {formatInr(monthlyRevenue.totals.gross)}
+              {' · '}
+              Net {formatInr(monthlyRevenue.totals.net)}
+              {filterFrom || filterTo ? ' · filtered by date range' : ''}
+            </>
+          )}
+        </p>
+        <div style={{ height: '300px', width: '100%' }}>
+          {paymentLoading && monthlyRevenue.series.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              Loading monthly revenue…
+            </div>
+          ) : monthlyRevenue.series.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              No payment revenue for {revenueFy}{filterFrom || filterTo ? ' in this date range' : ''}.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={monthlyRevenue.series}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis
+                  stroke="var(--text-dim)"
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) =>
+                    v >= 10000000
+                      ? `${(v / 10000000).toFixed(1)}Cr`
+                      : v >= 100000
+                        ? `${(v / 100000).toFixed(1)}L`
+                        : v >= 1000
+                          ? `${(v / 1000).toFixed(0)}k`
+                          : String(v)
+                  }
+                />
+                <Tooltip
+                  formatter={(value, name) => [formatInr(value), name]}
+                  contentStyle={{
+                    background: '#0f172a',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                  }}
+                />
+                <Legend verticalAlign="top" height={36} />
+                <Bar dataKey="gross" name="Gross payout" fill="#38bdf8" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <h4 style={{ margin: '1.5rem 0 0.5rem', fontSize: '0.95rem', fontWeight: 600 }}>
+          Month-wise (FY calendar) · {revenueFy}
+        </h4>
+        <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+          Apr → Mar financial year order · revenue / orders / riders
+        </p>
+        <div style={{ height: '300px', width: '100%' }}>
+          {paymentLoading && monthlyRevenueByFy.series.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              Loading…
+            </div>
+          ) : monthlyRevenueByFy.series.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              No data for {revenueFy}.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={monthlyRevenueByFy.series}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis
+                  yAxisId="left"
+                  stroke="var(--text-dim)"
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) =>
+                    v >= 10000000
+                      ? `${(v / 10000000).toFixed(1)}Cr`
+                      : v >= 100000
+                        ? `${(v / 100000).toFixed(1)}L`
+                        : v >= 1000
+                          ? `${(v / 1000).toFixed(0)}k`
+                          : String(v)
+                  }
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="var(--text-dim)"
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                  allowDecimals={false}
+                />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === 'Gross payout') return [formatInr(value), name]
+                    return [Number(value).toLocaleString('en-IN'), name]
+                  }}
+                  contentStyle={{
+                    background: '#0f172a',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                  }}
+                />
+                <Legend verticalAlign="top" height={36} />
+                <Bar yAxisId="left" dataKey="gross" name="Gross payout" fill="#38bdf8" radius={[4, 4, 0, 0]} />
+                <Bar yAxisId="right" dataKey="orders" name="Orders" fill="#4ade80" radius={[4, 4, 0, 0]} />
+                <Bar yAxisId="right" dataKey="riders" name="Unique riders" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            gap: '1rem',
+            flexWrap: 'wrap',
+            marginTop: '1.35rem',
+          }}
+        >
+          <FyTrendMetricCard
+            title="Monthly Order Count"
+            loading={paymentLoading}
+            empty={!paymentLoading && monthlyRevenue.series.length === 0 && monthlyOrdersCompare.total === 0}
+            compare={monthlyOrdersCompare}
+          />
+          <FyTrendMetricCard
+            title="Monthly Unique Riders"
+            loading={paymentLoading}
+            empty={!paymentLoading && monthlyRevenue.series.length === 0 && monthlyRidersCompare.total === 0}
+            compare={monthlyRidersCompare}
+          />
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: '1rem',
+            flexWrap: 'wrap',
+            marginTop: '1.5rem',
+            marginBottom: '0.5rem',
+          }}
+        >
+          <div>
+            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>
+              Client-wise · Month trend
+            </h4>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              Line chart · {revenueFy} · Apr → Mar
+              {!paymentLoading && !paymentError && (
+                <>
+                  {' · '}
+                  Revenue {formatInr(clientMonthLine.totals.gross)}
+                  {' · '}
+                  Orders {clientMonthLine.totals.orders.toLocaleString('en-IN')}
+                  {' · '}
+                  Riders {clientMonthLine.totals.riders.toLocaleString('en-IN')}
+                </>
+              )}
+            </p>
+          </div>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              fontSize: '0.8rem',
+              color: 'var(--text-dim)',
+            }}
+          >
+            Client
+            <select
+              value={paymentClient}
+              onChange={(e) => setPaymentClient(e.target.value)}
+              className="fsr-select"
+              style={{
+                padding: '0.35rem 0.6rem',
+                color: '#fff',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                minWidth: '160px',
+              }}
+            >
+              <option value="All">All clients</option>
+              {(clientMonthLine.clients || []).map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            gap: '1rem',
+            flexWrap: 'wrap',
+            marginBottom: '0.65rem',
+            fontSize: '0.72rem',
+            color: 'var(--text-dim)',
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 14, height: 3, background: CLIENT_LINE_COLORS.revenue, borderRadius: 2 }} />
+            Revenue (₹)
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 14, height: 3, background: CLIENT_LINE_COLORS.orders, borderRadius: 2 }} />
+            Orders
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 14, height: 3, background: CLIENT_LINE_COLORS.riders, borderRadius: 2 }} />
+            Rider count
+          </span>
+        </div>
+        <div style={{ height: '320px', width: '100%' }}>
+          {paymentLoading && !(clientMonthLine.clients || []).length ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              Loading client trend…
+            </div>
+          ) : !(clientMonthLine.clients || []).length ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              No client payment data for {revenueFy}.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={clientMonthLine.series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis
+                  yAxisId="revenue"
+                  stroke={CLIENT_LINE_COLORS.revenue}
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) =>
+                    v >= 10000000
+                      ? `${(v / 10000000).toFixed(1)}Cr`
+                      : v >= 100000
+                        ? `${(v / 100000).toFixed(1)}L`
+                        : v >= 1000
+                          ? `${(v / 1000).toFixed(0)}k`
+                          : String(v)
+                  }
+                />
+                <YAxis
+                  yAxisId="count"
+                  orientation="right"
+                  stroke={CLIENT_LINE_COLORS.orders}
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  allowDecimals={false}
+                />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === 'Revenue') return [formatInr(value), name]
+                    return [Number(value).toLocaleString('en-IN'), name]
+                  }}
+                  contentStyle={{
+                    background: '#0f172a',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                  }}
+                />
+                <Legend verticalAlign="top" height={36} />
+                <Line
+                  yAxisId="revenue"
+                  type="monotone"
+                  dataKey="gross"
+                  name="Revenue"
+                  stroke={CLIENT_LINE_COLORS.revenue}
+                  strokeWidth={2.5}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.revenue }}
+                  activeDot={{ r: 5 }}
+                />
+                <Line
+                  yAxisId="count"
+                  type="monotone"
+                  dataKey="orders"
+                  name="Orders"
+                  stroke={CLIENT_LINE_COLORS.orders}
+                  strokeWidth={2.5}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.orders }}
+                  activeDot={{ r: 5 }}
+                />
+                <Line
+                  yAxisId="count"
+                  type="monotone"
+                  dataKey="riders"
+                  name="Rider count"
+                  stroke={CLIENT_LINE_COLORS.riders}
+                  strokeWidth={2.5}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.riders }}
+                  activeDot={{ r: 5 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+export default Dashboard

@@ -115,9 +115,55 @@ export async function clearOrderUploadDataByMonth(month) {
   return deleted
 }
 
+function isStatementTimeout(error) {
+  return (
+    error?.code === '57014' ||
+    /statement timeout|canceling statement/i.test(error?.message || '')
+  )
+}
+
+/** Sample recent rows for month labels — never full-table scan (avoids timeouts). */
+async function fetchOrderUploadMonthsSampled() {
+  const labels = new Set()
+  let cursor = null
+  let pageSize = 500
+  const maxPages = 30
+
+  for (let page = 0; page < maxPages; page++) {
+    let q = supabase
+      .from(ORDER_UPLOAD_TABLE)
+      .select('id,month')
+      .order('id', { ascending: false })
+      .limit(pageSize)
+    if (cursor != null) q = q.lt('id', cursor)
+
+    const { data, error } = await q
+    if (error) {
+      if (isStatementTimeout(error) && pageSize > 100) {
+        pageSize = Math.max(100, Math.floor(pageSize / 2))
+        page--
+        continue
+      }
+      throw error
+    }
+    if (!data?.length) break
+    for (const row of data) {
+      const m = (row.month ?? '').toString().trim()
+      if (m) labels.add(m)
+    }
+    cursor = data[data.length - 1].id
+    // Enough distinct months for UI; stop early.
+    if (labels.size >= 24 && page >= 2) break
+    if (data.length < pageSize) break
+  }
+
+  return mergeMonthLists([...labels])
+}
+
 export async function fetchOrderUploadMonths() {
   const probe = await supabase.from(ORDER_UPLOAD_TABLE).select('id').limit(1)
   if (probe.error) throw probe.error
+  if (!probe.data?.length) return []
 
   const { data: rpcData, error: rpcError } = await supabase.rpc('distinct_order_upload_months')
   if (!rpcError && Array.isArray(rpcData) && rpcData.length) {
@@ -125,8 +171,12 @@ export async function fetchOrderUploadMonths() {
     return mergeMonthLists(labels)
   }
 
-  const { data } = await fetchAllData(ORDER_UPLOAD_TABLE, 'month,id', 'id', { useKeyset: true })
-  return collectMonthsFromRows(data)
+  if (rpcError) {
+    console.warn('[orders] distinct months RPC failed, using sample:', rpcError.message || rpcError)
+  }
+
+  // Do NOT fetchAllData the whole table — that times out on large uploads.
+  return fetchOrderUploadMonthsSampled()
 }
 
 export async function saveOrderUploadRows(rows, { replace = false } = {}) {
@@ -250,7 +300,7 @@ export async function fetchAllOrderUploads({ force = false } = {}) {
 
 /**
  * Fast Order History fetch: one month only + slim columns.
- * Optional onPage callback for progressive UI (first page shows quickly).
+ * Keyset pagination with timeout retries (smaller pages). Optional onPage for progressive UI.
  */
 export async function fetchOrderUploadsForHistory(month, { force = false, onPage } = {}) {
   const label = (month ?? '').toString().trim()
@@ -266,10 +316,12 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
   }
 
   const inflight = (async () => {
-    // Use indexed month column only — OR + LIKE patterns time out on large tables.
-    const pageSize = 1000
+    // month + id keyset; composite index (month, id) recommended — see SQL file.
+    let pageSize = 500
     const byId = new Map()
     let cursor = null
+    let consecutiveTimeouts = 0
+    const maxTimeoutRetries = 8
 
     while (true) {
       let q = supabase
@@ -279,8 +331,32 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
         .order('id', { ascending: true })
         .limit(pageSize)
       if (cursor != null) q = q.gt('id', cursor)
+
       const { data, error } = await q
-      if (error) throw error
+      if (error) {
+        if (isStatementTimeout(error) && consecutiveTimeouts < maxTimeoutRetries) {
+          consecutiveTimeouts++
+          if (pageSize > 100) {
+            pageSize = Math.max(100, Math.floor(pageSize / 2))
+            console.warn(
+              `[orders] history ${label} timed out; retrying page size ${pageSize}`
+            )
+            await new Promise((r) => setTimeout(r, 400 * consecutiveTimeouts))
+            continue
+          }
+          // Already at min page size — if we have partial data, stop gracefully.
+          if (byId.size > 0) {
+            console.warn(
+              `[orders] history ${label} incomplete after timeouts (${byId.size} rows kept)`
+            )
+            break
+          }
+          throw error
+        }
+        throw error
+      }
+
+      consecutiveTimeouts = 0
       if (!data?.length) break
       for (const row of data) byId.set(row.id, row)
       cursor = data[data.length - 1].id
@@ -289,7 +365,7 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
     }
 
     const rows = [...byId.values()]
-    historyMonthCache.set(label, rows)
+    if (rows.length) historyMonthCache.set(label, rows)
     return rows
   })().finally(() => {
     historyMonthInflight.delete(label)

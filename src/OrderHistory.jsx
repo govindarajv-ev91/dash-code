@@ -82,7 +82,6 @@ function SummaryTable({ title, rows, icon: Icon }) {
           <thead>
             <tr>
               <th>Name</th>
-              <th>Rows</th>
               <th>Riders</th>
               <th style={{ textAlign: 'right' }}>Orders</th>
             </tr>
@@ -92,7 +91,6 @@ function SummaryTable({ title, rows, icon: Icon }) {
               rows.map((row) => (
                 <tr key={row.name}>
                   <td>{row.name}</td>
-                  <td>{row.rows.toLocaleString('en-IN')}</td>
                   <td>{row.riders.toLocaleString('en-IN')}</td>
                   <td style={{ textAlign: 'right', color: 'var(--accent-blue)', fontWeight: 600 }}>
                     {row.orders.toLocaleString('en-IN')}
@@ -101,7 +99,7 @@ function SummaryTable({ title, rows, icon: Icon }) {
               ))
             ) : (
               <tr>
-                <td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>No data</td>
+                <td colSpan={3} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>No data</td>
               </tr>
             )}
           </tbody>
@@ -171,7 +169,12 @@ export default function OrderHistory() {
     } catch (err) {
       console.error(err)
       setMonths([])
-      setError(err?.message || 'Failed to load months')
+      const msg = err?.message || 'Failed to load months'
+      setError(
+        /statement timeout|canceling statement/i.test(msg)
+          ? `${msg} — run sql/fix_order_history_timeout.sql in Supabase SQL Editor, then Refresh.`
+          : msg
+      )
     } finally {
       setLoadingMonths(false)
     }
@@ -203,8 +206,13 @@ export default function OrderHistory() {
       startTransition(() => setRawRows(rows || []))
     } catch (err) {
       console.error(err)
-      setRawRows([])
-      setError(err?.message || 'Failed to load order history')
+      if (!gotFirstPage) setRawRows([])
+      const msg = err?.message || 'Failed to load order history'
+      setError(
+        /statement timeout|canceling statement/i.test(msg)
+          ? `${msg} — run sql/fix_order_history_timeout.sql in Supabase SQL Editor, then Refresh.`
+          : msg
+      )
     } finally {
       setLoading(false)
       setLoadingMore(false)

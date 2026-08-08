@@ -19,6 +19,8 @@ create table if not exists public.order_upload_data (
 create index if not exists order_upload_data_worker_code_idx on public.order_upload_data (worker_code);
 create index if not exists order_upload_data_date_record_idx on public.order_upload_data (date_record);
 create index if not exists order_upload_data_month_idx on public.order_upload_data (month);
+-- Speeds Order History keyset pagination: WHERE month = ? ORDER BY id
+create index if not exists order_upload_data_month_id_idx on public.order_upload_data (month, id);
 create index if not exists order_upload_data_client_idx on public.order_upload_data (client);
 create index if not exists order_upload_data_type1_idx on public.order_upload_data (type1);
 
@@ -63,10 +65,11 @@ returns table (month text)
 language sql
 stable
 as $$
-  select distinct m.month
+  select m.month
   from public.order_upload_data m
-  where m.month is not null and trim(m.month) <> ''
-  order by 1 desc;
+  where m.month is not null and btrim(m.month) <> ''
+  group by m.month
+  order by m.month desc;
 $$;
 
 grant execute on function public.distinct_order_upload_months() to anon;

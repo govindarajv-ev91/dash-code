@@ -916,3 +916,417 @@ export function formatInr(value) {
   const n = num(value)
   return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
 }
+
+const MONTH_ABBR_REV = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+}
+const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Parse "Jul-2026", "Jul-26", "Jul 2026", "July-2026". */
+export function parsePaymentMonthLabel(label) {
+  const text = (label ?? '').toString().trim()
+  const m = text.match(/^([A-Za-z]{3,9})[-\s\/]?(\d{2}|\d{4})$/)
+  if (!m) return null
+  const monthIndex = MONTH_ABBR_REV[m[1].slice(0, 3).toLowerCase()]
+  let year = Number(m[2])
+  if (monthIndex == null || !Number.isFinite(year)) return null
+  if (year < 100) year += year >= 70 ? 1900 : 2000
+  const mm = String(monthIndex + 1).padStart(2, '0')
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate()
+  const fyStart = monthIndex >= 3 ? year : year - 1
+  return {
+    year,
+    monthIndex,
+    start: `${year}-${mm}-01`,
+    end: `${year}-${mm}-${String(lastDay).padStart(2, '0')}`,
+    sortKey: year * 12 + monthIndex,
+    /** Indian FY Apr–Mar: Apr=0 … Mar=11 */
+    fyMonthOrder: monthIndex >= 3 ? monthIndex - 3 : monthIndex + 9,
+    fyStart,
+    fyLabel: `FY ${fyStart}-${String(fyStart + 1).slice(-2)}`,
+    display: `${MONTH_SHORT_LABELS[monthIndex]}-${String(year).slice(-2)}`,
+  }
+}
+
+/** Current Indian financial year label, e.g. FY 2025-26. */
+export function currentIndianFinancialYearLabel(asOf = new Date()) {
+  const y = asOf.getFullYear()
+  const m = asOf.getMonth()
+  const fyStart = m >= 3 ? y : y - 1
+  return `FY ${fyStart}-${String(fyStart + 1).slice(-2)}`
+}
+
+/**
+ * Monthly metrics from rider_payment_data: revenue, unique riders, order count.
+ * Defaults to one Indian Financial Year (Apr→Mar) so months stay in calendar order.
+ */
+export function buildMonthlyRevenueSeries(
+  paymentRows = [],
+  { dateFrom = '', dateTo = '', financialYear = '', sortBy = 'fy' } = {}
+) {
+  const byMonth = new Map()
+  const fySet = new Set()
+  const allRiders = new Set()
+
+  for (const row of paymentRows || []) {
+    const monthRaw = (row.month ?? '').toString().trim()
+    if (!monthRaw) continue
+
+    const parsed = parsePaymentMonthLabel(monthRaw)
+    if (!parsed) continue
+
+    fySet.add(parsed.fyLabel)
+
+    if (dateFrom && parsed.end < dateFrom) continue
+    if (dateTo && parsed.start > dateTo) continue
+    if (financialYear && parsed.fyLabel !== financialYear) continue
+
+    const key = `${parsed.year}-${String(parsed.monthIndex + 1).padStart(2, '0')}`
+    if (!byMonth.has(key)) {
+      byMonth.set(key, {
+        month: parsed.display,
+        monthKey: key,
+        sortKey: parsed.sortKey,
+        fyMonthOrder: parsed.fyMonthOrder,
+        fyLabel: parsed.fyLabel,
+        gross: 0,
+        net: 0,
+        orders: 0,
+        riders: new Set(),
+        rows: 0,
+      })
+    }
+    const bucket = byMonth.get(key)
+    bucket.gross += num(row.gross_payout)
+    bucket.net += num(row.final_net_payout)
+    bucket.orders += num(row.orders)
+    bucket.rows += 1
+    const riderId = (row.rider_id ?? '').toString().trim()
+    if (riderId) {
+      bucket.riders.add(riderId)
+      allRiders.add(riderId)
+    }
+  }
+
+  const series = [...byMonth.values()]
+    .sort((a, b) => {
+      if (sortBy === 'revenue') {
+        const byGross = b.gross - a.gross
+        if (byGross !== 0) return byGross
+        return a.fyMonthOrder - b.fyMonthOrder
+      }
+      if (financialYear) return a.fyMonthOrder - b.fyMonthOrder
+      return a.sortKey - b.sortKey
+    })
+    .map((row) => ({
+      month: row.month,
+      monthKey: row.monthKey,
+      sortKey: row.sortKey,
+      fyMonthOrder: row.fyMonthOrder,
+      fyLabel: row.fyLabel,
+      gross: row.gross,
+      net: row.net,
+      orders: row.orders,
+      riders: row.riders.size,
+      rows: row.rows,
+    }))
+
+  const financialYears = [...fySet].sort((a, b) => {
+    const ya = Number(a.match(/\d{4}/)?.[0] || 0)
+    const yb = Number(b.match(/\d{4}/)?.[0] || 0)
+    return yb - ya
+  })
+
+  const totals = series.reduce(
+    (acc, row) => {
+      acc.gross += row.gross
+      acc.net += row.net
+      acc.orders += row.orders
+      acc.ridersMonthlySum += row.riders
+      acc.rows += row.rows
+      return acc
+    },
+    {
+      gross: 0,
+      net: 0,
+      orders: 0,
+      ridersMonthlySum: 0,
+      uniqueRiders: allRiders.size,
+      rows: 0,
+      months: series.length,
+    }
+  )
+
+  return { series, totals, financialYears }
+}
+
+const FY_MONTH_SHORT = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar']
+
+/** FY 2025-26 → FY 2024-25 */
+export function previousIndianFinancialYearLabel(fyLabel) {
+  const m = String(fyLabel || '').match(/FY\s+(\d{4})-(\d{2})/i)
+  if (!m) return ''
+  const start = Number(m[1]) - 1
+  if (!Number.isFinite(start)) return ''
+  return `FY ${start}-${String(start + 1).slice(-2)}`
+}
+
+export function formatCompactCount(value) {
+  const n = num(value)
+  if (Math.abs(n) >= 10000000) return `${(n / 10000000).toFixed(2).replace(/\.?0+$/, '')}Cr`
+  if (Math.abs(n) >= 100000) return `${(n / 100000).toFixed(2).replace(/\.?0+$/, '')}L`
+  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '')}K`
+  return n.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+}
+
+/**
+ * Current FY vs previous FY monthly series for sparkline KPI cards.
+ * metric: 'orders' | 'riders'
+ */
+export function buildFyCompareMetric(
+  paymentRows = [],
+  { financialYear = '', dateFrom = '', dateTo = '', metric = 'orders' } = {}
+) {
+  const fy = financialYear || currentIndianFinancialYearLabel()
+  const prevFy = previousIndianFinancialYearLabel(fy)
+  const current = buildMonthlyRevenueSeries(paymentRows, { financialYear: fy, dateFrom, dateTo })
+  const previous = prevFy
+    ? buildMonthlyRevenueSeries(paymentRows, { financialYear: prevFy, dateFrom, dateTo })
+    : { series: [], totals: { orders: 0, uniqueRiders: 0 } }
+
+  const curByOrder = new Map(current.series.map((r) => [r.fyMonthOrder, r]))
+  const prevByOrder = new Map(previous.series.map((r) => [r.fyMonthOrder, r]))
+
+  const spark = FY_MONTH_SHORT.map((month, i) => ({
+    month,
+    current: curByOrder.get(i)?.[metric] ?? 0,
+    previous: prevByOrder.get(i)?.[metric] ?? 0,
+  }))
+
+  const total =
+    metric === 'riders' ? Number(current.totals.uniqueRiders) || 0 : Number(current.totals.orders) || 0
+  const prevTotal =
+    metric === 'riders' ? Number(previous.totals.uniqueRiders) || 0 : Number(previous.totals.orders) || 0
+
+  let vsPyPct = null
+  if (prevTotal > 0) vsPyPct = ((total - prevTotal) / prevTotal) * 100
+  else if (total > 0 && previous.series.length === 0) vsPyPct = null
+
+  let peakIdx = -1
+  let lowIdx = -1
+  let peakVal = -Infinity
+  let lowVal = Infinity
+  spark.forEach((row, i) => {
+    const v = Number(row.current) || 0
+    if (v > peakVal) {
+      peakVal = v
+      peakIdx = i
+    }
+    if (v < lowVal) {
+      lowVal = v
+      lowIdx = i
+    }
+  })
+  // Only mark peak/low when there is some current data
+  const hasCurrent = spark.some((r) => (Number(r.current) || 0) > 0)
+  if (!hasCurrent) {
+    peakIdx = -1
+    lowIdx = -1
+  } else if (peakIdx === lowIdx) {
+    lowIdx = -1
+  }
+
+  return {
+    fy,
+    prevFy,
+    total,
+    prevTotal,
+    vsPyPct,
+    spark,
+    peakIdx,
+    lowIdx,
+    hasPrevious: previous.series.length > 0,
+  }
+}
+
+/**
+ * Client-wise revenue / orders / unique riders from rider_payment_data.
+ * sortBy: 'name-za' (default) | 'revenue' (high → low)
+ */
+export function buildClientWisePaymentMetrics(
+  paymentRows = [],
+  { dateFrom = '', dateTo = '', financialYear = '', sortBy = 'name-za' } = {}
+) {
+  const byClient = new Map()
+
+  for (const row of paymentRows || []) {
+    const monthRaw = (row.month ?? '').toString().trim()
+    const parsed = monthRaw ? parsePaymentMonthLabel(monthRaw) : null
+    if (monthRaw && !parsed) continue
+    if (parsed) {
+      if (dateFrom && parsed.end < dateFrom) continue
+      if (dateTo && parsed.start > dateTo) continue
+      if (financialYear && parsed.fyLabel !== financialYear) continue
+    } else if (financialYear || dateFrom || dateTo) {
+      continue
+    }
+
+    const client =
+      normalizeSummaryClient(pickText(row.client_name)) ||
+      pickText(row.client_name) ||
+      'Unknown'
+
+    if (!byClient.has(client)) {
+      byClient.set(client, {
+        client,
+        gross: 0,
+        net: 0,
+        orders: 0,
+        riders: new Set(),
+        rows: 0,
+      })
+    }
+    const bucket = byClient.get(client)
+    bucket.gross += num(row.gross_payout)
+    bucket.net += num(row.final_net_payout)
+    bucket.orders += num(row.orders)
+    bucket.rows += 1
+    const riderId = (row.rider_id ?? '').toString().trim()
+    if (riderId) bucket.riders.add(riderId)
+  }
+
+  const rows = [...byClient.values()]
+    .map((b) => ({
+      client: b.client,
+      gross: b.gross,
+      net: b.net,
+      orders: b.orders,
+      riders: b.riders.size,
+      rows: b.rows,
+    }))
+    .sort((a, b) => {
+      if (sortBy === 'revenue') {
+        const byGross = b.gross - a.gross
+        if (byGross !== 0) return byGross
+        return b.client.localeCompare(a.client, undefined, { sensitivity: 'base' })
+      }
+      return b.client.localeCompare(a.client, undefined, { sensitivity: 'base' })
+    })
+
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.gross += row.gross
+      acc.net += row.net
+      acc.orders += row.orders
+      acc.riders += row.riders
+      acc.rows += row.rows
+      return acc
+    },
+    { gross: 0, net: 0, orders: 0, riders: 0, rows: 0, clients: rows.length }
+  )
+
+  return { rows, totals }
+}
+
+/**
+ * Month-wise line series for one client (or all) within an Indian FY.
+ * Returns Apr→Mar points: gross, orders, riders + client list for filters.
+ */
+export function buildClientMonthLineSeries(
+  paymentRows = [],
+  { dateFrom = '', dateTo = '', financialYear = '', client = '' } = {}
+) {
+  const clientFilter = (client || '').toString().trim()
+  const byMonth = new Map()
+  const clientSet = new Map() // name → gross for sorting options
+  const allRiders = new Set()
+
+  for (const row of paymentRows || []) {
+    const monthRaw = (row.month ?? '').toString().trim()
+    if (!monthRaw) continue
+    const parsed = parsePaymentMonthLabel(monthRaw)
+    if (!parsed) continue
+
+    if (dateFrom && parsed.end < dateFrom) continue
+    if (dateTo && parsed.start > dateTo) continue
+    if (financialYear && parsed.fyLabel !== financialYear) continue
+
+    const clientName =
+      normalizeSummaryClient(pickText(row.client_name)) ||
+      pickText(row.client_name) ||
+      'Unknown'
+
+    const prevGross = clientSet.get(clientName) || 0
+    clientSet.set(clientName, prevGross + num(row.gross_payout))
+
+    if (clientFilter && clientFilter !== 'All' && clientName !== clientFilter) continue
+
+    const key = `${parsed.year}-${String(parsed.monthIndex + 1).padStart(2, '0')}`
+    if (!byMonth.has(key)) {
+      byMonth.set(key, {
+        month: parsed.display,
+        monthKey: key,
+        fyMonthOrder: parsed.fyMonthOrder,
+        gross: 0,
+        orders: 0,
+        riders: new Set(),
+      })
+    }
+    const bucket = byMonth.get(key)
+    bucket.gross += num(row.gross_payout)
+    bucket.orders += num(row.orders)
+    const riderId = (row.rider_id ?? '').toString().trim()
+    if (riderId) {
+      bucket.riders.add(riderId)
+      allRiders.add(riderId)
+    }
+  }
+
+  const series = [...byMonth.values()]
+    .sort((a, b) => a.fyMonthOrder - b.fyMonthOrder)
+    .map((row) => ({
+      month: row.month,
+      monthKey: row.monthKey,
+      fyMonthOrder: row.fyMonthOrder,
+      gross: row.gross,
+      orders: row.orders,
+      riders: row.riders.size,
+    }))
+
+  // Fill missing FY months so the line stays continuous Apr→Mar
+  const filled = []
+  if (financialYear) {
+    const byOrder = new Map(series.map((r) => [r.fyMonthOrder, r]))
+    for (let i = 0; i < FY_MONTH_SHORT.length; i++) {
+      const existing = byOrder.get(i)
+      if (existing) filled.push(existing)
+      else {
+        filled.push({
+          month: FY_MONTH_SHORT[i],
+          monthKey: `gap-${i}`,
+          fyMonthOrder: i,
+          gross: 0,
+          orders: 0,
+          riders: 0,
+        })
+      }
+    }
+  }
+
+  const clients = [...clientSet.entries()]
+    .map(([name, gross]) => ({ name, gross }))
+    .sort((a, b) => b.gross - a.gross || a.name.localeCompare(b.name))
+
+  const useSeries = financialYear ? filled : series
+  const totals = useSeries.reduce(
+    (acc, row) => {
+      acc.gross += row.gross
+      acc.orders += row.orders
+      return acc
+    },
+    { gross: 0, orders: 0, riders: allRiders.size, months: useSeries.length }
+  )
+
+  return { series: useSeries, totals, clients }
+}

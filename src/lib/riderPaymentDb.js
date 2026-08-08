@@ -105,6 +105,11 @@ let cachedPayments = null
 let paymentsInflight = null
 const PAYMENT_FETCH_CACHE_VERSION = 2
 let cachedPaymentsVersion = 0
+/** Slim revenue/overview cache for General Overview. */
+let cachedRevenue = null
+let revenueInflight = null
+const REVENUE_CACHE_VERSION = 3
+let cachedRevenueVersion = 0
 
 export async function fetchAllRiderPayments({ force = false } = {}) {
   if (
@@ -137,6 +142,42 @@ export function clearRiderPaymentCache() {
   cachedPayments = null
   paymentsInflight = null
   cachedPaymentsVersion = 0
+  cachedRevenue = null
+  revenueInflight = null
+  cachedRevenueVersion = 0
+}
+
+/** Slim columns for General Overview payment charts (revenue / riders / orders / client). */
+export const RIDER_PAYMENT_REVENUE_COLUMNS =
+  'id,month,client_name,rider_id,orders,gross_payout,final_net_payout'
+
+export async function fetchRiderPaymentsForRevenue({ force = false } = {}) {
+  if (!force && cachedRevenue && cachedRevenueVersion === REVENUE_CACHE_VERSION) {
+    return cachedRevenue
+  }
+  if (!force && revenueInflight) return revenueInflight
+
+  revenueInflight = (async () => {
+    const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
+    if (probe.error) throw probe.error
+    if (!probe.data?.length) {
+      cachedRevenue = []
+      cachedRevenueVersion = REVENUE_CACHE_VERSION
+      return cachedRevenue
+    }
+    const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_REVENUE_COLUMNS, 'id', {
+      useKeyset: true,
+      maxRetries: 10,
+      pageSize: 1000,
+    })
+    cachedRevenue = data || []
+    cachedRevenueVersion = REVENUE_CACHE_VERSION
+    return cachedRevenue
+  })().finally(() => {
+    revenueInflight = null
+  })
+
+  return revenueInflight
 }
 
 export async function loadRiderPaymentSummary() {

@@ -1,36 +1,89 @@
-import { toBlob } from 'html-to-image'
+import { toBlob, toCanvas, toPng } from 'html-to-image'
 
-/**
- * Capture a DOM node (e.g. Full Data table) as a PNG Blob.
- * Uses full scroll size so wide month tables are not clipped.
- */
-export async function captureElementPngBlob(node, { backgroundColor = '#0f172a', pixelRatio = 2 } = {}) {
-  if (!node) throw new Error('Nothing to capture')
+const MAX_CANVAS_EDGE = 8192
 
-  const width = Math.max(node.scrollWidth, node.offsetWidth, 1)
-  const height = Math.max(node.scrollHeight, node.offsetHeight, 1)
+function measureNode(node) {
+  const width = Math.max(node.scrollWidth, node.offsetWidth, node.clientWidth, 1)
+  const height = Math.max(node.scrollHeight, node.offsetHeight, node.clientHeight, 1)
+  let pixelRatio = 2
+  if (width * pixelRatio > MAX_CANVAS_EDGE || height * pixelRatio > MAX_CANVAS_EDGE) {
+    pixelRatio = Math.max(0.75, Math.min(MAX_CANVAS_EDGE / width, MAX_CANVAS_EDGE / height))
+  }
+  return { width, height, pixelRatio }
+}
 
-  const blob = await toBlob(node, {
+function captureOptions(node, { width, height, pixelRatio, backgroundColor }) {
+  return {
     cacheBust: true,
-    pixelRatio: Math.min(pixelRatio, 2),
+    pixelRatio,
     backgroundColor,
     width,
     height,
+    skipFonts: true,
     style: {
       width: `${width}px`,
       height: `${height}px`,
       transform: 'none',
       overflow: 'visible',
+      maxHeight: 'none',
+      maxWidth: 'none',
     },
     filter: (el) => {
       if (!el || !el.tagName) return true
       const tag = el.tagName.toLowerCase()
-      return tag !== 'script' && tag !== 'style'
+      return tag !== 'script' && tag !== 'link'
     },
-  })
+  }
+}
 
-  if (!blob) throw new Error('Screenshot failed — try again')
-  return blob
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error('Screenshot canvas empty'))
+      },
+      'image/png',
+      0.92
+    )
+  })
+}
+
+/**
+ * Capture a DOM node as PNG Blob (robust for wide Full Data tables).
+ */
+export async function captureElementPngBlob(node, { backgroundColor = '#0f172a' } = {}) {
+  if (!node) throw new Error('Nothing to capture')
+
+  const size = measureNode(node)
+  const opts = captureOptions(node, { ...size, backgroundColor })
+
+  // Prefer toBlob; fall back to canvas / data-URL if html-to-image fails on large nodes
+  try {
+    const blob = await toBlob(node, opts)
+    if (blob && blob.size > 0) return blob
+  } catch {
+    // continue
+  }
+
+  try {
+    const canvas = await toCanvas(node, { ...opts, pixelRatio: Math.min(opts.pixelRatio, 1.25) })
+    const blob = await canvasToPngBlob(canvas)
+    if (blob && blob.size > 0) return blob
+  } catch {
+    // continue
+  }
+
+  try {
+    const dataUrl = await toPng(node, { ...opts, pixelRatio: 1 })
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    if (blob && blob.size > 0) return blob
+  } catch (err) {
+    throw new Error(err?.message || 'Screenshot failed — table may be too large')
+  }
+
+  throw new Error('Screenshot failed — try again')
 }
 
 async function tryNativeShareFile(file, caption) {
@@ -44,14 +97,13 @@ async function tryNativeShareFile(file, caption) {
     text: caption,
   }
 
-  // Prefer canShare when available; some browsers still share even if canShare is missing.
   if (typeof navigator.canShare === 'function') {
     try {
-      if (!navigator.canShare(payload) && !navigator.canShare({ files: [file] })) {
+      if (!navigator.canShare({ files: [file] }) && !navigator.canShare(payload)) {
         return false
       }
     } catch {
-      // continue and try share anyway
+      // try share anyway
     }
   }
 
@@ -73,18 +125,19 @@ async function copyImageToClipboard(blob) {
     return false
   }
   try {
-    // Some browsers require the ClipboardItem value to be a Promise of Blob
-    const item = new ClipboardItem({
-      [blob.type || 'image/png']: blob,
-    })
-    await navigator.clipboard.write([item])
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        'image/png': blob,
+      }),
+    ])
     return true
   } catch {
     try {
-      const item = new ClipboardItem({
-        'image/png': Promise.resolve(blob),
-      })
-      await navigator.clipboard.write([item])
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'image/png': Promise.resolve(blob),
+        }),
+      ])
       return true
     } catch {
       return false
@@ -92,42 +145,85 @@ async function copyImageToClipboard(blob) {
   }
 }
 
-function openWhatsApp(caption, { pasteHint = false } = {}) {
-  const text = pasteHint
-    ? `${caption}\n\n📷 Screenshot is copied — paste it in this chat (Ctrl+V / long-press → Paste).`
-    : caption
-  const url = `https://wa.me/?text=${encodeURIComponent(text)}`
-  window.open(url, '_blank', 'noopener,noreferrer')
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1500)
+}
+
+function whatsAppUrl(text) {
+  return `https://wa.me/?text=${encodeURIComponent(text)}`
+}
+
+function navigateWhatsApp(waWin, text) {
+  const url = whatsAppUrl(text)
+  if (waWin && !waWin.closed) {
+    try {
+      waWin.location.href = url
+      waWin.focus()
+      return true
+    } catch {
+      // fall through
+    }
+  }
+  const opened = window.open(url, '_blank', 'noopener,noreferrer')
+  return Boolean(opened)
 }
 
 /**
- * Share Full Data screenshot to WhatsApp directly (no PNG download).
- * 1) Native share sheet (pick WhatsApp) when the browser supports file share
- * 2) Else copy image to clipboard + open WhatsApp so user pastes
+ * Share Full Data screenshot to WhatsApp.
+ * Pass `waWin` from a sync window.open(about:blank) on click to avoid popup blockers.
  */
 export async function shareFullDataScreenshot({
   node,
   filename = 'Full_Data.png',
   caption = 'FleetPro Full Data report',
+  waWin = null,
 } = {}) {
-  const blob = await captureElementPngBlob(node)
+  let blob
+  try {
+    blob = await captureElementPngBlob(node)
+  } catch (err) {
+    if (waWin && !waWin.closed) waWin.close()
+    throw err
+  }
+
   const file = new File([blob], filename, { type: 'image/png' })
 
-  // 1) Direct system share → user chooses WhatsApp (works often on mobile / some desktop)
-  const shared = await tryNativeShareFile(file, caption)
-  if (shared) return { mode: 'share' }
+  // 1) Native share sheet (pick WhatsApp) — best on mobile / supported desktop
+  try {
+    const shared = await tryNativeShareFile(file, caption)
+    if (shared) {
+      if (waWin && !waWin.closed) waWin.close()
+      return { mode: 'share' }
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      if (waWin && !waWin.closed) waWin.close()
+      throw err
+    }
+  }
 
-  // 2) Copy screenshot + open WhatsApp (no download) — paste into chat
+  // 2) Copy image + open WhatsApp (paste in chat) — no download
   const copied = await copyImageToClipboard(blob)
   if (copied) {
-    openWhatsApp(caption, { pasteHint: true })
+    navigateWhatsApp(
+      waWin,
+      `${caption}\n\nScreenshot copied — open a chat and press Ctrl+V (or long-press → Paste) to send the image.`
+    )
     return { mode: 'clipboard' }
   }
 
-  // Last resort: still open WhatsApp with caption (image couldn't be handed off)
-  openWhatsApp(
-    `${caption}\n\n(Could not attach screenshot automatically — use Share again on mobile, or press Print Screen.)`,
-    { pasteHint: false }
+  // 3) Download PNG + open WhatsApp (reliable desktop fallback)
+  downloadBlob(blob, filename)
+  navigateWhatsApp(
+    waWin,
+    `${caption}\n\nScreenshot saved as ${filename}. Attach that image in this WhatsApp chat.`
   )
-  return { mode: 'whatsapp-text' }
+  return { mode: 'download' }
 }

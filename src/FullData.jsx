@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, useRef } from 'react'
-import { Table2, Calendar, MapPin, Briefcase, Loader, RefreshCw, Download, MessageCircle } from 'lucide-react'
+import { Table2, Calendar, MapPin, Briefcase, Loader, RefreshCw, Download, MessageCircle, Info, X } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import {
   fetchOrderUploadsForHistory,
@@ -17,6 +17,7 @@ import {
   trimOverallRowsForMonth,
 } from './lib/fullDataMonthReport'
 import { shareFullDataScreenshot } from './lib/fullDataShareScreenshot'
+import { FULL_DATA_RATE_INFO, EV_DAILY_RENT } from './lib/fullDataCommercialRates'
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -46,6 +47,7 @@ export default function FullData() {
   const [buildStep, setBuildStep] = useState('')
   const [sharing, setSharing] = useState(false)
   const [shareHint, setShareHint] = useState('')
+  const [ratesInfoOpen, setRatesInfoOpen] = useState(false)
   const captureRef = useRef(null)
 
   useEffect(() => {
@@ -244,6 +246,15 @@ export default function FullData() {
     setSharing(true)
     setError(null)
     setShareHint('')
+
+    // Open blank tab immediately (same click) so WhatsApp is not blocked after capture
+    let waWin = null
+    try {
+      waWin = window.open('about:blank', '_blank')
+    } catch {
+      waWin = null
+    }
+
     try {
       const caption = [
         'FleetPro — Full Data',
@@ -262,15 +273,23 @@ export default function FullData() {
           '_'
         ),
         caption,
+        waWin,
       })
       if (result.mode === 'share') {
-        setShareHint('Opened share — choose WhatsApp to send the screenshot.')
+        setShareHint('Share sheet opened — choose WhatsApp to send the screenshot.')
       } else if (result.mode === 'clipboard') {
-        setShareHint('Screenshot copied. In WhatsApp chat press Ctrl+V (or long-press → Paste) to send the image.')
-      } else if (result.mode === 'whatsapp-text') {
-        setShareHint('WhatsApp opened. This browser blocked image share — try Chrome/Edge on phone, or Paste if image was copied.')
+        setShareHint('Screenshot copied. In WhatsApp press Ctrl+V (or long-press → Paste) to send the image.')
+      } else if (result.mode === 'download') {
+        setShareHint('Screenshot downloaded. Attach that PNG file in the WhatsApp chat that opened.')
       }
     } catch (err) {
+      if (waWin && !waWin.closed) {
+        try {
+          waWin.close()
+        } catch {
+          // ignore
+        }
+      }
       if (err?.name === 'AbortError') {
         setShareHint('')
         return
@@ -286,7 +305,7 @@ export default function FullData() {
     left: 0,
     zIndex: 2,
     background: '#0f172a',
-    textAlign: 'left',
+    textAlign: 'center',
     padding: '0.4rem 0.65rem',
     whiteSpace: 'nowrap',
     minWidth: 180,
@@ -299,7 +318,7 @@ export default function FullData() {
     left: 180,
     zIndex: 2,
     background: '#111827',
-    textAlign: 'right',
+    textAlign: 'center',
     padding: '0.4rem 0.5rem',
     whiteSpace: 'nowrap',
     minWidth: 72,
@@ -325,13 +344,32 @@ export default function FullData() {
               <Table2 size={28} style={{ color: 'var(--accent-blue)' }} />
               Full Data
             </h1>
-            <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '760px' }}>
-              Month-wise Supply + Ev matrix. 0-order riders match Rider Performance (4-day window).
-              Ev KM buckets only use dates/vehicles with uploaded IoT data (KM &gt; 0).
-              Earnings / MF / Revenue rows are held for later.
+            <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '820px' }}>
+              Month-wise Supply + Ev matrix through yesterday. Earnings = orders × client rate;
+              MF = earning × client margin (BB 6% in BLR/CHN/HYD/MUM); Rent = on-road vehicles × ₹230;
+              Revenue = Earning + MF + Rent.
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="glass"
+              onClick={() => setRatesInfoOpen(true)}
+              title="View earning rates, MF % and rent"
+              style={{
+                padding: '0.55rem 0.75rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                color: '#93c5fd',
+                cursor: 'pointer',
+                border: '1px solid rgba(147,197,253,0.35)',
+                background: 'rgba(59,130,246,0.12)',
+              }}
+            >
+              <Info size={16} />
+              Rates
+            </button>
             <button
               type="button"
               className="glass"
@@ -463,6 +501,134 @@ export default function FullData() {
         </div>
       </header>
 
+      {ratesInfoOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Earning, MF and Rent rates"
+          onClick={() => setRatesInfoOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 80,
+            background: 'rgba(2,6,23,0.72)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem',
+          }}
+        >
+          <div
+            className="glass"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 'min(920px, 100%)',
+              maxHeight: '85vh',
+              overflow: 'auto',
+              padding: '1rem 1.15rem 1.25rem',
+              background: '#0f172a',
+              border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: 12,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '0.85rem' }}>
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '1.05rem' }}>
+                <Info size={18} style={{ color: '#93c5fd' }} />
+                Earning / MF / Rent rates
+              </h3>
+              <button
+                type="button"
+                className="glass"
+                onClick={() => setRatesInfoOpen(false)}
+                style={{ padding: '0.35rem 0.5rem', color: '#fff', cursor: 'pointer' }}
+                aria-label="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p style={{ margin: '0 0 0.85rem', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+              Earning = Orders × Per-order rate · MF = Earning × MF% · Rent = On-road vehicles × ₹{EV_DAILY_RENT}/day ·
+              Revenue = Earning + MF + Rent
+            </p>
+
+            <div
+              style={{
+                marginBottom: '1rem',
+                padding: '0.65rem 0.75rem',
+                borderRadius: 8,
+                background: 'rgba(34,197,94,0.1)',
+                border: '1px solid rgba(34,197,94,0.25)',
+                fontSize: '0.85rem',
+              }}
+            >
+              <strong>Rent (per day):</strong> ₹{FULL_DATA_RATE_INFO.rentPerDay.toLocaleString('en-IN')} per on-road
+              deployed vehicle
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gap: '1rem',
+              }}
+            >
+              <div>
+                <h4 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>Per-order rate (₹)</h4>
+                <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                    <thead>
+                      <tr style={{ background: '#1e293b' }}>
+                        <th style={{ textAlign: 'left', padding: '0.45rem 0.6rem' }}>Client</th>
+                        <th style={{ textAlign: 'right', padding: '0.45rem 0.6rem' }}>Rate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {FULL_DATA_RATE_INFO.perOrderRates.map((row) => (
+                        <tr key={row.client} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                          <td style={{ padding: '0.4rem 0.6rem' }}>{row.client}</td>
+                          <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>₹{row.rate}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h4 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>MF %</h4>
+                <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                    <thead>
+                      <tr style={{ background: '#1e293b' }}>
+                        <th style={{ textAlign: 'left', padding: '0.45rem 0.6rem' }}>Client</th>
+                        <th style={{ textAlign: 'right', padding: '0.45rem 0.6rem' }}>MF %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {FULL_DATA_RATE_INFO.mfMargins.map((row) => (
+                        <tr key={row.client} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                          <td style={{ padding: '0.4rem 0.6rem' }}>
+                            {row.client}
+                            {row.note ? (
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)' }}>{row.note}</div>
+                            ) : null}
+                          </td>
+                          <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>{row.marginPct}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p style={{ margin: '0.5rem 0 0', fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+                  {FULL_DATA_RATE_INFO.bbMfNote}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div
           className="glass"
@@ -586,6 +752,7 @@ export default function FullData() {
                               padding: '0.45rem 0.65rem',
                               position: 'sticky',
                               left: 0,
+                              textAlign: 'center',
                             }}
                           >
                             {metric.section === 'Supply' ? 'Supply' : 'Ev'}
@@ -608,7 +775,7 @@ export default function FullData() {
                           <td
                             key={`${metric.key}-${d.dateKey}`}
                             style={{
-                              textAlign: 'right',
+                              textAlign: 'center',
                               padding: '0.35rem 0.4rem',
                               whiteSpace: 'nowrap',
                               borderBottom: '1px solid rgba(255,255,255,0.04)',

@@ -22,6 +22,7 @@ import { KM_PRODUCTIVITY_BUCKETS, kmToBucketKey } from './vehicleKmProductivityR
 import { parseOrderUploadMonthLabel } from './orderUploadDb'
 import { normalizeIotRunDate } from './iotDataReport'
 import { getZeroOrderAsOfFromEndDate } from './riderPerformanceReport'
+import { calcOrderEarningAndMf, EV_DAILY_RENT } from './fullDataCommercialRates'
 
 const PART_SEP = '\x1f'
 /** Keep this much EV91 history before month start (open deploys). */
@@ -37,11 +38,12 @@ export const FULL_DATA_METRICS = [
   { key: 'evOrder', label: 'EV order', section: 'Supply' },
   { key: 'nonEvOrder', label: 'Non-EV Order', section: 'Supply' },
   { key: 'zeroOrderRiderCount', label: '0 order Rider count', section: 'Supply' },
-  { key: 'totalEarning', label: 'Total Earing', section: 'Supply', hold: true },
-  { key: 'evEarning', label: 'EV Earing', section: 'Supply', hold: true },
-  { key: 'nonEarning', label: 'Non Earing', section: 'Supply', hold: true },
-  { key: 'mfAmount', label: 'MF Amount', section: 'Supply', hold: true },
-  { key: 'totalRevenue', label: 'Total Revnue', section: 'Supply', hold: true },
+  { key: 'totalEarning', label: 'Total Earing', section: 'Supply' },
+  { key: 'evEarning', label: 'EV Earing', section: 'Supply' },
+  { key: 'nonEarning', label: 'Non Earing', section: 'Supply' },
+  { key: 'mfAmount', label: 'MF Amount', section: 'Supply' },
+  { key: 'rent', label: 'Rent', section: 'Supply' },
+  { key: 'totalRevenue', label: 'Total Revnue', section: 'Supply' },
   { key: 'totalKm', label: 'Total KM', section: 'Ev' },
   { key: 'deployKm', label: 'Deployee KM', section: 'Ev' },
   { key: 'returnKm', label: 'Return KM', section: 'Ev' },
@@ -69,6 +71,7 @@ export const FULL_DATA_METRICS = [
 ]
 
 const NUMERIC_KEYS = FULL_DATA_METRICS.filter((m) => !m.hold).map((m) => m.key)
+const MONEY_KEYS = new Set(['totalEarning', 'evEarning', 'nonEarning', 'mfAmount', 'rent', 'totalRevenue'])
 
 function isEvType(type1) {
   const t = String(type1 || '').toUpperCase()
@@ -86,11 +89,12 @@ function emptyDayMetrics() {
     evOrder: 0,
     nonEvOrder: 0,
     zeroOrderRiderCount: 0,
-    totalEarning: null,
-    evEarning: null,
-    nonEarning: null,
-    mfAmount: null,
-    totalRevenue: null,
+    totalEarning: 0,
+    evEarning: 0,
+    nonEarning: 0,
+    mfAmount: 0,
+    rent: 0,
+    totalRevenue: 0,
     totalKm: 0,
     deployKm: 0,
     returnKm: 0,
@@ -176,7 +180,18 @@ export function monthDaysFromLabel(monthLabel) {
   const parsed = parseOrderUploadMonthLabel(monthLabel)
   if (!parsed) return { days: [], fromKey: '', toKey: '', monthLabel: monthLabel || '' }
   const start = startOfMonth(new Date(parsed.year, parsed.monthIndex, 1))
-  const end = endOfMonth(start)
+  const monthEnd = endOfMonth(start)
+  // Never include today / tomorrow — last column is yesterday
+  const yesterday = startOfDay(subDays(new Date(), 1))
+  const end = monthEnd < yesterday ? monthEnd : yesterday
+  if (start > end) {
+    return {
+      days: [],
+      fromKey: format(start, 'yyyy-MM-dd'),
+      toKey: format(end, 'yyyy-MM-dd'),
+      monthLabel: monthLabel || '',
+    }
+  }
   const days = eachDayOfInterval({ start, end }).map((d) => ({
     dateKey: format(d, 'yyyy-MM-dd'),
     label: format(d, 'dd-MMM'),
@@ -337,6 +352,14 @@ export async function buildFullDataMonthBaseAsync(
     if (isEv) m.evOrder += delivered
     else m.nonEvOrder += delivered
 
+    if (delivered > 0) {
+      const { earning, mf } = calcOrderEarningAndMf(client, city, delivered)
+      m.totalEarning += earning
+      m.mfAmount += mf
+      if (isEv) m.evEarning += earning
+      else m.nonEarning += earning
+    }
+
     const worker = (row.worker_code || '').toString().trim()
     if (!worker) continue
     const pKey = partKey(city, client)
@@ -484,12 +507,43 @@ export async function buildFullDataMonthBaseAsync(
 
   await yieldToMain()
   if (shouldCancel()) return emptyBase(monthLabel)
+  report('rent')
+
+  // Rent = on-road (deployed interval covers day) vehicles × ₹230 / day
+  for (let di = 0; di < days.length; di++) {
+    const dateKey = days[di].dateKey
+    const countByPart = new Map()
+    const seenVehicle = new Set()
+    for (const iv of flatIntervals) {
+      if (iv.fromKey > dateKey) continue
+      if (iv.toKey != null && iv.toKey <= dateKey) continue
+      if (!iv.vKey || seenVehicle.has(iv.vKey)) continue
+      seenVehicle.add(iv.vKey)
+      const pKey = partKey(iv.city, iv.client)
+      countByPart.set(pKey, (countByPart.get(pKey) || 0) + 1)
+    }
+    for (const [pKey, count] of countByPart) {
+      const { city, client } = parsePartKey(pKey)
+      const m = ensureSlice(slices, dateKey, city, client)
+      m.rent += count * EV_DAILY_RENT
+    }
+    if (di % 3 === 2) {
+      await yieldToMain()
+      if (shouldCancel()) return emptyBase(monthLabel)
+    }
+  }
 
   for (const dayMap of slices.values()) {
     for (const m of dayMap.values()) {
       m.totalKm = Math.round(m.totalKm * 100) / 100
       m.deployKm = Math.round(m.deployKm * 100) / 100
       m.returnKm = Math.round(m.returnKm * 100) / 100
+      m.totalEarning = Math.round(m.totalEarning * 100) / 100
+      m.evEarning = Math.round(m.evEarning * 100) / 100
+      m.nonEarning = Math.round(m.nonEarning * 100) / 100
+      m.mfAmount = Math.round(m.mfAmount * 100) / 100
+      m.rent = Math.round(m.rent * 100) / 100
+      m.totalRevenue = Math.round((m.totalEarning + m.mfAmount + m.rent) * 100) / 100
     }
   }
 
@@ -617,6 +671,9 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
     dest.totalKm = Math.round(dest.totalKm * 100) / 100
     dest.deployKm = Math.round(dest.deployKm * 100) / 100
     dest.returnKm = Math.round(dest.returnKm * 100) / 100
+    for (const k of MONEY_KEYS) {
+      dest[k] = Math.round((Number(dest[k]) || 0) * 100) / 100
+    }
   }
 
   const totals = emptyDayMetrics()
@@ -629,7 +686,12 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
     for (const d of base.days) {
       sum += Number(byDate[d.dateKey]?.[metric.key]) || 0
     }
-    if (metric.key === 'totalKm' || metric.key === 'deployKm' || metric.key === 'returnKm') {
+    if (
+      metric.key === 'totalKm' ||
+      metric.key === 'deployKm' ||
+      metric.key === 'returnKm' ||
+      MONEY_KEYS.has(metric.key)
+    ) {
       totals[metric.key] = Math.round(sum * 100) / 100
     } else {
       totals[metric.key] = sum
@@ -657,7 +719,7 @@ export function formatFullDataCell(value, hold = false) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return '—'
     if (Number.isInteger(value)) return value.toLocaleString('en-IN')
-    return value.toLocaleString('en-IN', { maximumFractionDigits: 2 })
+    return value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
   }
   return String(value)
 }

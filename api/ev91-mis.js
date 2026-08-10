@@ -1,10 +1,20 @@
 const BASE = 'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics'
 
+/** App endpoint id → upstream path under BASE (when different from the id). */
+const UPSTREAM_PATH_BY_ENDPOINT = {
+  'rider-details': 'mis-public-api/rider-details',
+}
+
 const ALLOWED_ENDPOINTS = new Set([
   'current-status',
   'overall-status',
   'client-mapping-history',
+  'rider-details',
 ])
+
+function resolveUpstreamPath(endpoint) {
+  return UPSTREAM_PATH_BY_ENDPOINT[endpoint] || endpoint
+}
 
 function getQuery(req) {
   if (req?.query && typeof req.query === 'object' && Object.keys(req.query).length) {
@@ -36,7 +46,8 @@ async function fetchUpstream(endpoint, query) {
     }
   }
 
-  const upstreamUrl = `${BASE}/${endpoint}?${params.toString()}`
+  const path = resolveUpstreamPath(endpoint)
+  const upstreamUrl = `${BASE}/${path}?${params.toString()}`
   const upstream = await fetch(upstreamUrl, {
     headers: {
       'x-api-key': getApiKey(),
@@ -100,7 +111,7 @@ export default async function handler(req, res) {
         {
           success: false,
           message:
-            'Invalid endpoint. Use current-status, overall-status, or client-mapping-history.',
+            'Invalid endpoint. Use current-status, overall-status, client-mapping-history, or rider-details.',
         },
         { status: 400, headers: { 'Access-Control-Allow-Origin': '*' } }
       )
@@ -142,7 +153,8 @@ export default async function handler(req, res) {
   if (!ALLOWED_ENDPOINTS.has(endpoint)) {
     return sendNode(res, 400, {
       success: false,
-      message: 'Invalid endpoint. Use current-status, overall-status, or client-mapping-history.',
+      message:
+        'Invalid endpoint. Use current-status, overall-status, client-mapping-history, or rider-details.',
     })
   }
 

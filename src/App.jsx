@@ -44,13 +44,15 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2 } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
   'ev91-current',
   'ev91-overall',
   'ev91-mapping',
+  'ev91-riders',
+  'ev91-insight',
   'ev91-performance',
   'ev91-onboarding',
   'ev91-evlookup',
@@ -60,6 +62,7 @@ const EV91_ENDPOINT_BY_PAGE = {
   'ev91-current': 'current-status',
   'ev91-overall': 'overall-status',
   'ev91-mapping': 'client-mapping-history',
+  'ev91-riders': 'rider-details',
 }
 
 const DB_NAME = 'DashFleetDB'
@@ -412,7 +415,7 @@ function App() {
     }
   }, [])
 
-  const fleetPagesNeedingFull = new Set(['fleetdata'])
+  const fleetPagesNeedingFull = new Set(['fleetdata', 'tracking', 'ev91-insight'])
   useEffect(() => {
     if (fleetPagesNeedingFull.has(activePage) && !fleetDataFull && !fleetFullLoading) {
       loadFullFleet()
@@ -647,6 +650,22 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-insight' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-insight')}
+                >
+                  <Users size={18} />
+                  Rider-Vehicle Monitor
+                </button>
+                <button
+                  type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-riders' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-riders')}
+                >
+                  <IdCard size={18} />
+                  Rider Details
+                </button>
+                <button
+                  type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-current' ? 'active' : ''}`}
                   onClick={() => openEv91Page('ev91-current')}
                 >
@@ -692,10 +711,10 @@ function App() {
             loading={loading} 
           />
         ) : activePage === 'tracking' ? (
-          <VehicleTracking 
-            fleetData={fleetData}
+          <VehicleTracking
+            fleetData={displayFleetData}
             riderData={riderData}
-            loading={loading}
+            loading={loading || fleetLoading}
           />
         ) : activePage === 'riderperformance' ? (
           <RiderPerformance
@@ -846,6 +865,15 @@ function App() {
           />
         ) : activePage === 'ev91-summary' ? (
           <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
+        ) : activePage === 'ev91-insight' ? (
+          <VehicleTracking
+            fleetData={displayFleetData}
+            riderData={riderData}
+            loading={loading || fleetLoading}
+            includeEv91Api
+            pageTitle="Rider & Vehicle Insight"
+            pageSubtitle="Fleet + EV91 API · Rider-Vehicle Monitor with deploy/return history"
+          />
         ) : EV91_PAGES.has(activePage) ? (
           <Ev91DbData
             endpoint={EV91_ENDPOINT_BY_PAGE[activePage]}

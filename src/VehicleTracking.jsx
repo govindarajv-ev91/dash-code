@@ -15,6 +15,8 @@ import {
 } from './lib/fleetInsightIndex';
 import { parseFleetDate, vehiclePartitionKey } from './lib/fleetDeployReturnExport';
 import { extractFleetSource, getCurrentlyDeployedAssignments, normalizeRiderIdKey } from './lib/riderPerformanceReport';
+import { fetchEv91RiderDetails } from './lib/ev91RiderPerformance';
+import { riderInsightIdentityKeys } from './lib/ev91RiderVehicleInsight';
 
 function pickCanonicalRiderKey(workerCode) {
     const aliases = [...extractRiderIdAliases(workerCode)];
@@ -33,7 +35,14 @@ function phonesMatchSearch(mobile, searchRaw) {
     return phone.includes(searchDigits) || searchDigits.includes(phone);
 }
 
-const VehicleTracking = ({ fleetData, riderData, loading }) => {
+const VehicleTracking = ({
+    fleetData,
+    riderData,
+    loading,
+    includeEv91Api = false,
+    pageTitle = 'Rider & Vehicle Insight',
+    pageSubtitle = null,
+}) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [filterStatus, setFilterStatus] = useState('All');
     const [filterClient, setFilterClient] = useState('All');
@@ -45,6 +54,38 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
     const [sortConfig, setSortConfig] = useState({ key: 'totalOrders', direction: 'desc' });
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(25);
+    const [ev91DetailsById, setEv91DetailsById] = useState(new Map());
+    const [ev91ApiLoading, setEv91ApiLoading] = useState(includeEv91Api);
+    const [ev91ApiError, setEv91ApiError] = useState('');
+
+    useEffect(() => {
+        if (!includeEv91Api) {
+            setEv91DetailsById(new Map());
+            setEv91ApiLoading(false);
+            setEv91ApiError('');
+            return;
+        }
+        let cancelled = false;
+        setEv91ApiLoading(true);
+        setEv91ApiError('');
+        fetchEv91RiderDetails()
+            .then((map) => {
+                if (!cancelled) setEv91DetailsById(map || new Map());
+            })
+            .catch((err) => {
+                console.warn('EV91 rider-details for monitor failed:', err);
+                if (!cancelled) {
+                    setEv91DetailsById(new Map());
+                    setEv91ApiError(err?.message || 'EV91 rider details unavailable');
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setEv91ApiLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [includeEv91Api]);
 
     const fleetSourceCounts = useMemo(() => countFleetSources(fleetData), [fleetData]);
 
@@ -58,7 +99,7 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
         [currentlyDeployedAssignments]
     );
 
-    const processedRiderData = useMemo(() => {
+    const baseProcessedRiderData = useMemo(() => {
         const today = new Date();
         const fleetIndex = buildFleetHistoryIndex(fleetData);
         const getParsedDate = (dateStr) => parseFleetDate(dateStr);
@@ -328,6 +369,106 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
         return results.sort((a, b) => b.totalOrders - a.totalOrders);
     }, [fleetData, riderData, currentlyDeployedAssignments, currentDeployLookup]);
 
+    const processedRiderData = useMemo(() => {
+        if (!includeEv91Api || !ev91DetailsById?.size) return baseProcessedRiderData;
+
+        const lookup = new Map();
+        for (const row of baseProcessedRiderData) {
+            for (const key of riderInsightIdentityKeys({
+                publicRiderId: row.ev91PublicId || row.riderId,
+                clientRiderId: row.riderId,
+                phone: row.mobile,
+            })) {
+                lookup.set(key, row);
+            }
+        }
+
+        const merged = baseProcessedRiderData.map((row) => {
+            const detail =
+                ev91DetailsById.get(row.riderId) ||
+                ev91DetailsById.get(row.ev91PublicId) ||
+                (row.mobile ? ev91DetailsById.get(row.mobile) : null) ||
+                (row.mobile ? ev91DetailsById.get(normalizeInsightPhone(row.mobile)) : null);
+            if (!detail) return row;
+
+            const assigned = (detail.assignedVehicleId || '').toString().trim();
+            const hasAssignedVehicle = assigned && !/not\s*assign/i.test(assigned);
+            const next = {
+                ...row,
+                ev91PublicId: detail.publicRiderID || row.ev91PublicId || '',
+                riderName: row.riderName && row.riderName !== 'N/A' ? row.riderName : detail.name || row.riderName,
+                mobile: row.mobile || detail.phone || row.mobile,
+                client: row.client && row.client !== 'N/A' ? row.client : detail.clientName || row.client,
+                city: row.city && row.city !== 'N/A' ? row.city : detail.city || row.city,
+                sourceName: row.sourceName && row.sourceName !== 'N/A' ? row.sourceName : detail.source || row.sourceName,
+            };
+            if (next.currentVehicle === 'None' && hasAssignedVehicle) {
+                next.currentVehicle = assigned;
+                next.currentStatus = 'Deployed';
+                next.fleetRemark = 'EV';
+                next.fleetStatusClass = 'ev';
+                next.fleetType = 'EV';
+            }
+            if (detail.isActive === false && next.riderActiveStatus === 'Active' && next.currentVehicle === 'None') {
+                next.riderActiveStatus = 'Inactive';
+            }
+            return next;
+        });
+
+        const seenPublic = new Set(
+            merged.map((r) => (r.ev91PublicId || '').toString().trim()).filter(Boolean)
+        );
+
+        for (const detail of ev91DetailsById.values()) {
+            const publicId = (detail.publicRiderID || '').toString().trim();
+            if (!publicId || seenPublic.has(publicId)) continue;
+
+            const keys = riderInsightIdentityKeys({
+                publicRiderId: publicId,
+                clientRiderId: detail.clientRiderId,
+                phone: detail.phone,
+            });
+            if (keys.some((k) => lookup.has(k))) continue;
+
+            seenPublic.add(publicId);
+            const assigned = (detail.assignedVehicleId || '').toString().trim();
+            const hasVehicle = assigned && !/not\s*assign/i.test(assigned);
+            const groupKey = publicId;
+            merged.push({
+                riderId: detail.clientRiderId || publicId,
+                ev91PublicId: publicId,
+                riderName: detail.name || 'N/A',
+                mobile: detail.phone || '',
+                client: detail.clientName || 'N/A',
+                sourceName: detail.source || 'N/A',
+                city: detail.city || 'N/A',
+                totalOrders: 0,
+                lastOrderDate: null,
+                fleetCategory: detail.needEvRental ? 'EV' : 'Unknown',
+                orderRecords: [],
+                history: [],
+                fleetDataSource: 'EV91 API',
+                fromMetrics: false,
+                fromEv91Api: true,
+                groupKey,
+                currentVehicle: hasVehicle ? assigned : 'None',
+                currentStatus: hasVehicle ? 'Deployed' : 'No Active Vehicle',
+                totalOnRoadDays: 0,
+                riderActiveStatus: detail.isActive === false ? 'Inactive' : 'Active',
+                statusDetail: '',
+                fleetRemark: hasVehicle || detail.needEvRental ? 'EV' : 'Unknown',
+                fleetStatusClass: hasVehicle || detail.needEvRental ? 'ev' : 'unknown',
+                fleetType: detail.needEvRental ? 'EV' : 'UNKNOWN',
+                deployedAssignmentsCount: hasVehicle ? 1 : 0,
+                returnedAssignmentsCount: 0,
+                averageAssignmentDays: 0,
+                assignments: [],
+            });
+        }
+
+        return merged.sort((a, b) => b.totalOrders - a.totalOrders);
+    }, [baseProcessedRiderData, includeEv91Api, ev91DetailsById]);
+
     const clients = useMemo(() => {
         const set = new Set(processedRiderData.map((d) => d.client).filter((c) => c && c !== 'N/A'));
         return ['All', ...Array.from(set).sort()];
@@ -560,23 +701,28 @@ const VehicleTracking = ({ fleetData, riderData, loading }) => {
         return lines.join('\n');
     };
 
-    if (loading)
+    if (loading || (includeEv91Api && ev91ApiLoading && !baseProcessedRiderData.length && !fleetData?.length))
         return (
             <div className="loading-container">
                 <span className="loader"></span>
             </div>
         );
 
+    const resolvedSubtitle =
+        pageSubtitle ??
+        `Deploy/return dates from merged Fleet Data (${fleetSourceCounts.total.toLocaleString()} rows: ${fleetSourceCounts.legacy.toLocaleString()} database + ${fleetSourceCounts.form.toLocaleString()} new fleet)${includeEv91Api ? ' · EV91 Rider Details API merged' : ''}`;
+
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="dashboard-container">
             <header className="header">
                 <div>
-                    <h1>Rider & Vehicle Insight</h1>
-                    <p style={{ color: 'var(--text-dim)' }}>
-                        Deploy/return dates from merged Fleet Data ({fleetSourceCounts.total.toLocaleString()}{' '}
-                        rows: {fleetSourceCounts.legacy.toLocaleString()} database +{' '}
-                        {fleetSourceCounts.form.toLocaleString()} new fleet)
-                    </p>
+                    <h1>{pageTitle}</h1>
+                    <p style={{ color: 'var(--text-dim)' }}>{resolvedSubtitle}</p>
+                    {ev91ApiError ? (
+                        <p style={{ color: '#fbbf24', fontSize: '0.8rem', marginTop: '0.35rem' }}>
+                            EV91 API: {ev91ApiError} — showing Fleet / metrics data only.
+                        </p>
+                    ) : null}
                 </div>
             </header>
 

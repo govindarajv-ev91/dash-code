@@ -59,6 +59,40 @@ export const EV91_MIS_ENDPOINTS = {
     dateKey: 'lastUpdated',
     cityKey: 'city',
   },
+  /** Upstream path differs: …/mis-public-api/rider-details */
+  'rider-details': {
+    id: 'rider-details',
+    upstreamPath: 'mis-public-api/rider-details',
+    title: "EV91 Rider's Details",
+    description: 'Rider profile, KYC, client mapping & vehicle assignment from EV91 MIS',
+    columns: [
+      { key: 'publicRiderID', label: 'EV91 Rider ID' },
+      { key: 'clientRiderId', label: 'Client Rider ID' },
+      { key: 'name', label: 'Rider Name' },
+      { key: 'phone', label: 'Phone' },
+      { key: 'isActive', label: 'Active' },
+      { key: 'city', label: 'City' },
+      { key: 'clientName', label: 'Client' },
+      { key: 'kycStatus', label: 'KYC' },
+      { key: 'needEvRental', label: 'Need EV Rental' },
+      { key: 'assignedVehicleId', label: 'Vehicle' },
+      { key: 'assignmentDate', label: 'Assigned Date' },
+      { key: 'createAt', label: 'Onboarded' },
+      { key: 'referredById', label: 'Source / Referred By' },
+      { key: 'dob', label: 'DOB' },
+      { key: 'gender', label: 'Gender' },
+      { key: 'address1', label: 'Address' },
+    ],
+    statusKey: 'isActive',
+    dateKey: 'createAt',
+    cityKey: 'city',
+  },
+}
+
+/** Resolve upstream URL path for an endpoint id (defaults to the id itself). */
+export function getEv91MisUpstreamPath(endpoint) {
+  const meta = EV91_MIS_ENDPOINTS[endpoint]
+  return meta?.upstreamPath || endpoint
 }
 
 /** Known cities from EV91 MIS (shared across all 3 endpoints). */
@@ -153,7 +187,8 @@ async function fetchEv91MisViaLocalProxy(endpoint, params = {}) {
 async function fetchEv91MisViaAmplifyRewrite(endpoint, params = {}) {
   const qs = buildEv91MisQuery(params)
   const key = getEv91MisApiKey()
-  const res = await fetch(`/api/ev91/${endpoint}?${qs.toString()}`, {
+  const path = getEv91MisUpstreamPath(endpoint)
+  const res = await fetch(`/api/ev91/${path}?${qs.toString()}`, {
     headers: {
       Accept: 'application/json',
       'x-api-key': key,
@@ -175,7 +210,8 @@ async function fetchEv91MisViaAmplifyRewrite(endpoint, params = {}) {
 async function fetchEv91MisDirect(endpoint, params = {}) {
   const key = getEv91MisApiKey()
   const qs = buildEv91MisQuery(params)
-  const url = `${EV91_MIS_UPSTREAM}/${endpoint}?${qs.toString()}`
+  const path = getEv91MisUpstreamPath(endpoint)
+  const url = `${EV91_MIS_UPSTREAM}/${path}?${qs.toString()}`
 
   try {
     const res = await fetch(url, {
@@ -194,7 +230,7 @@ async function fetchEv91MisDirect(endpoint, params = {}) {
   qs2.set('api_key', key)
   qs2.set('apiKey', key)
   qs2.set('x-api-key', key)
-  const res2 = await fetch(`${EV91_MIS_UPSTREAM}/${endpoint}?${qs2.toString()}`, {
+  const res2 = await fetch(`${EV91_MIS_UPSTREAM}/${path}?${qs2.toString()}`, {
     headers: { Accept: 'application/json' },
     cache: 'no-store',
   })
@@ -500,6 +536,7 @@ export function currentStatusDistributionSeries(summary) {
 
 export function formatEv91Cell(value) {
   if (value == null || value === '') return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
     try {
       const d = new Date(value)
@@ -516,15 +553,33 @@ export function formatEv91Cell(value) {
       /* keep raw */
     }
   }
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    try {
+      const d = new Date(`${value}T00:00:00`)
+      if (!Number.isNaN(d.getTime())) {
+        return d.toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        })
+      }
+    } catch {
+      /* keep raw */
+    }
+  }
   return String(value)
 }
 
 export function statusBadgeClass(status) {
   const s = String(status || '').toLowerCase()
+  if (s === 'true' || s === 'yes' || s === 'active') return 'ev91-badge-deployed'
+  if (s === 'false' || s === 'no' || s === 'inactive') return 'ev91-badge-returned'
+  if (s.includes('approv')) return 'ev91-badge-deployed'
+  if (s.includes('reject') || s.includes('fail')) return 'ev91-badge-returned'
   if (s.includes('deploy')) return 'ev91-badge-deployed'
   if (s.includes('return')) return 'ev91-badge-returned'
   if (s.includes('swap')) return 'ev91-badge-swap'
-  if (s.includes('yet') || s.includes('not')) return 'ev91-badge-pending'
+  if (s.includes('yet') || s.includes('not') || s.includes('pending')) return 'ev91-badge-pending'
   return 'ev91-badge-default'
 }
 
@@ -533,12 +588,15 @@ export function rowsToExportSheet(rows, columns) {
     const out = {}
     for (const col of columns) {
       const raw = row[col.key]
-      out[col.label] =
-        raw == null || raw === ''
-          ? ''
-          : typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(raw)
-            ? formatEv91Cell(raw)
-            : raw
+      if (raw == null || raw === '') {
+        out[col.label] = ''
+      } else if (typeof raw === 'boolean') {
+        out[col.label] = raw ? 'Yes' : 'No'
+      } else if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+        out[col.label] = formatEv91Cell(raw)
+      } else {
+        out[col.label] = raw
+      }
     }
     return out
   })

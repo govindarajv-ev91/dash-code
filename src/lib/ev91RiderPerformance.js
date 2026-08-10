@@ -14,15 +14,46 @@ import {
 export { fillAssignmentSourceFromOnboarding } from './onboardingSourceLookup'
 
 /**
- * Placeholder for future EV91 Rider Detail API.
- * When available, merge extra fields (hub, KYC, etc.) into assignments here.
- *
- * Expected future shape (example):
- *   GET /api/v1/public/mis/rider-details?...
+ * Load all EV91 Rider Details and index by publicRiderID / clientRiderId / phone.
  */
-export async function fetchEv91RiderDetails(_params = {}) {
-  // Not provided yet — return empty map keyed by ev91RiderId / clientRiderId.
-  return new Map()
+export async function fetchEv91RiderDetails(params = {}) {
+  const result = await fetchAllEv91MisData('rider-details', params)
+  const map = new Map()
+
+  for (const row of result.data || []) {
+    const publicId = (row.publicRiderID || row.publicRiderId || '').toString().trim()
+    const clientId = (row.clientRiderId ?? row.clientId ?? '').toString().trim()
+    const phone = (row.phone || '').toString().trim()
+    const detail = {
+      name: (row.name || '').toString().trim(),
+      riderName: (row.name || '').toString().trim(),
+      phone,
+      mobile: phone,
+      city: (row.city || '').toString().trim(),
+      source: (row.referredById || '').toString().trim(),
+      hub: '',
+      category: '',
+      kycStatus: (row.kycStatus || '').toString().trim(),
+      isActive: row.isActive,
+      needEvRental: row.needEvRental,
+      assignedVehicleId: (row.assignedVehicleId || '').toString().trim(),
+      assignmentDate: row.assignmentDate,
+      createAt: row.createAt,
+      clientName: (row.clientName || '').toString().trim(),
+      dob: row.dob,
+      gender: row.gender,
+      address1: row.address1,
+      publicRiderID: publicId,
+      clientRiderId: clientId,
+      _raw: row,
+    }
+
+    if (publicId) map.set(publicId, detail)
+    if (clientId) map.set(clientId, detail)
+    if (phone) map.set(phone, detail)
+  }
+
+  return map
 }
 
 export function mergeEv91RiderDetailsIntoAssignments(assignments, detailsById) {

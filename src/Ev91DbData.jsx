@@ -36,6 +36,7 @@ const STATUS_OPTIONS = {
   'current-status': ['', 'Deployed', 'Returned', 'Yet Not Deployed'],
   'overall-status': ['', 'Deployed', 'Returned', 'Client Swap'],
   'client-mapping-history': [''],
+  'rider-details': [''],
 }
 
 export default function Ev91DbData({ endpoint = 'current-status', onboardingData = [] }) {
@@ -497,7 +498,7 @@ export default function Ev91DbData({ endpoint = 'current-status', onboardingData
               ) : (
                 displayRows.map((row, idx) => (
                   <tr
-                    key={`${row.ev91RiderId || ''}-${row.vehicleNumber || ''}-${row.clientId || row.clientRiderId || ''}-${idx}`}
+                    key={`${row.publicRiderID || row.ev91RiderId || ''}-${row.vehicleNumber || ''}-${row.clientId || row.clientRiderId || ''}-${idx}`}
                   >
                     {meta.columns.map((col) => {
                       const raw = row[col.key]

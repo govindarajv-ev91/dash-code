@@ -1,6 +1,13 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists, fetchTableCount, fetchLastUploadAtSafe } from './paymentMonthList'
+import {
+  collectMonthsFromRows,
+  mergeMonthLists,
+  fetchTableCount,
+  fetchLastUploadAtSafe,
+  fetchMonthsSampled,
+  isStatementTimeout,
+} from './paymentMonthList'
 
 export const RIDER_PAYMENT_TABLE = 'rider_payment_data'
 /** Slim select for Payment History (avoids pulling unused columns). */
@@ -44,14 +51,35 @@ export async function fetchRiderPaymentCount() {
   return fetchTableCount(RIDER_PAYMENT_TABLE)
 }
 
+/** Columns shown on the upload page preview (avoid select * on wide rows). */
+const RIDER_PAYMENT_PREVIEW_COLUMNS = [
+  'id',
+  'rider_id',
+  'rider_name',
+  'client_name',
+  'city',
+  'month',
+  'orders',
+  'final_net_payout',
+  'payment_status',
+].join(',')
+
 export async function fetchRiderPaymentPreview(limit = 50) {
-  const { data, error } = await supabase
-    .from(RIDER_PAYMENT_TABLE)
-    .select('*')
-    .order('id', { ascending: false })
-    .limit(limit)
-  if (error) throw error
-  return data || []
+  let pageLimit = limit
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data, error } = await supabase
+      .from(RIDER_PAYMENT_TABLE)
+      .select(RIDER_PAYMENT_PREVIEW_COLUMNS)
+      .order('id', { ascending: false })
+      .limit(pageLimit)
+    if (!error) return data || []
+    if (isStatementTimeout(error) && pageLimit > 10) {
+      pageLimit = Math.max(10, Math.floor(pageLimit / 2))
+      continue
+    }
+    throw error
+  }
+  return []
 }
 
 export async function clearRiderPaymentData() {
@@ -71,6 +99,7 @@ export async function clearRiderPaymentDataByMonth(month) {
 export async function fetchRiderPaymentMonths() {
   const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
   if (probe.error) throw probe.error
+  if (!probe.data?.length) return []
 
   const { data: rpcData, error: rpcError } = await supabase.rpc('distinct_rider_payment_months')
   if (!rpcError && Array.isArray(rpcData) && rpcData.length) {
@@ -78,8 +107,12 @@ export async function fetchRiderPaymentMonths() {
     return mergeMonthLists(labels)
   }
 
-  const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, 'month,id', 'id', { useKeyset: true })
-  return collectMonthsFromRows(data)
+  if (rpcError) {
+    console.warn('[rider-payment] distinct months RPC failed, using sample:', rpcError.message || rpcError)
+  }
+
+  // Do NOT fetchAllData the whole table — that times out on large uploads.
+  return fetchMonthsSampled(RIDER_PAYMENT_TABLE)
 }
 
 export async function saveRiderPaymentRows(rows, { replace = true } = {}) {
@@ -182,32 +215,53 @@ export async function fetchRiderPaymentsForRevenue({ force = false } = {}) {
 
 export async function loadRiderPaymentSummary() {
   try {
-    const [count, preview] = await Promise.all([
-      fetchRiderPaymentCount().catch((err) => {
-        if (isMissingRiderPaymentTable(err)) throw err
-        return 0
-      }),
-      fetchRiderPaymentPreview(25).catch(() => []),
-    ])
-    let resolvedCount = count
-    if (resolvedCount === 0 && preview.length > 0) {
-      resolvedCount = await fetchTableCount(RIDER_PAYMENT_TABLE, { maxRetries: 10 }).catch(() => preview.length)
+    // Preview first — cheap PK lookup; proves the table is readable.
+    const preview = await fetchRiderPaymentPreview(25).catch((err) => {
+      if (isMissingRiderPaymentTable(err)) throw err
+      console.warn('[rider-payment] preview failed:', err?.message || err)
+      return []
+    })
+
+    const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
+    if (probe.error) {
+      if (isMissingRiderPaymentTable(probe.error)) {
+        return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
+      }
+      throw probe.error
     }
+
+    if (!probe.data?.length) {
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true }
+    }
+
+    let count = 0
+    try {
+      count = await fetchRiderPaymentCount()
+    } catch (err) {
+      if (isMissingRiderPaymentTable(err)) throw err
+      count = preview.length
+    }
+    if (count === 0 && preview.length > 0) count = preview.length
+
     let months = []
     try {
       months = await fetchRiderPaymentMonths()
-    } catch {
+    } catch (err) {
+      console.warn('[rider-payment] months failed:', err?.message || err)
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    const lastUploadAt =
-      resolvedCount > 0 || preview.length > 0
-        ? await fetchLastUploadAtSafe(RIDER_PAYMENT_TABLE)
-        : null
-    return { count: resolvedCount, preview, months, lastUploadAt, fromDb: true }
+
+    const lastUploadAt = await fetchLastUploadAtSafe(RIDER_PAYMENT_TABLE)
+    return { count, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingRiderPaymentTable(err)) {
       return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
+    }
+    // Never surface statement timeouts as a hard page failure — show empty section instead.
+    if (isStatementTimeout(err)) {
+      console.warn('[rider-payment] summary timed out:', err.message || err)
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true, timedOut: true }
     }
     throw err
   }

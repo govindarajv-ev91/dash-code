@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { fetchTableCount, fetchLastUploadAtSafe } from './paymentMonthList'
+import { fetchTableCount, fetchLastUploadAtSafe, isStatementTimeout } from './paymentMonthList'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 
 export const EV91_SD_TABLE = 'ev91_sd_data'
@@ -80,25 +80,40 @@ export function clearEv91SdCache() {
 
 export async function loadEv91SdSummary() {
   try {
-    const [count, preview] = await Promise.all([
-      fetchEv91SdCount().catch((err) => {
-        if (isMissingEv91SdTable(err)) throw err
-        return 0
-      }),
-      fetchEv91SdPreview(25).catch(() => []),
-    ])
-    let resolvedCount = count
-    if (resolvedCount === 0 && preview.length > 0) {
-      resolvedCount = await fetchTableCount(EV91_SD_TABLE, { maxRetries: 10 }).catch(() => preview.length)
+    const preview = await fetchEv91SdPreview(25).catch((err) => {
+      if (isMissingEv91SdTable(err)) throw err
+      return []
+    })
+
+    const probe = await supabase.from(EV91_SD_TABLE).select('id').limit(1)
+    if (probe.error) {
+      if (isMissingEv91SdTable(probe.error)) {
+        return { count: 0, preview: [], lastUploadAt: null, fromDb: false, missingTable: true }
+      }
+      throw probe.error
     }
-    const lastUploadAt =
-      resolvedCount > 0 || preview.length > 0
-        ? await fetchLastUploadAtSafe(EV91_SD_TABLE)
-        : null
-    return { count: resolvedCount, preview, lastUploadAt, fromDb: true }
+    if (!probe.data?.length) {
+      return { count: 0, preview: [], lastUploadAt: null, fromDb: true }
+    }
+
+    let count = 0
+    try {
+      count = await fetchEv91SdCount()
+    } catch (err) {
+      if (isMissingEv91SdTable(err)) throw err
+      count = preview.length
+    }
+    if (count === 0 && preview.length > 0) count = preview.length
+
+    const lastUploadAt = await fetchLastUploadAtSafe(EV91_SD_TABLE)
+    return { count, preview, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingEv91SdTable(err)) {
       return { count: 0, preview: [], lastUploadAt: null, fromDb: false, missingTable: true }
+    }
+    if (isStatementTimeout(err)) {
+      console.warn('[ev91-sd] summary timed out:', err.message || err)
+      return { count: 0, preview: [], lastUploadAt: null, fromDb: true, timedOut: true }
     }
     throw err
   }

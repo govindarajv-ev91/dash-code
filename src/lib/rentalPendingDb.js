@@ -1,6 +1,13 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists, fetchTableCount, fetchLastUploadAtSafe } from './paymentMonthList'
+import {
+  collectMonthsFromRows,
+  mergeMonthLists,
+  fetchTableCount,
+  fetchLastUploadAtSafe,
+  fetchMonthsSampled,
+  isStatementTimeout,
+} from './paymentMonthList'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { parseFleetDate } from './fleetDeployReturnExport.js'
 
@@ -43,6 +50,7 @@ export async function clearRentalPendingDataByMonth(month) {
 export async function fetchRentalPendingMonths() {
   const probe = await supabase.from(RENTAL_PENDING_TABLE).select('id').limit(1)
   if (probe.error) throw probe.error
+  if (!probe.data?.length) return []
 
   const { data: rpcData, error: rpcError } = await supabase.rpc('distinct_rental_pending_months')
   if (!rpcError && Array.isArray(rpcData) && rpcData.length) {
@@ -50,8 +58,11 @@ export async function fetchRentalPendingMonths() {
     return mergeMonthLists(labels)
   }
 
-  const { data } = await fetchAllData(RENTAL_PENDING_TABLE, 'month,id', 'id', { useKeyset: true })
-  return collectMonthsFromRows(data)
+  if (rpcError) {
+    console.warn('[rental-pending] distinct months RPC failed, using sample:', rpcError.message || rpcError)
+  }
+
+  return fetchMonthsSampled(RENTAL_PENDING_TABLE)
 }
 
 export async function saveRentalPendingRows(rows, { replace = true } = {}) {
@@ -103,17 +114,31 @@ export function clearRentalPendingCache() {
 
 export async function loadRentalPendingSummary() {
   try {
-    const [count, preview] = await Promise.all([
-      fetchRentalPendingCount().catch((err) => {
-        if (isMissingRentalPendingTable(err)) throw err
-        return 0
-      }),
-      fetchRentalPendingPreview(25).catch(() => []),
-    ])
-    let resolvedCount = count
-    if (resolvedCount === 0 && preview.length > 0) {
-      resolvedCount = await fetchTableCount(RENTAL_PENDING_TABLE, { maxRetries: 10 }).catch(() => preview.length)
+    const preview = await fetchRentalPendingPreview(25).catch((err) => {
+      if (isMissingRentalPendingTable(err)) throw err
+      return []
+    })
+
+    const probe = await supabase.from(RENTAL_PENDING_TABLE).select('id').limit(1)
+    if (probe.error) {
+      if (isMissingRentalPendingTable(probe.error)) {
+        return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
+      }
+      throw probe.error
     }
+    if (!probe.data?.length) {
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true }
+    }
+
+    let count = 0
+    try {
+      count = await fetchRentalPendingCount()
+    } catch (err) {
+      if (isMissingRentalPendingTable(err)) throw err
+      count = preview.length
+    }
+    if (count === 0 && preview.length > 0) count = preview.length
+
     let months = []
     try {
       months = await fetchRentalPendingMonths()
@@ -121,14 +146,15 @@ export async function loadRentalPendingSummary() {
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
-    const lastUploadAt =
-      resolvedCount > 0 || preview.length > 0
-        ? await fetchLastUploadAtSafe(RENTAL_PENDING_TABLE)
-        : null
-    return { count: resolvedCount, preview, months, lastUploadAt, fromDb: true }
+    const lastUploadAt = await fetchLastUploadAtSafe(RENTAL_PENDING_TABLE)
+    return { count, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingRentalPendingTable(err)) {
       return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
+    }
+    if (isStatementTimeout(err)) {
+      console.warn('[rental-pending] summary timed out:', err.message || err)
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true, timedOut: true }
     }
     throw err
   }

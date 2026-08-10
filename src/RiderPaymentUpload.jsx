@@ -321,11 +321,24 @@ export default function RiderPaymentUpload() {
 
   const refreshSummaries = useCallback(async () => {
     setLoadError(null)
+    const emptySummary = { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true }
     const [payment, collation, rental, ev91Sd] = await Promise.all([
-      loadRiderPaymentSummary(),
-      loadManualCollationSummary(),
-      loadRentalPendingSummary(),
-      loadEv91SdSummary(),
+      loadRiderPaymentSummary().catch((err) => {
+        console.error('Rider payment summary failed:', err)
+        return { ...emptySummary, timedOut: true }
+      }),
+      loadManualCollationSummary().catch((err) => {
+        console.error('Manual collation summary failed:', err)
+        return { ...emptySummary, timedOut: true }
+      }),
+      loadRentalPendingSummary().catch((err) => {
+        console.error('Rental pending summary failed:', err)
+        return { ...emptySummary, timedOut: true }
+      }),
+      loadEv91SdSummary().catch((err) => {
+        console.error('EV91 SD summary failed:', err)
+        return { count: 0, preview: [], lastUploadAt: null, fromDb: true, timedOut: true }
+      }),
     ])
     setPaymentCount(payment.count)
     setPaymentPreview(payment.preview)
@@ -670,6 +683,7 @@ export default function RiderPaymentUpload() {
       <div className="glass" style={{ padding: '0.85rem 1rem', marginBottom: '1.25rem', display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
         <Database size={16} />
         First-time setup: run <code style={{ color: '#fff' }}>sql/create_rider_payment_tables.sql</code> in Supabase SQL Editor.
+        If the page times out on large data, also run <code style={{ color: '#fff' }}>sql/fix_rider_payment_timeout.sql</code>.
       </div>
 
       {loadError && (

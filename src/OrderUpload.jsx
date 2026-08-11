@@ -20,6 +20,7 @@ import {
 } from './lib/orderUploadParse'
 import {
   loadOrderUploadSummary,
+  refreshOrderUploadSummaryAfterSave,
   saveOrderUploadRows,
   clearOrderUploadData,
   clearOrderUploadDataByMonth,
@@ -153,6 +154,15 @@ export default function OrderUpload({ onOrdersSaved }) {
     }
   }, [])
 
+  const applySummary = useCallback((summary) => {
+    if (!summary) return
+    setCount(summary.count || 0)
+    setPreview(summary.preview || [])
+    setMonths(summary.months || [])
+    setLastUploadAt(summary.count > 0 ? summary.lastUploadAt || null : null)
+    setMissingTable(Boolean(summary.missingTable))
+  }, [])
+
   useEffect(() => {
     refreshSummary()
   }, [refreshSummary])
@@ -171,13 +181,24 @@ export default function OrderUpload({ onOrdersSaved }) {
         setMessage({ type: 'error', text: 'No valid order rows found. Check template headers.' })
         return
       }
-      const inserted = await saveOrderUploadRows(rows, { replace: false })
-      const saved = typeof inserted === 'number' ? inserted : inserted.saved
-      const skipped = typeof inserted === 'number' ? 0 : inserted.skipped
-      const summary = await refreshSummary()
+      const result = await saveOrderUploadRows(rows, { replace: false })
+      const saved = result?.saved ?? 0
+      const skipped = result?.skipped ?? 0
+      const savedRows = result?.rows || []
+
+      // Fast summary — avoid exact COUNT(*) + full-table fetch (prod timeouts).
+      const summary = await refreshOrderUploadSummaryAfterSave(savedRows, { previousCount: count }).catch(
+        () => null
+      )
+      if (summary) applySummary(summary)
+      else {
+        setCount((c) => c + saved)
+        if (savedRows.length) setPreview(savedRows.slice(0, 25))
+      }
+
       const dateSummary = summarizeOrderUploadDates(rows)
       const dateText = dateSummary.length
-        ? dateSummary.map(({ date, count }) => `${date} (${count.toLocaleString()})`).join(', ')
+        ? dateSummary.map(({ date, count: n }) => `${date} (${n.toLocaleString()})`).join(', ')
         : 'none'
       setMessage({
         type: 'ok',
@@ -185,11 +206,11 @@ export default function OrderUpload({ onOrdersSaved }) {
           `Saved ${saved.toLocaleString()} unique rows (Date + WorkerCode + Client + order)` +
           (skipped ? ` · ${skipped.toLocaleString()} duplicate/blank rows skipped in file` : '') +
           ` · Dates in file: ${dateText}` +
-          ` · DB now ${(summary?.count ?? 0).toLocaleString()} rows` +
+          ` · DB ~${((summary?.count ?? count) || 0).toLocaleString()} rows` +
           ` from “${sheetName || file.name}”. Previous days kept.`,
       })
       if (typeof onOrdersSaved === 'function') {
-        await onOrdersSaved()
+        onOrdersSaved(savedRows)
       }
     } catch (err) {
       console.error(err)
@@ -270,6 +291,8 @@ export default function OrderUpload({ onOrdersSaved }) {
               <h1 style={{ margin: 0 }}>Order Upload</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
                 Daily order tracking (separate from rider_metrics) · unique by Date + WorkerCode · Type1 = EV / NON-EV
+                {' · '}
+                If production times out, run <code style={{ color: '#fff' }}>sql/fix_order_upload_production_timeout.sql</code> in Supabase.
               </p>
             </div>
           </div>
@@ -423,8 +446,8 @@ export default function OrderUpload({ onOrdersSaved }) {
                 </tr>
               </thead>
               <tbody>
-                {preview.map((row) => (
-                  <tr key={row.id}>
+                {preview.map((row, idx) => (
+                  <tr key={row.id ?? `${row.worker_code}-${row.date_record}-${row.delivered}-${idx}`}>
                     {ORDER_UPLOAD_PREVIEW_COLUMNS.map((col) => (
                       <td key={col.key}>{row[col.key] ?? '—'}</td>
                     ))}

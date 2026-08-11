@@ -38,7 +38,7 @@ import {
   FLEET_FULL_PAGE_SIZE,
 } from './lib/fleetDataConfig'
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
-import { fetchAllOrderUploads, clearOrderUploadCache } from './lib/orderUploadDb'
+import { fetchAllOrderUploads, clearOrderUploadCache, patchOrderUploadCache } from './lib/orderUploadDb'
 import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
@@ -392,26 +392,45 @@ function App() {
     fetchData()
   }, [fetchData])
 
-  const refreshOrdersAfterUpload = useCallback(async () => {
-    clearOrderUploadCache()
+  const refreshOrdersAfterUpload = useCallback(async (uploadedRows) => {
     clearIotRiderOrderCache()
-    try {
-      const [riderRes, uploadRows] = await Promise.all([
-        fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', { pageSize: FLEET_SLIM_PAGE_SIZE }),
-        fetchAllOrderUploads({ force: true }).catch(() => []),
-      ])
+
+    const hasPatch = Array.isArray(uploadedRows) && uploadedRows.length > 0
+
+    const syncMerged = async (uploadRows) => {
+      const riderRes = await fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', {
+        pageSize: FLEET_SLIM_PAGE_SIZE,
+      })
       const merged = mergeRiderMetricSources(riderRes.data || [], uploadRows || [])
       startTransition(() => setRiderData(merged))
       scheduleCacheWrite(() => {
         cacheData(RIDER_MERGED_CACHE_KEY, merged)
-        cacheData('order_upload_data', uploadRows || [])
+        if (uploadRows?.length) cacheData('order_upload_data', uploadRows)
       })
       setDataUpdatedAt(new Date())
-      console.info(
-        `[orders] refreshed after upload: ${uploadRows?.length ?? 0} uploads → ${merged.length} merged`
-      )
+      return merged
+    }
+
+    try {
+      if (hasPatch) {
+        // Never block upload on full order_upload_data pull — patch cache + merge metrics only.
+        const uploadRows = patchOrderUploadCache(uploadedRows)
+        await syncMerged(uploadRows)
+        console.info(`[orders] patched after upload: +${uploadedRows.length} rows (${uploadRows.length} cached)`)
+      } else {
+        clearOrderUploadCache()
+        const uploadRows = await fetchAllOrderUploads({ force: true }).catch(() => [])
+        await syncMerged(uploadRows)
+        console.info(`[orders] refreshed after upload: ${uploadRows?.length ?? 0} uploads`)
+      }
     } catch (err) {
       console.warn('Refresh after order upload failed:', err?.message || err)
+    }
+
+    if (hasPatch) {
+      void fetchAllOrderUploads({ force: true })
+        .then((full) => syncMerged(full || []))
+        .catch((err) => console.warn('[orders] background full sync failed:', err?.message || err))
     }
   }, [])
 

@@ -1,6 +1,12 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { collectMonthsFromRows, mergeMonthLists, fetchLastUploadAtSafe } from './paymentMonthList'
+import {
+  collectMonthsFromRows,
+  mergeMonthLists,
+  fetchLastUploadAtSafe,
+  fetchTableCount,
+  isStatementTimeout,
+} from './paymentMonthList'
 import { toMetricDateKey } from './mergeRiderMetrics'
 
 export const ORDER_UPLOAD_TABLE = 'order_upload_data'
@@ -40,33 +46,51 @@ export function parseOrderUploadMonthLabel(label) {
   }
 }
 
-/** Exact count only — avoid stale Postgres estimated counts after delete/upload. */
+/** Prefer estimated count — exact COUNT(*) often times out on large order_upload_data in prod. */
 export async function fetchOrderUploadCount() {
-  const exact = await supabase
-    .from(ORDER_UPLOAD_TABLE)
-    .select('id', { count: 'exact', head: true })
-  if (exact.error) throw exact.error
-  if (exact.count != null) return exact.count
-
-  const probe = await supabase.from(ORDER_UPLOAD_TABLE).select('id').limit(1)
-  if (probe.error) throw probe.error
-  if (!probe.data?.length) return 0
-
-  const { data } = await fetchAllData(ORDER_UPLOAD_TABLE, 'id', 'id', {
-    useKeyset: true,
-    maxRetries: 10,
-  })
-  return data?.length ?? 0
+  return fetchTableCount(ORDER_UPLOAD_TABLE)
 }
 
+const ORDER_UPLOAD_PREVIEW_SELECT = ORDER_UPLOAD_COLUMNS
+
 export async function fetchOrderUploadPreview(limit = 50) {
-  const { data, error } = await supabase
-    .from(ORDER_UPLOAD_TABLE)
-    .select('*')
-    .order('id', { ascending: false })
-    .limit(limit)
-  if (error) throw error
-  return data || []
+  let pageLimit = limit
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data, error } = await supabase
+      .from(ORDER_UPLOAD_TABLE)
+      .select(ORDER_UPLOAD_PREVIEW_SELECT)
+      .order('id', { ascending: false })
+      .limit(pageLimit)
+    if (!error) return data || []
+    if (isStatementTimeout(error) && pageLimit > 10) {
+      pageLimit = Math.max(10, Math.floor(pageLimit / 2))
+      continue
+    }
+    throw error
+  }
+  return []
+}
+
+function orderUploadRowKey(row) {
+  const worker = (row.worker_code ?? '').toString().trim().toUpperCase()
+  const date = (row.date_record ?? '').toString().trim()
+  const client = (row.client ?? '').toString().trim().toLowerCase()
+  const delivered = row.delivered == null || row.delivered === '' ? 0 : Number(row.delivered) || 0
+  return `${worker}|${date}|${client}|${delivered}`
+}
+
+/** Merge freshly saved rows into in-memory cache (avoids full-table refetch after upload). */
+export function patchOrderUploadCache(incomingRows = []) {
+  if (!incomingRows?.length) return cachedOrders ? [...cachedOrders] : []
+  const byKey = new Map()
+  for (const row of cachedOrders || []) {
+    byKey.set(orderUploadRowKey(row), row)
+  }
+  for (const row of incomingRows) {
+    byKey.set(orderUploadRowKey(row), row)
+  }
+  cachedOrders = [...byKey.values()]
+  return cachedOrders
 }
 
 export async function clearOrderUploadData() {
@@ -113,13 +137,6 @@ export async function clearOrderUploadDataByMonth(month) {
 
   clearOrderUploadCache()
   return deleted
-}
-
-function isStatementTimeout(error) {
-  return (
-    error?.code === '57014' ||
-    /statement timeout|canceling statement/i.test(error?.message || '')
-  )
 }
 
 /** Sample recent rows for month labels — never full-table scan (avoids timeouts). */
@@ -179,8 +196,38 @@ export async function fetchOrderUploadMonths() {
   return fetchOrderUploadMonthsSampled()
 }
 
+async function writeOrderUploadChunk(chunk, { upsert = false } = {}) {
+  let size = chunk.length
+  let offset = 0
+  let written = 0
+
+  while (offset < chunk.length) {
+    const slice = chunk.slice(offset, offset + size)
+    try {
+      const { error } = upsert
+        ? await supabase.from(ORDER_UPLOAD_TABLE).upsert(slice, {
+            onConflict: 'worker_code,date_record,client,delivered',
+            ignoreDuplicates: false,
+          })
+        : await supabase.from(ORDER_UPLOAD_TABLE).insert(slice)
+      if (error) throw error
+      written += slice.length
+      offset += slice.length
+    } catch (err) {
+      if (isStatementTimeout(err) && size > 25) {
+        size = Math.max(25, Math.floor(size / 2))
+        await new Promise((r) => setTimeout(r, 350))
+        continue
+      }
+      throw err
+    }
+  }
+
+  return written
+}
+
 export async function saveOrderUploadRows(rows, { replace = false } = {}) {
-  if (!rows?.length) return { saved: 0, unique: 0, skipped: 0 }
+  if (!rows?.length) return { saved: 0, unique: 0, skipped: 0, rows: [] }
 
   // Unique within file: Date + WorkerCode + Client + delivered → keep last row.
   const byKey = new Map()
@@ -208,37 +255,29 @@ export async function saveOrderUploadRows(rows, { replace = false } = {}) {
   }
 
   const uniqueRows = [...byKey.values()]
-  if (!uniqueRows.length) return { saved: 0, unique: 0, skipped: skippedInFile }
+  if (!uniqueRows.length) return { saved: 0, unique: 0, skipped: skippedInFile, rows: [] }
+
+  const chunkSize = 200
+  let saved = 0
 
   if (replace) {
     await clearOrderUploadData()
-    const chunkSize = 500
-    let inserted = 0
     for (let i = 0; i < uniqueRows.length; i += chunkSize) {
       const chunk = uniqueRows.slice(i, i + chunkSize)
-      const { error } = await supabase.from(ORDER_UPLOAD_TABLE).insert(chunk)
-      if (error) throw error
-      inserted += chunk.length
+      saved += await writeOrderUploadChunk(chunk, { upsert: false })
     }
     clearOrderUploadCache()
-    return { saved: inserted, unique: uniqueRows.length, skipped: skippedInFile }
+    patchOrderUploadCache(uniqueRows)
+    return { saved, unique: uniqueRows.length, skipped: skippedInFile, rows: uniqueRows }
   }
 
   // Daily upload: upsert on Date + WorkerCode + Client + delivered
-  // (e.g. rider 929914 with 11 and 5 orders on same day → both rows kept).
-  const chunkSize = 500
-  let saved = 0
   for (let i = 0; i < uniqueRows.length; i += chunkSize) {
     const chunk = uniqueRows.slice(i, i + chunkSize)
-    const { error } = await supabase.from(ORDER_UPLOAD_TABLE).upsert(chunk, {
-      onConflict: 'worker_code,date_record,client,delivered',
-      ignoreDuplicates: false,
-    })
-    if (error) throw error
-    saved += chunk.length
+    saved += await writeOrderUploadChunk(chunk, { upsert: true })
   }
-  clearOrderUploadCache()
-  return { saved, unique: uniqueRows.length, skipped: skippedInFile }
+  patchOrderUploadCache(uniqueRows)
+  return { saved, unique: uniqueRows.length, skipped: skippedInFile, rows: uniqueRows }
 }
 
 let cachedOrders = null
@@ -264,28 +303,10 @@ export async function fetchAllOrderUploads({ force = false } = {}) {
     if (probe.error) throw probe.error
     const { data } = await fetchAllData(ORDER_UPLOAD_TABLE, ORDER_UPLOAD_COLUMNS, 'id', {
       useKeyset: true,
-      maxRetries: 10,
-      pageSize: 1000,
+      maxRetries: 12,
+      pageSize: 500,
     })
-    let rows = data || []
-
-    // If pagination stopped early (timeout), latest days like 31 Jul are missing
-    try {
-      const exact = await fetchOrderUploadCount()
-      if (exact > 0 && rows.length < exact) {
-        console.warn(
-          `[orders] incomplete fetch ${rows.length}/${exact} — retrying full pull`
-        )
-        const retry = await fetchAllData(ORDER_UPLOAD_TABLE, ORDER_UPLOAD_COLUMNS, 'id', {
-          useKeyset: true,
-          maxRetries: 12,
-          pageSize: 500,
-        })
-        if ((retry.data?.length || 0) > rows.length) rows = retry.data || rows
-      }
-    } catch (err) {
-      console.warn('[orders] count check skipped:', err?.message || err)
-    }
+    const rows = data || []
 
     if (gen !== ordersFetchGeneration) return rows
 
@@ -385,42 +406,77 @@ export function clearOrderUploadCache() {
 
 export async function loadOrderUploadSummary() {
   try {
-    // Preview first — if empty, treat as empty table (avoid stale estimated counts).
-    const preview = await fetchOrderUploadPreview(25).catch(() => [])
+    const preview = await fetchOrderUploadPreview(25).catch((err) => {
+      if (isMissingOrderUploadTable(err)) throw err
+      console.warn('[orders] preview failed:', err?.message || err)
+      return []
+    })
+
     const probe = await supabase.from(ORDER_UPLOAD_TABLE).select('id').limit(1)
-    if (probe.error) throw probe.error
+    if (probe.error) {
+      if (isMissingOrderUploadTable(probe.error)) {
+        return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
+      }
+      throw probe.error
+    }
 
     if (!probe.data?.length) {
-      return {
-        count: 0,
-        preview: [],
-        months: [],
-        lastUploadAt: null,
-        fromDb: true,
-      }
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true }
     }
 
     let count = 0
     try {
       count = await fetchOrderUploadCount()
-    } catch {
+    } catch (err) {
+      if (isMissingOrderUploadTable(err)) throw err
       count = preview.length
     }
+    if (count === 0 && preview.length > 0) count = preview.length
 
     let months = []
     try {
       months = await fetchOrderUploadMonths()
-    } catch {
+    } catch (err) {
+      console.warn('[orders] months failed:', err?.message || err)
       months = collectMonthsFromRows(preview)
     }
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
 
-    const lastUploadAt = count > 0 ? await fetchLastUploadAtSafe(ORDER_UPLOAD_TABLE) : null
+    const lastUploadAt = await fetchLastUploadAtSafe(ORDER_UPLOAD_TABLE)
     return { count, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingOrderUploadTable(err)) {
       return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }
     }
+    if (isStatementTimeout(err)) {
+      console.warn('[orders] summary timed out:', err.message || err)
+      return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: true, timedOut: true }
+    }
     throw err
   }
+}
+
+/** Fast UI refresh after upload — estimated count only (no exact COUNT(*)). */
+export async function refreshOrderUploadSummaryAfterSave(savedRows = [], { previousCount = 0 } = {}) {
+  const preview = savedRows.length
+    ? savedRows.slice(0, 25)
+    : await fetchOrderUploadPreview(25).catch(() => [])
+
+  let months = collectMonthsFromRows(savedRows)
+  try {
+    months = mergeMonthLists(months, await fetchOrderUploadMonths())
+  } catch {
+    months = mergeMonthLists(months, collectMonthsFromRows(preview))
+  }
+
+  const lastUploadAt = await fetchLastUploadAtSafe(ORDER_UPLOAD_TABLE)
+
+  let count = previousCount
+  try {
+    count = await fetchOrderUploadCount()
+  } catch {
+    count = Math.max(previousCount, preview.length)
+  }
+
+  return { count, preview, months, lastUploadAt, fromDb: true }
 }

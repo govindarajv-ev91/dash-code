@@ -400,7 +400,79 @@ function resolveApiPublicRiderId(publicRiderIndex, candidates = []) {
   return ''
 }
 
-/** Unique EV riders — fleet SD vs payment SD deduction vs manual SD vs EV91 SD upload. */
+/** Aggregate payment SD — include ALL riders from payment data (not only fleet EV riders).
+ *  Riders with sd=0 are still indexed so they appear in search results. */
+function aggregatePaymentSdTotalAll(paymentRows) {
+  const byRider = new Map()
+  for (const row of paymentRows || []) {
+    const id = normalizeRiderIdKey(row.rider_id)
+    if (!id) continue
+    const sd = num(row.sd)
+    if (!byRider.has(id)) {
+      byRider.set(id, {
+        amount: 0,
+        riderName: pickText(row.rider_name),
+        city: normalizeSummaryCity(row.city),
+        client: normalizeSummaryClient(row.client_name),
+      })
+    }
+    const entry = byRider.get(id)
+    entry.amount += sd
+    entry.riderName = pickText(row.rider_name, entry.riderName) || entry.riderName
+    entry.city = normalizeSummaryCity(pickText(row.city, entry.city)) || entry.city
+    entry.client = normalizeSummaryClient(pickText(row.client_name, entry.client)) || entry.client
+  }
+  return byRider
+}
+
+function aggregatePaymentSdWeeksPerRiderAll(paymentRows) {
+  const byRider = new Map()
+  for (const row of paymentRows || []) {
+    const id = normalizeRiderIdKey(row.rider_id)
+    if (!id) continue
+    const sd = num(row.sd)
+    const wk = paymentWeekKey(row)
+    if (!wk) continue
+    const sort = paymentWeekSortValue(row)
+    if (!byRider.has(id)) byRider.set(id, new Map())
+    if (!sd) continue
+    const weekMap = byRider.get(id)
+    const prev = weekMap.get(wk) || { amount: 0, sort: 0 }
+    weekMap.set(wk, {
+      amount: prev.amount + sd,
+      sort: Math.max(prev.sort, sort),
+    })
+  }
+  return byRider
+}
+
+/** Aggregate manual collation SD — includes ALL riders from manual collation data.
+ *  Riders without SD-matching purpose are still indexed so they appear in search results. */
+function aggregateManualSdAll(collationRows) {
+  const byRider = new Map()
+  for (const row of collationRows || []) {
+    const id = normalizeRiderIdKey(row.rider_id)
+    if (!id) continue
+    const isSdPurpose = matchesSdManualPurpose(row.purpose)
+    const amount = isSdPurpose ? manualCollationAmount(row) : 0
+    if (!byRider.has(id)) {
+      byRider.set(id, {
+        amount: 0,
+        riderName: pickText(row.rider_name),
+        city: normalizeSummaryCity(row.city),
+      })
+    }
+    if (!amount) continue
+    const entry = byRider.get(id)
+    entry.amount += amount
+    entry.riderName = pickText(row.rider_name, entry.riderName) || entry.riderName
+    entry.city = normalizeSummaryCity(pickText(row.city, entry.city)) || entry.city
+  }
+  return byRider
+}
+
+/** Unique riders — fleet SD vs payment SD deduction vs manual SD vs EV91 SD upload.
+ *  Now includes riders from Rider Payment Data even if they have NO fleet records. */
 export function buildSdPaymentReport(
   paymentRows = [],
   collationRows = [],
@@ -415,11 +487,16 @@ export function buildSdPaymentReport(
   const ev91Index = buildEv91SdByRiderIndex(ev91SdRows)
   const weekKeys = resolveLatestPaymentWeeks(paymentRows, 2)
   const paymentWeekLabels = weekKeys.map(formatPaymentWeekLabel)
-  const sdWeeksByRider = aggregatePaymentSdWeeksPerRider(paymentRows, evRiders)
-  const paymentSdTotal = aggregatePaymentSdTotal(paymentRows, evRiders)
-  const manualSd = aggregateManualSd(collationRows, evRiders)
+  // Include ALL riders with SD deductions — not only fleet EV riders.
+  const sdWeeksByRider = aggregatePaymentSdWeeksPerRiderAll(paymentRows)
+  const paymentSdTotal = aggregatePaymentSdTotalAll(paymentRows)
+  const manualSd = aggregateManualSdAll(collationRows)
 
+  // Start with fleet EV riders, then add payment/manual/EV91 riders not in fleet.
   const riderIds = new Set(evRiders)
+  for (const id of paymentSdTotal.keys()) riderIds.add(id)
+  for (const id of sdWeeksByRider.keys()) riderIds.add(id)
+  for (const id of manualSd.keys()) riderIds.add(id)
   const matchedEv91Ids = new Set()
   const rows = []
 
@@ -453,10 +530,11 @@ export function buildSdPaymentReport(
     const paymentSdDeductionTotal = payTotal?.amount ?? 0
     const manualSdPaid = manual?.amount ?? 0
     const sdFields = ev91SdFields(ev91, apiPublicId)
+    const hasFleet = evRiders.has(id)
 
     rows.push({
       rowKey: `sd-${id}`,
-      riderId: pickText(firstDeployee?.riderId, fleet?.riderId, ev91?.client_rider_id) || id,
+      riderId: pickText(firstDeployee?.riderId, fleet?.riderId, ev91?.client_rider_id, payTotal?.riderName ? id : '') || id,
       riderName: pickText(fleet?.riderName, firstDeployee?.riderName, payTotal?.riderName, manual?.riderName) || 'N/A',
       city: pickText(fleet?.city, payTotal?.city, manual?.city, ev91?.city) || 'Unknown',
       client: fleet?.client || payTotal?.client || pickText(ev91?.client_name) || 'Unknown',
@@ -477,6 +555,7 @@ export function buildSdPaymentReport(
       paymentSdDeductionTotal,
       manualSdPaid,
       sdGap: fleetSdPaid - paymentSdDeductionTotal - manualSdPaid,
+      dataSource: hasFleet ? 'Fleet' : payTotal ? 'Payment' : manual ? 'Manual' : 'EV91',
       ...sdFields,
     })
   }
@@ -525,15 +604,15 @@ export function buildSdPaymentReport(
   return { rows, paymentWeekLabels }
 }
 
-/** EV riders — all payment rows + manual EV rent rows (Purpose). */
+/** All riders with EV rent — payment rows + manual EV rent rows (Purpose).
+ *  Includes riders from Rider Payment Data even without fleet deploy/return records. */
 export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fleetRows = []) {
-  const evRiders = buildEvRiderIdSet(fleetRows)
   const fleetIndex = buildFleetEvSdIndex(fleetRows)
   const rows = []
 
   for (const row of paymentRows || []) {
     const id = normalizeRiderIdKey(row.rider_id)
-    if (!id || !evRiders.has(id)) continue
+    if (!id) continue
 
     const fleet = fleetIndex.get(id)
     const paymentEvRent = num(row.ev_rent)
@@ -559,7 +638,7 @@ export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fle
   for (const row of collationRows || []) {
     if (!matchesEvRentManualPurpose(row.purpose)) continue
     const id = normalizeRiderIdKey(row.rider_id)
-    if (!id || !evRiders.has(id)) continue
+    if (!id) continue
 
     const fleet = fleetIndex.get(id)
     const manualEvRent = manualCollationAmount(row)

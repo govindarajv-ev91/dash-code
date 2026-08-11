@@ -16,6 +16,7 @@ import {
   Upload,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import * as XLSX from 'xlsx'
 import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
 import { EV91_CITIES } from './lib/ev91MisApi'
 import {
@@ -45,6 +46,59 @@ import {
 function escapeCsv(value) {
   const s = value == null ? '' : String(value)
   return `"${s.replace(/"/g, '""')}"`
+}
+
+function summarizeClientsTotals(clients = []) {
+  const totals = { targetEv: 0, targetNonEv: 0 }
+  for (const metric of SUMMARY_METRICS) totals[metric.key] = 0
+  for (const c of clients) {
+    totals.targetEv += Number(c.targetEv || 0)
+    totals.targetNonEv += Number(c.targetNonEv || 0)
+    for (const metric of SUMMARY_METRICS) {
+      totals[metric.key] += Number(c[metric.key] || 0)
+    }
+  }
+  return totals
+}
+
+/** Same layout as Export Summary: Metric | clients… | Total (AOA for Excel / CSV). */
+function buildSummarySheetAoA(clients = []) {
+  const sorted = [...clients].sort(compareEv91SummaryClients)
+  const totals = summarizeClientsTotals(sorted)
+  const clientCols = sorted.map((c) => c.client)
+  const rows = [['Metric', ...clientCols, 'Total']]
+
+  rows.push(['Target EV', ...sorted.map((c) => c.targetEv || 0), totals.targetEv || 0])
+  for (const metric of SUMMARY_METRICS) {
+    rows.push([metric.label, ...sorted.map((c) => c[metric.key] || 0), totals[metric.key] || 0])
+  }
+  return rows
+}
+
+/**
+ * Screenshot-style all-cities matrix (one sheet):
+ * | (Metric) | City | Client1 | Client2 | … | Total |
+ * rows grouped by Target → Total Deployed → Ev → IC → Return → Net add on,
+ * with one row per city under each metric.
+ */
+function buildAllCitiesMatrixAoA(citySummaries, clientCols) {
+  const metricDefs = [
+    { key: 'targetEv', label: 'Target' },
+    ...SUMMARY_METRICS.map((m) => ({ key: m.key, label: m.label })),
+  ]
+
+  const header = ['', 'City', ...clientCols, 'Total']
+  const rows = [header]
+
+  for (const metric of metricDefs) {
+    for (const { city, byClient } of citySummaries) {
+      const values = clientCols.map((client) => Number(byClient.get(client)?.[metric.key] || 0))
+      const total = values.reduce((sum, n) => sum + n, 0)
+      rows.push([metric.label, city, ...values, total])
+    }
+  }
+
+  return rows
 }
 
 export default function Ev91DeployReturnSummary({ riderData = [], loading: riderLoading = false }) {
@@ -270,20 +324,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   )
 
   const exportSummaryCsv = () => {
-    const clientCols = tableClients.map((c) => c.client)
-    const header = ['Metric', ...clientCols, 'Total']
-    const lines = [header.map(escapeCsv).join(',')]
-
-    const evTargetValues = tableClients.map((c) => c.targetEv || 0)
-    evTargetValues.push(tableTotals.targetEv || 0)
-    lines.push(['Target EV', ...evTargetValues].map(escapeCsv).join(','))
-
-    for (const metric of SUMMARY_METRICS) {
-      const values = tableClients.map((c) => c[metric.key])
-      values.push(tableTotals[metric.key])
-      lines.push([metric.label, ...values].map(escapeCsv).join(','))
-    }
-
+    const aoa = buildSummarySheetAoA(tableClients)
+    const lines = aoa.map((row) => row.map(escapeCsv).join(','))
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -292,6 +334,64 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
     a.click()
     URL.revokeObjectURL(url)
   }
+
+  /** One sheet — Metric × City matrix matching the ops screenshot layout. */
+  const exportAllCitiesSummary = useCallback(() => {
+    const cityList = cities.length ? cities : [...EV91_CITIES]
+
+    // Client column order from combined (All Cities) summary — visible clients only
+    const allSummary = buildEv91ClientWiseSummary(rows, firstOrderIndex, {
+      city: 'All',
+      startDate,
+      endDate,
+      includeDetails: false,
+    })
+    const allTargetMaps = buildEv91TargetTotalsByEvType(weekTargetRows, 'All')
+    const allMerged = mergeEv91SummaryWithTargets(allSummary, allTargetMaps)
+    const { visibleClients } = splitSummaryClients(allMerged.clients || [])
+    const clientCols = [...visibleClients]
+      .sort(compareEv91SummaryClients)
+      .map((c) => c.client)
+
+    const citySummaries = []
+    for (const city of cityList) {
+      const citySummary = buildEv91ClientWiseSummary(rows, firstOrderIndex, {
+        city,
+        startDate,
+        endDate,
+        includeDetails: false,
+      })
+      const cityTargets = buildEv91TargetTotalsByEvType(weekTargetRows, city)
+      const merged = mergeEv91SummaryWithTargets(citySummary, cityTargets)
+      const clients = (merged.clients || []).filter((c) => !isHiddenSummaryClient(c.client))
+      if (!clients.length) continue
+
+      const byClient = new Map(clients.map((c) => [c.client, c]))
+      // Ensure every export column exists (zeros for missing)
+      for (const client of clientCols) {
+        if (!byClient.has(client)) {
+          byClient.set(client, {
+            client,
+            targetEv: 0,
+            totalDeployed: 0,
+            evDeployed: 0,
+            icDeployed: 0,
+            returnCount: 0,
+            netAddon: 0,
+          })
+        }
+      }
+      citySummaries.push({ city, byClient })
+    }
+
+    if (!citySummaries.length || !clientCols.length) return
+
+    const aoa = buildAllCitiesMatrixAoA(citySummaries, clientCols)
+    const wb = XLSX.utils.book_new()
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    XLSX.utils.book_append_sheet(wb, ws, 'All Cities')
+    XLSX.writeFile(wb, `ev91_client_summary_all_cities_${selectedWeek}_${startDate}_${endDate}.xlsx`)
+  }, [cities, rows, firstOrderIndex, startDate, endDate, weekTargetRows, selectedWeek])
 
   const exportRawCsv = () => {
     const lines = []
@@ -384,6 +484,15 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         <div className="fdv-summary-actions">
           <button type="button" className="fsr-export-btn" onClick={exportSummaryCsv}>
             <Download size={16} /> Export Summary
+          </button>
+          <button
+            type="button"
+            className="fsr-export-btn"
+            onClick={exportAllCitiesSummary}
+            title="Download one sheet: Metric × City × Client matrix (Target, Deployed, EV, IC, Return, Net)"
+            disabled={busy || !rows.length}
+          >
+            <Download size={16} /> Export All Cities
           </button>
           <button
             type="button"

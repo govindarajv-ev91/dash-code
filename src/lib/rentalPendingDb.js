@@ -7,6 +7,7 @@ import {
   fetchLastUploadAtSafe,
   fetchMonthsSampled,
   isStatementTimeout,
+  deleteRowsInBatches,
 } from './paymentMonthList'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { parseFleetDate } from './fleetDeployReturnExport.js'
@@ -34,16 +35,14 @@ export async function fetchRentalPendingPreview(limit = 50) {
 }
 
 export async function clearRentalPendingData() {
-  const { error } = await supabase.from(RENTAL_PENDING_TABLE).delete().neq('id', 0)
-  if (error) throw error
+  await deleteRowsInBatches(RENTAL_PENDING_TABLE)
   clearRentalPendingCache()
 }
 
 export async function clearRentalPendingDataByMonth(month) {
   const label = (month ?? '').toString().trim()
   if (!label) return clearRentalPendingData()
-  const { error } = await supabase.from(RENTAL_PENDING_TABLE).delete().eq('month', label)
-  if (error) throw error
+  await deleteRowsInBatches(RENTAL_PENDING_TABLE, { month: label })
   clearRentalPendingCache()
 }
 

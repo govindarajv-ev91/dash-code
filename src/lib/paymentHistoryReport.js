@@ -441,8 +441,8 @@ export function summarizePaymentHistory(rows, field) {
     if (!map.has(name)) {
       map.set(name, {
         name,
-        rows: 0,
         riders: new Set(),
+        orders: 0,
         totalIn: 0,
         netFlow: 0,
         finalNetPayout: 0,
@@ -453,8 +453,8 @@ export function summarizePaymentHistory(rows, field) {
       })
     }
     const s = map.get(name)
-    s.rows += 1
     if (r.riderId) s.riders.add(r.riderId)
+    s.orders += Number(r.orders) || 0
     s.totalIn += r.moneyIn
     s.netFlow += r.netFlow
     s.finalNetPayout += r.finalNetPayout
@@ -466,7 +466,7 @@ export function summarizePaymentHistory(rows, field) {
 
   return [...map.values()]
     .map((s) => ({ ...s, riders: s.riders.size }))
-    .sort((a, b) => b.rows - a.rows || a.name.localeCompare(b.name))
+    .sort((a, b) => b.riders - a.riders || b.orders - a.orders || a.name.localeCompare(b.name))
 }
 
 /** Source-wise revenue for a month (optional city filter). */

@@ -57,3 +57,55 @@ $$;
 grant execute on function public.distinct_rider_payment_months() to anon, authenticated;
 grant execute on function public.distinct_manual_collation_months() to anon, authenticated;
 grant execute on function public.distinct_rental_pending_months() to anon, authenticated;
+
+-- Batched reset: one short DELETE per call so Reset Data does not hit statement_timeout.
+-- The app loops this until 0 rows are deleted.
+create or replace function public.reset_upload_table_batch(
+  p_table text,
+  p_month text default null,
+  p_limit integer default 1500
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+set statement_timeout = '30s'
+as $$
+declare
+  tbl text;
+  lim integer;
+  n integer := 0;
+  month_label text;
+begin
+  tbl := case p_table
+    when 'rider_payment_data' then 'rider_payment_data'
+    when 'manual_collation_data' then 'manual_collation_data'
+    when 'rental_pending_data' then 'rental_pending_data'
+    when 'ev91_sd_data' then 'ev91_sd_data'
+    else null
+  end;
+  if tbl is null then
+    raise exception 'unsupported table: %', p_table;
+  end if;
+
+  lim := greatest(50, least(coalesce(p_limit, 1500), 3000));
+  month_label := nullif(btrim(coalesce(p_month, '')), '');
+
+  if month_label is null or tbl = 'ev91_sd_data' then
+    execute format(
+      'delete from public.%I where id in (select id from public.%I order by id limit %s)',
+      tbl, tbl, lim
+    );
+  else
+    execute format(
+      'delete from public.%I where id in (select id from public.%I where month = $1 order by id limit %s)',
+      tbl, tbl, lim
+    ) using month_label;
+  end if;
+
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+grant execute on function public.reset_upload_table_batch(text, text, integer) to anon, authenticated;

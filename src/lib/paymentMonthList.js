@@ -160,3 +160,98 @@ export function formatLastUploadAt(iso) {
     hour12: true,
   })
 }
+
+function isMissingRpc(error) {
+  const msg = (error?.message || '').toLowerCase()
+  return (
+    error?.code === 'PGRST202' ||
+    msg.includes('could not find the function') ||
+    msg.includes('schema cache') ||
+    (msg.includes('function') && msg.includes('does not exist'))
+  )
+}
+
+async function deleteIdChunk(tableName, ids) {
+  let size = ids.length
+  let offset = 0
+  let deleted = 0
+
+  while (offset < ids.length) {
+    const slice = ids.slice(offset, offset + size)
+    const { error, count } = await supabase
+      .from(tableName)
+      .delete({ count: 'exact' })
+      .in('id', slice)
+
+    if (error) {
+      if (isStatementTimeout(error) && size > 25) {
+        size = Math.max(25, Math.floor(size / 2))
+        continue
+      }
+      throw error
+    }
+
+    const n = count ?? slice.length
+    if (n === 0 && slice.length > 0) {
+      throw new Error(`Reset could not delete rows from ${tableName} (check delete permission).`)
+    }
+    deleted += n
+    offset += slice.length
+  }
+
+  return deleted
+}
+
+/**
+ * Delete large upload tables without a single huge DELETE (production statement_timeout).
+ * Tries reset_upload_table_batch RPC first, then falls back to select-id + delete chunks.
+ */
+export async function deleteRowsInBatches(tableName, { month = '', batchSize = 300 } = {}) {
+  if (!tableName) return 0
+  const label = normalizeMonthLabel(month)
+
+  let deleted = 0
+  let useRpc = true
+
+  while (useRpc) {
+    const { data, error } = await supabase.rpc('reset_upload_table_batch', {
+      p_table: tableName,
+      p_month: label || null,
+      p_limit: 1500,
+    })
+    if (error) {
+      useRpc = false
+      if (!isMissingRpc(error)) {
+        console.warn(`[delete] ${tableName} batch RPC failed, using client chunks:`, error.message || error)
+      }
+      break
+    }
+    const n = Number(data) || 0
+    deleted += n
+    if (n === 0) return deleted
+  }
+
+  let size = batchSize
+  while (true) {
+    let q = supabase.from(tableName).select('id').order('id', { ascending: true }).limit(size)
+    if (label) q = q.eq('month', label)
+
+    const { data, error } = await q
+    if (error) {
+      if (isStatementTimeout(error) && size > 50) {
+        size = Math.max(50, Math.floor(size / 2))
+        continue
+      }
+      throw error
+    }
+    if (!data?.length) break
+
+    const ids = data.map((row) => row.id).filter((id) => id != null)
+    if (!ids.length) break
+
+    deleted += await deleteIdChunk(tableName, ids)
+    if (ids.length < size) break
+  }
+
+  return deleted
+}

@@ -7,6 +7,7 @@ import {
   fetchLastUploadAtSafe,
   fetchMonthsSampled,
   isStatementTimeout,
+  deleteRowsInBatches,
 } from './paymentMonthList'
 
 export const MANUAL_COLLATION_TABLE = 'manual_collation_data'
@@ -32,16 +33,14 @@ export async function fetchManualCollationPreview(limit = 50) {
 }
 
 export async function clearManualCollationData() {
-  const { error } = await supabase.from(MANUAL_COLLATION_TABLE).delete().neq('id', 0)
-  if (error) throw error
+  await deleteRowsInBatches(MANUAL_COLLATION_TABLE)
   clearManualCollationCache()
 }
 
 export async function clearManualCollationDataByMonth(month) {
   const label = (month ?? '').toString().trim()
   if (!label) return clearManualCollationData()
-  const { error } = await supabase.from(MANUAL_COLLATION_TABLE).delete().eq('month', label)
-  if (error) throw error
+  await deleteRowsInBatches(MANUAL_COLLATION_TABLE, { month: label })
   clearManualCollationCache()
 }
 

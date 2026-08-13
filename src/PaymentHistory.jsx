@@ -82,8 +82,8 @@ function SummaryTable({ title, rows, icon: Icon }) {
           <thead>
             <tr>
               <th>Name</th>
-              <th>Rows</th>
               <th>Riders</th>
+              <th>Orders</th>
               <th>Money In</th>
             </tr>
           </thead>
@@ -92,8 +92,8 @@ function SummaryTable({ title, rows, icon: Icon }) {
               rows.map((row) => (
                 <tr key={row.name}>
                   <td>{row.name}</td>
-                  <td>{row.rows}</td>
-                  <td>{row.riders}</td>
+                  <td>{row.riders.toLocaleString()}</td>
+                  <td>{(row.orders || 0).toLocaleString()}</td>
                   <td style={{ color: 'var(--accent-green)' }}>{formatInr(row.totalIn)}</td>
                 </tr>
               ))
@@ -314,7 +314,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
 
   const totals = useMemo(() => {
     if (activeTab !== 'payments') {
-      return { moneyIn: 0, netPayout: 0, totalDed: 0, evRent: 0, codDed: 0, sdDed: 0, rows: 0, riders: 0 }
+      return { moneyIn: 0, netPayout: 0, totalDed: 0, evRent: 0, codDed: 0, sdDed: 0, rows: 0, riders: 0, orders: 0 }
     }
     let moneyIn = 0
     let netPayout = 0
@@ -322,6 +322,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
     let evRent = 0
     let codDed = 0
     let sdDed = 0
+    let orders = 0
     const riders = new Set()
 
     for (const r of filtered) {
@@ -331,10 +332,11 @@ export default function PaymentHistory({ onboardingData = [] }) {
       evRent += r.evRent
       codDed += r.codDeduction
       sdDed += r.sdDeduction
+      orders += Number(r.orders) || 0
       if (r.riderId) riders.add(r.riderId)
     }
 
-    return { moneyIn, netPayout, totalDed, evRent, codDed, sdDed, rows: filtered.length, riders: riders.size }
+    return { moneyIn, netPayout, totalDed, evRent, codDed, sdDed, rows: filtered.length, riders: riders.size, orders }
   }, [activeTab, filtered])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE))
@@ -536,6 +538,8 @@ export default function PaymentHistory({ onboardingData = [] }) {
       {activeTab === 'payments' ? (
         <>
       <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
+        <StatCard label="Unique Riders" value={totals.riders.toLocaleString()} icon={Users} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
+        <StatCard label="Orders" value={totals.orders.toLocaleString()} icon={Receipt} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
         <StatCard label="Money In" value={formatInr(totals.moneyIn)} icon={ArrowDownLeft} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
         <StatCard label="Net Payout" value={formatInr(totals.netPayout)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
         <StatCard label="Total Ded." value={formatInr(totals.totalDed)} icon={MinusCircle} color="#f87171" iconBg="rgba(248, 113, 113, 0.12)" />
@@ -546,7 +550,8 @@ export default function PaymentHistory({ onboardingData = [] }) {
 
       <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
         <div className="status-badge" style={{ padding: '0.5rem 0.9rem' }}>
-          {totals.rows} rows · {totals.riders} riders
+          {totals.riders.toLocaleString()} unique riders · {totals.orders.toLocaleString()} orders
+          {selectedMonths[0] ? ` · ${selectedMonths[0]}` : ''}
         </div>
         {search !== deferredSearch && (
           <div className="status-badge" style={{ padding: '0.5rem 0.9rem', color: 'var(--text-dim)' }}>
@@ -649,7 +654,7 @@ export default function PaymentHistory({ onboardingData = [] }) {
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', padding: '1rem 1.5rem', borderTop: '1px solid var(--border-color)' }}>
           <span style={{ fontSize: '0.85rem', color: 'var(--text-dim)' }}>
-            {filtered.length} rows · {paymentRows.length} payment records
+            {totals.riders.toLocaleString()} unique riders · {totals.orders.toLocaleString()} orders · {filtered.length.toLocaleString()} payment records
           </span>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             <button type="button" className="glass-btn" disabled={currentPage <= 1} onClick={() => setCurrentPage((p) => p - 1)}>Prev</button>

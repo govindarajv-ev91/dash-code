@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
-import { fetchTableCount, fetchLastUploadAtSafe, isStatementTimeout } from './paymentMonthList'
+import { fetchTableCount, fetchLastUploadAtSafe, isStatementTimeout, deleteRowsInBatches } from './paymentMonthList'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 
 export const EV91_SD_TABLE = 'ev91_sd_data'
@@ -26,8 +26,7 @@ export async function fetchEv91SdPreview(limit = 50) {
 }
 
 export async function clearEv91SdData() {
-  const { error } = await supabase.from(EV91_SD_TABLE).delete().neq('id', 0)
-  if (error) throw error
+  await deleteRowsInBatches(EV91_SD_TABLE)
   clearEv91SdCache()
 }
 

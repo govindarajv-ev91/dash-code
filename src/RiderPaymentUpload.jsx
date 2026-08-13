@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Upload, RotateCcw, Wallet, Landmark, Loader, Database, AlertTriangle, CircleDollarSign, Clock, Shield } from 'lucide-react'
-import { formatLastUploadAt } from './lib/paymentMonthList'
+import { formatLastUploadAt, isStatementTimeout } from './lib/paymentMonthList'
 import {
   parseRiderPaymentFile,
   parseManualCollationFile,
@@ -43,6 +43,14 @@ import {
   getEv91SdDbSetupMessage,
   isMissingEv91SdTable,
 } from './lib/ev91SdDb'
+
+function resetErrorText(err, missingTableText) {
+  if (missingTableText) return missingTableText
+  if (isStatementTimeout(err)) {
+    return 'Reset timed out on a large table. Run sql/fix_rider_payment_timeout.sql in Supabase, then try Reset again.'
+  }
+  return err?.message || 'Reset failed.'
+}
 
 function ResetConfirmModal({ open, title, message, confirming, onCancel, onConfirm }) {
   if (!open) return null
@@ -438,10 +446,10 @@ export default function RiderPaymentUpload() {
           : 'All rider payment data cleared.',
       })
     } catch (err) {
-      const text = isMissingRiderPaymentTable(err)
-        ? getRiderPaymentDbSetupMessage()
-        : err?.message || 'Reset failed.'
-      setPaymentMessage({ type: 'error', text })
+      setPaymentMessage({
+        type: 'error',
+        text: resetErrorText(err, isMissingRiderPaymentTable(err) ? getRiderPaymentDbSetupMessage() : ''),
+      })
     } finally {
       setPaymentResetting(false)
       setResetConfirm(null)
@@ -508,10 +516,10 @@ export default function RiderPaymentUpload() {
           : 'All manual collation data cleared.',
       })
     } catch (err) {
-      const text = isMissingManualCollationTable(err)
-        ? getManualCollationDbSetupMessage()
-        : err?.message || 'Reset failed.'
-      setCollationMessage({ type: 'error', text })
+      setCollationMessage({
+        type: 'error',
+        text: resetErrorText(err, isMissingManualCollationTable(err) ? getManualCollationDbSetupMessage() : ''),
+      })
     } finally {
       setCollationResetting(false)
       setResetConfirm(null)
@@ -578,10 +586,10 @@ export default function RiderPaymentUpload() {
           : 'All rental pending data cleared.',
       })
     } catch (err) {
-      const text = isMissingRentalPendingTable(err)
-        ? getRentalPendingDbSetupMessage()
-        : err?.message || 'Reset failed.'
-      setRentalMessage({ type: 'error', text })
+      setRentalMessage({
+        type: 'error',
+        text: resetErrorText(err, isMissingRentalPendingTable(err) ? getRentalPendingDbSetupMessage() : ''),
+      })
     } finally {
       setRentalResetting(false)
       setResetConfirm(null)
@@ -635,10 +643,10 @@ export default function RiderPaymentUpload() {
       await refreshSummaries()
       setEv91SdMessage({ type: 'success', text: 'All EV91 SD data cleared.' })
     } catch (err) {
-      const text = isMissingEv91SdTable(err)
-        ? getEv91SdDbSetupMessage()
-        : err?.message || 'Reset failed.'
-      setEv91SdMessage({ type: 'error', text })
+      setEv91SdMessage({
+        type: 'error',
+        text: resetErrorText(err, isMissingEv91SdTable(err) ? getEv91SdDbSetupMessage() : ''),
+      })
     } finally {
       setEv91SdResetting(false)
       setResetConfirm(null)

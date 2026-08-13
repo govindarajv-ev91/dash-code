@@ -7,6 +7,7 @@ import {
   fetchLastUploadAtSafe,
   fetchMonthsSampled,
   isStatementTimeout,
+  deleteRowsInBatches,
 } from './paymentMonthList'
 
 export const RIDER_PAYMENT_TABLE = 'rider_payment_data'
@@ -83,16 +84,14 @@ export async function fetchRiderPaymentPreview(limit = 50) {
 }
 
 export async function clearRiderPaymentData() {
-  const { error } = await supabase.from(RIDER_PAYMENT_TABLE).delete().neq('id', 0)
-  if (error) throw error
+  await deleteRowsInBatches(RIDER_PAYMENT_TABLE)
   clearRiderPaymentCache()
 }
 
 export async function clearRiderPaymentDataByMonth(month) {
   const label = (month ?? '').toString().trim()
   if (!label) return clearRiderPaymentData()
-  const { error } = await supabase.from(RIDER_PAYMENT_TABLE).delete().eq('month', label)
-  if (error) throw error
+  await deleteRowsInBatches(RIDER_PAYMENT_TABLE, { month: label })
   clearRiderPaymentCache()
 }
 

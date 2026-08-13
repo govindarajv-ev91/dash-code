@@ -1,15 +1,55 @@
 import { toBlob, toCanvas, toPng } from 'html-to-image'
 
 const MAX_CANVAS_EDGE = 8192
+const CAPTURE_PAD_X = 28
+const CAPTURE_PAD_Y = 16
+
+function nextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  })
+}
 
 function measureNode(node) {
-  const width = Math.max(node.scrollWidth, node.offsetWidth, node.clientWidth, 1)
-  const height = Math.max(node.scrollHeight, node.offsetHeight, node.clientHeight, 1)
+  const rect = node.getBoundingClientRect?.() || { width: 0, height: 0 }
+  const width = Math.ceil(
+    Math.max(node.scrollWidth, node.offsetWidth, node.clientWidth, rect.width || 0, 1)
+  )
+  const height = Math.ceil(
+    Math.max(node.scrollHeight, node.offsetHeight, node.clientHeight, rect.height || 0, 1)
+  )
   let pixelRatio = 2
   if (width * pixelRatio > MAX_CANVAS_EDGE || height * pixelRatio > MAX_CANVAS_EDGE) {
     pixelRatio = Math.max(0.75, Math.min(MAX_CANVAS_EDGE / width, MAX_CANVAS_EDGE / height))
   }
   return { width, height, pixelRatio }
+}
+
+function expandCloneForFullTable(root) {
+  root.style.boxSizing = 'border-box'
+  root.style.width = 'max-content'
+  root.style.minWidth = 'max-content'
+  root.style.maxWidth = 'none'
+  root.style.height = 'auto'
+  root.style.maxHeight = 'none'
+  root.style.overflow = 'visible'
+  root.style.transform = 'none'
+  root.style.paddingRight = `${CAPTURE_PAD_X}px`
+  root.style.paddingBottom = `${CAPTURE_PAD_Y}px`
+
+  root.querySelectorAll('*').forEach((el) => {
+    if (!(el instanceof HTMLElement)) return
+    const style = el.style
+    if (style.position === 'sticky' || style.position === 'fixed') {
+      style.position = 'static'
+      style.left = 'auto'
+      style.top = 'auto'
+      style.zIndex = 'auto'
+      style.boxShadow = 'none'
+    }
+    style.maxWidth = 'none'
+    style.overflow = 'visible'
+  })
 }
 
 function captureOptions(node, { width, height, pixelRatio, backgroundColor }) {
@@ -51,39 +91,64 @@ function canvasToPngBlob(canvas) {
 
 /**
  * Capture a DOM node as PNG Blob (robust for wide Full Data tables).
+ * Clones off-screen at full table width so the last date column is not clipped.
  */
 export async function captureElementPngBlob(node, { backgroundColor = '#0f172a' } = {}) {
   if (!node) throw new Error('Nothing to capture')
 
-  const size = measureNode(node)
-  const opts = captureOptions(node, { ...size, backgroundColor })
+  const host = document.createElement('div')
+  host.style.cssText = [
+    'position:fixed',
+    'left:0',
+    'top:0',
+    'z-index:-1',
+    'opacity:0',
+    'pointer-events:none',
+    'overflow:visible',
+    `background:${backgroundColor}`,
+  ].join(';')
 
-  // Prefer toBlob; fall back to canvas / data-URL if html-to-image fails on large nodes
-  try {
-    const blob = await toBlob(node, opts)
-    if (blob && blob.size > 0) return blob
-  } catch {
-    // continue
-  }
-
-  try {
-    const canvas = await toCanvas(node, { ...opts, pixelRatio: Math.min(opts.pixelRatio, 1.25) })
-    const blob = await canvasToPngBlob(canvas)
-    if (blob && blob.size > 0) return blob
-  } catch {
-    // continue
-  }
+  const clone = node.cloneNode(true)
+  expandCloneForFullTable(clone)
+  host.appendChild(clone)
+  document.body.appendChild(host)
 
   try {
-    const dataUrl = await toPng(node, { ...opts, pixelRatio: 1 })
-    const res = await fetch(dataUrl)
-    const blob = await res.blob()
-    if (blob && blob.size > 0) return blob
-  } catch (err) {
-    throw new Error(err?.message || 'Screenshot failed — table may be too large')
-  }
+    await nextPaint()
+    const size = measureNode(clone)
+    size.width += CAPTURE_PAD_X
+    size.height += CAPTURE_PAD_Y
+    const opts = captureOptions(clone, { ...size, backgroundColor })
 
-  throw new Error('Screenshot failed — try again')
+    // Prefer toBlob; fall back to canvas / data-URL if html-to-image fails on large nodes
+    try {
+      const blob = await toBlob(clone, opts)
+      if (blob && blob.size > 0) return blob
+    } catch {
+      // continue
+    }
+
+    try {
+      const canvas = await toCanvas(clone, { ...opts, pixelRatio: Math.min(opts.pixelRatio, 1.25) })
+      const blob = await canvasToPngBlob(canvas)
+      if (blob && blob.size > 0) return blob
+    } catch {
+      // continue
+    }
+
+    try {
+      const dataUrl = await toPng(clone, { ...opts, pixelRatio: 1 })
+      const res = await fetch(dataUrl)
+      const blob = await res.blob()
+      if (blob && blob.size > 0) return blob
+    } catch (err) {
+      throw new Error(err?.message || 'Screenshot failed — table may be too large')
+    }
+
+    throw new Error('Screenshot failed — try again')
+  } finally {
+    host.remove()
+  }
 }
 
 async function tryNativeShareFile(file, caption) {

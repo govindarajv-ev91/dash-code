@@ -661,7 +661,7 @@ export default function FullData() {
         className="table-card glass"
         style={{ padding: 0, overflow: 'hidden', opacity: filtersPending ? 0.72 : 1, transition: 'opacity 0.15s' }}
       >
-        <div style={{ maxHeight: 'calc(100vh - 260px)', overflow: 'auto' }}>
+        <div style={{ maxHeight: 'calc(100vh - 260px)', overflow: 'auto', paddingRight: 4 }}>
           {loading || building || (!report.days.length && selectedMonth) ? (
             <div className="loading-container" style={{ minHeight: '240px' }}>
               <span className="loader" />
@@ -671,7 +671,18 @@ export default function FullData() {
               {monthsLoading ? 'Loading months…' : 'No month selected or invalid month.'}
             </div>
           ) : (
-            <div ref={captureRef} style={{ background: '#0f172a', color: '#e2e8f0', width: 'max-content', minWidth: '100%' }}>
+            <div
+              ref={captureRef}
+              style={{
+                background: '#0f172a',
+                color: '#e2e8f0',
+                width: 'max-content',
+                minWidth: '100%',
+                paddingRight: 24,
+                paddingBottom: 8,
+                boxSizing: 'content-box',
+              }}
+            >
               <div
                 style={{
                   padding: '0.65rem 0.75rem',
@@ -727,9 +738,9 @@ export default function FullData() {
                         top: 0,
                         zIndex: 1,
                         background: '#1e293b',
-                        padding: '0.45rem 0.35rem',
+                        padding: '0.45rem 0.5rem',
                         whiteSpace: 'nowrap',
-                        minWidth: 56,
+                        minWidth: 88,
                         textAlign: 'center',
                       }}
                     >
@@ -776,8 +787,9 @@ export default function FullData() {
                             key={`${metric.key}-${d.dateKey}`}
                             style={{
                               textAlign: 'center',
-                              padding: '0.35rem 0.4rem',
+                              padding: '0.35rem 0.5rem',
                               whiteSpace: 'nowrap',
+                              minWidth: 88,
                               borderBottom: '1px solid rgba(255,255,255,0.04)',
                             }}
                           >

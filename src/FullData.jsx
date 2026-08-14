@@ -15,6 +15,8 @@ import {
   formatFullDataCell,
   monthDaysFromLabel,
   trimOverallRowsForMonth,
+  todayDateKey,
+  sliceFullDataReportThroughYesterday,
 } from './lib/fullDataMonthReport'
 import { shareFullDataScreenshot } from './lib/fullDataShareScreenshot'
 import { FULL_DATA_RATE_INFO, EV_DAILY_RENT } from './lib/fullDataCommercialRates'
@@ -256,15 +258,25 @@ export default function FullData() {
     }
 
     try {
+      const shareReport = sliceFullDataReportThroughYesterday(report)
+      const hideDateKey =
+        report.days.some((d) => d.dateKey === todayDateKey()) ? todayDateKey() : ''
       const caption = [
         'FleetPro — Full Data',
         `Month: ${selectedMonth || '—'}`,
         `City: ${cityFilter}`,
         `Client: ${clientFilter}`,
-        report.fromKey && report.toKey ? `Range: ${report.fromKey} → ${report.toKey}` : '',
+        shareReport.fromKey && shareReport.toKey
+          ? `Range: ${shareReport.fromKey} → ${shareReport.toKey} (through yesterday)`
+          : '',
       ]
         .filter(Boolean)
         .join('\n')
+
+      const totalsByMetric = {}
+      for (const metric of shareReport.metrics || []) {
+        totalsByMetric[metric.key] = formatFullDataCell(shareReport.totals?.[metric.key], metric.hold)
+      }
 
       const result = await shareFullDataScreenshot({
         node: captureRef.current,
@@ -274,6 +286,18 @@ export default function FullData() {
         ),
         caption,
         waWin,
+        sharePrep: hideDateKey
+          ? {
+              hideDateKey,
+              headerText: `${selectedMonth} · City: ${cityFilter} · Client: ${clientFilter}${
+                shareReport.fromKey && shareReport.toKey
+                  ? ` · ${shareReport.fromKey} → ${shareReport.toKey}`
+                  : ''
+              }`,
+              totalsByMetric,
+              colSpan: (shareReport.days?.length || 0) + 2,
+            }
+          : null,
       })
       if (result.mode === 'share') {
         setShareHint('Share sheet opened — choose WhatsApp to send the screenshot.')
@@ -692,7 +716,7 @@ export default function FullData() {
                 }}
               >
                 <strong>FleetPro Full Data</strong>
-                <span style={{ color: 'var(--text-dim)', marginLeft: '0.5rem' }}>
+                <span data-share-header style={{ color: 'var(--text-dim)', marginLeft: '0.5rem' }}>
                   {selectedMonth} · City: {cityFilter} · Client: {clientFilter}
                   {report.fromKey && report.toKey ? ` · ${report.fromKey} → ${report.toKey}` : ''}
                 </span>
@@ -733,11 +757,12 @@ export default function FullData() {
                   {report.days.map((d) => (
                     <th
                       key={d.dateKey}
+                      data-date-key={d.dateKey}
                       style={{
                         position: 'sticky',
                         top: 0,
                         zIndex: 1,
-                        background: '#1e293b',
+                        background: d.dateKey === todayDateKey() ? '#1e3a5f' : '#1e293b',
                         padding: '0.45rem 0.5rem',
                         whiteSpace: 'nowrap',
                         minWidth: 88,
@@ -755,6 +780,7 @@ export default function FullData() {
                       {showSection && (
                         <tr>
                           <td
+                            data-share-colspan
                             colSpan={report.days.length + 2}
                             style={{
                               background: 'rgba(59,130,246,0.12)',
@@ -779,18 +805,20 @@ export default function FullData() {
                             </span>
                           ) : null}
                         </td>
-                        <td style={stickyTotal}>
+                        <td style={stickyTotal} data-metric-total={metric.key}>
                           {formatFullDataCell(report.totals[metric.key], metric.hold)}
                         </td>
                         {report.days.map((d) => (
                           <td
                             key={`${metric.key}-${d.dateKey}`}
+                            data-date-key={d.dateKey}
                             style={{
                               textAlign: 'center',
                               padding: '0.35rem 0.5rem',
                               whiteSpace: 'nowrap',
                               minWidth: 88,
                               borderBottom: '1px solid rgba(255,255,255,0.04)',
+                              background: d.dateKey === todayDateKey() ? 'rgba(56,189,248,0.08)' : undefined,
                             }}
                           >
                             {formatFullDataCell(report.byDate[d.dateKey]?.[metric.key], metric.hold)}

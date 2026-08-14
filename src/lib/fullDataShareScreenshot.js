@@ -25,6 +25,30 @@ function measureNode(node) {
   return { width, height, pixelRatio }
 }
 
+function applyShareYesterdayPrep(clone, prep) {
+  if (!prep) return
+  if (prep.hideDateKey) {
+    clone.querySelectorAll(`[data-date-key="${prep.hideDateKey}"]`).forEach((el) => el.remove())
+  }
+  if (prep.totalsByMetric) {
+    clone.querySelectorAll('[data-metric-total]').forEach((el) => {
+      const key = el.getAttribute('data-metric-total')
+      if (key && Object.prototype.hasOwnProperty.call(prep.totalsByMetric, key)) {
+        el.textContent = prep.totalsByMetric[key]
+      }
+    })
+  }
+  if (prep.headerText) {
+    const header = clone.querySelector('[data-share-header]')
+    if (header) header.textContent = prep.headerText
+  }
+  if (prep.colSpan) {
+    clone.querySelectorAll('[data-share-colspan]').forEach((el) => {
+      el.setAttribute('colspan', String(prep.colSpan))
+    })
+  }
+}
+
 function expandCloneForFullTable(root) {
   root.style.boxSizing = 'border-box'
   root.style.width = 'max-content'
@@ -93,7 +117,7 @@ function canvasToPngBlob(canvas) {
  * Capture a DOM node as PNG Blob (robust for wide Full Data tables).
  * Clones off-screen at full table width so the last date column is not clipped.
  */
-export async function captureElementPngBlob(node, { backgroundColor = '#0f172a' } = {}) {
+export async function captureElementPngBlob(node, { backgroundColor = '#0f172a', sharePrep = null } = {}) {
   if (!node) throw new Error('Nothing to capture')
 
   const host = document.createElement('div')
@@ -110,6 +134,7 @@ export async function captureElementPngBlob(node, { backgroundColor = '#0f172a' 
 
   const clone = node.cloneNode(true)
   expandCloneForFullTable(clone)
+  applyShareYesterdayPrep(clone, sharePrep)
   host.appendChild(clone)
   document.body.appendChild(host)
 
@@ -249,10 +274,11 @@ export async function shareFullDataScreenshot({
   filename = 'Full_Data.png',
   caption = 'FleetPro Full Data report',
   waWin = null,
+  sharePrep = null,
 } = {}) {
   let blob
   try {
-    blob = await captureElementPngBlob(node)
+    blob = await captureElementPngBlob(node, { sharePrep })
   } catch (err) {
     if (waWin && !waWin.closed) waWin.close()
     throw err

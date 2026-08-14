@@ -181,9 +181,9 @@ export function monthDaysFromLabel(monthLabel) {
   if (!parsed) return { days: [], fromKey: '', toKey: '', monthLabel: monthLabel || '' }
   const start = startOfMonth(new Date(parsed.year, parsed.monthIndex, 1))
   const monthEnd = endOfMonth(start)
-  // Never include today / tomorrow — last column is yesterday
-  const yesterday = startOfDay(subDays(new Date(), 1))
-  const end = monthEnd < yesterday ? monthEnd : yesterday
+  // Page includes today (not tomorrow). Share still cuts off at yesterday.
+  const today = startOfDay(new Date())
+  const end = monthEnd < today ? monthEnd : today
   if (start > end) {
     return {
       days: [],
@@ -722,6 +722,48 @@ export function formatFullDataCell(value, hold = false) {
     return value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
   }
   return String(value)
+}
+
+export function todayDateKey(asOf = new Date()) {
+  return format(startOfDay(asOf), 'yyyy-MM-dd')
+}
+
+export function yesterdayDateKey(asOf = new Date()) {
+  return format(subDays(startOfDay(asOf), 1), 'yyyy-MM-dd')
+}
+
+/** Share image uses through yesterday — page still shows today. */
+export function sliceFullDataReportThroughYesterday(report, asOf = new Date()) {
+  const yKey = yesterdayDateKey(asOf)
+  const days = (report?.days || []).filter((d) => d.dateKey <= yKey)
+  const totals = {}
+  for (const metric of report?.metrics || FULL_DATA_METRICS) {
+    if (metric.hold) {
+      totals[metric.key] = null
+      continue
+    }
+    let sum = 0
+    for (const d of days) {
+      sum += Number(report.byDate?.[d.dateKey]?.[metric.key]) || 0
+    }
+    if (
+      metric.key === 'totalKm' ||
+      metric.key === 'deployKm' ||
+      metric.key === 'returnKm' ||
+      MONEY_KEYS.has(metric.key)
+    ) {
+      totals[metric.key] = Math.round(sum * 100) / 100
+    } else {
+      totals[metric.key] = sum
+    }
+  }
+  return {
+    ...report,
+    days,
+    totals,
+    fromKey: days[0]?.dateKey || report?.fromKey || '',
+    toKey: days[days.length - 1]?.dateKey || yKey,
+  }
 }
 
 /**

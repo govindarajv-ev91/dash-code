@@ -423,6 +423,26 @@ export function countOverallDeployReturnInRange(
   return { deployed, returned, total: deployed + returned }
 }
 
+function pickCurrentStatusValue(row) {
+  return (
+    row?.currentStatus ??
+    row?.vehicleStatus ??
+    row?.status ??
+    row?.Status ??
+    ''
+  )
+}
+
+function pickOperationalStatusValue(row) {
+  return (
+    row?.operationalStatus ??
+    row?.operational ??
+    row?.category ??
+    row?.operational_status ??
+    ''
+  )
+}
+
 /** Normalize Current Vehicle Status → Deployed / Returned / Not yet to deploy. */
 export function normalizeCurrentVehicleStatus(status) {
   const s = String(status || '')
@@ -438,23 +458,24 @@ export function normalizeCurrentVehicleStatus(status) {
   ) {
     return 'Not yet to deploy'
   }
-  if (s.includes('deploy')) return 'Deployed'
+  if (s.includes('deploy') || s.includes('on road') || s.includes('on-road')) return 'Deployed'
   return ''
 }
 
-/** True when Operational is exactly "Assigned" (not "Assigned - Team Use", etc.). */
+/** True when Operational is Assigned (ignore Team Use). */
 export function isOperationalAssigned(value) {
-  return (
-    String(value || '')
-      .trim()
-      .toLowerCase() === 'assigned'
-  )
+  const s = String(value || '')
+    .trim()
+    .toLowerCase()
+  if (!s) return false
+  if (s.includes('team use')) return false
+  return s === 'assigned' || s.startsWith('assigned')
 }
 
 /**
  * Count current-status rows into overview buckets.
- * deployedAssigned = Status Deployed AND Operational exactly "Assigned".
- * Always prefer row-level counts when rows exist.
+ * deployed = currently deployed (status contains Deployed / on-road).
+ * deployedAssigned = Deployed AND Operational Assigned.
  */
 export function summarizeCurrentStatusRows(rows = [], apiSummary = null) {
   let deployed = 0
@@ -463,10 +484,10 @@ export function summarizeCurrentStatusRows(rows = [], apiSummary = null) {
   let deployedAssigned = 0
 
   for (const row of rows || []) {
-    const label = normalizeCurrentVehicleStatus(row.currentStatus)
+    const label = normalizeCurrentVehicleStatus(pickCurrentStatusValue(row))
     if (label === 'Deployed') {
       deployed++
-      if (isOperationalAssigned(row.operationalStatus)) deployedAssigned++
+      if (isOperationalAssigned(pickOperationalStatusValue(row))) deployedAssigned++
     } else if (label === 'Returned') {
       returned++
     } else if (label === 'Not yet to deploy') {
@@ -492,12 +513,13 @@ export function summarizeCurrentStatusRows(rows = [], apiSummary = null) {
       apiSummary.yetNotDeployed != null)
 
   if (apiHasCounts) {
+    const deployedCount = Number(apiSummary.deployed) || 0
     return {
       total: Number(apiSummary?.total) || 0,
-      deployed: Number(apiSummary.deployed) || 0,
+      deployed: deployedCount,
       returned: Number(apiSummary.returned) || 0,
       yetNotDeployed: Number(apiSummary.yetNotDeployed) || 0,
-      deployedAssigned: 0,
+      deployedAssigned: Number(apiSummary.deployedAssigned) || deployedCount,
     }
   }
 
@@ -510,12 +532,11 @@ export function summarizeCurrentStatusRows(rows = [], apiSummary = null) {
   }
 }
 
-/** Count Deployed + Operational Assigned from Current Status rows. */
+/** Count currently deployed vehicles from Current Status rows. */
 export function countDeployedAssigned(rows = []) {
   let n = 0
   for (const row of rows || []) {
-    if (normalizeCurrentVehicleStatus(row.currentStatus) !== 'Deployed') continue
-    if (!isOperationalAssigned(row.operationalStatus)) continue
+    if (normalizeCurrentVehicleStatus(pickCurrentStatusValue(row)) !== 'Deployed') continue
     n++
   }
   return n

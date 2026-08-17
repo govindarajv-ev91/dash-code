@@ -673,11 +673,17 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
     let vehicleLoading = false
 
     if (!filterFrom && !filterTo) {
-      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0
+      activeVehicles =
+        Number(ev91StatusSummary?.deployed) ||
+        Number(ev91StatusSummary?.deployedAssigned) ||
+        0
       returnedVehicles = Number(ev91StatusSummary?.returned) || 0
       vehicleLoading = ev91StatusLoading
     } else {
-      activeVehicles = Number(ev91StatusSummary?.deployedAssigned) || 0
+      activeVehicles =
+        Number(ev91StatusSummary?.deployed) ||
+        Number(ev91StatusSummary?.deployedAssigned) ||
+        0
       const apiCounts = countOverallDeployReturnInRange(ev91OverallRows, {
         startDate: filterFrom,
         endDate: filterTo,
@@ -692,7 +698,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
     else if (filterFrom) dateStr = `Since ${filterFrom}`
     else if (filterTo) dateStr = `Until ${filterTo}`
 
-    let vehicleChange = ''
+    let vehicleChange = 'EV91 current status'
     if (vehicleLoading) vehicleChange = 'Loading…'
     if (!vehicleLoading && ev91StatusError) {
       vehicleChange = `EV91 API · ${ev91StatusError}`

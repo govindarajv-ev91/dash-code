@@ -433,6 +433,27 @@ body {
   margin-bottom: 2rem;
 }
 
+/* Full Data matrix — light sheet so WhatsApp screenshots stay readable */
+.full-data-sheet {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.full-data-sheet table {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.full-data-sheet th,
+.full-data-sheet td {
+  color: #0f172a;
+  border-bottom-color: #e2e8f0;
+}
+
+.full-data-sheet tr:hover {
+  background: #f8fafc;
+}
+
 /* Rider Attrition — filter dropdowns float above table */
 .ram-filter-bar {
   position: relative;

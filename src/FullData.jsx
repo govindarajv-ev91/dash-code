@@ -328,20 +328,22 @@ export default function FullData() {
     position: 'sticky',
     left: 0,
     zIndex: 2,
-    background: '#0f172a',
+    background: '#f8fafc',
+    color: '#0f172a',
     textAlign: 'center',
     padding: '0.4rem 0.65rem',
     whiteSpace: 'nowrap',
     minWidth: 180,
     maxWidth: 220,
-    boxShadow: '4px 0 8px rgba(0,0,0,0.2)',
+    boxShadow: '4px 0 8px rgba(15,23,42,0.08)',
   }
 
   const stickyTotal = {
     position: 'sticky',
     left: 180,
     zIndex: 2,
-    background: '#111827',
+    background: '#eef2ff',
+    color: '#0f172a',
     textAlign: 'center',
     padding: '0.4rem 0.5rem',
     whiteSpace: 'nowrap',
@@ -685,7 +687,7 @@ export default function FullData() {
         className="table-card glass"
         style={{ padding: 0, overflow: 'hidden', opacity: filtersPending ? 0.72 : 1, transition: 'opacity 0.15s' }}
       >
-        <div style={{ maxHeight: 'calc(100vh - 260px)', overflow: 'auto', paddingRight: 4 }}>
+        <div style={{ maxHeight: 'calc(100vh - 260px)', overflow: 'auto', paddingRight: 4, background: '#ffffff' }}>
           {loading || building || (!report.days.length && selectedMonth) ? (
             <div className="loading-container" style={{ minHeight: '240px' }}>
               <span className="loader" />
@@ -697,12 +699,13 @@ export default function FullData() {
           ) : (
             <div
               ref={captureRef}
+              className="full-data-sheet"
               style={{
-                background: '#0f172a',
-                color: '#e2e8f0',
+                background: '#ffffff',
+                color: '#0f172a',
                 width: 'max-content',
                 minWidth: '100%',
-                paddingRight: 24,
+                paddingRight: 64,
                 paddingBottom: 8,
                 boxSizing: 'content-box',
               }}
@@ -710,13 +713,14 @@ export default function FullData() {
               <div
                 style={{
                   padding: '0.65rem 0.75rem',
-                  borderBottom: '1px solid rgba(255,255,255,0.08)',
+                  borderBottom: '1px solid #dbe3ee',
                   fontSize: '0.8rem',
-                  background: '#1e293b',
+                  background: '#f1f5f9',
+                  color: '#0f172a',
                 }}
               >
                 <strong>FleetPro Full Data</strong>
-                <span data-share-header style={{ color: 'var(--text-dim)', marginLeft: '0.5rem' }}>
+                <span data-share-header style={{ color: '#475569', marginLeft: '0.5rem' }}>
                   {selectedMonth} · City: {cityFilter} · Client: {clientFilter}
                   {report.fromKey && report.toKey ? ` · ${report.fromKey} → ${report.toKey}` : ''}
                 </span>
@@ -728,6 +732,8 @@ export default function FullData() {
                 borderCollapse: 'separate',
                 borderSpacing: 0,
                 fontSize: '0.78rem',
+                color: '#0f172a',
+                background: '#ffffff',
               }}
             >
               <thead>
@@ -737,8 +743,9 @@ export default function FullData() {
                       ...stickyCol,
                       top: 0,
                       zIndex: 4,
-                      background: '#1e293b',
+                      background: '#e2e8f0',
                       fontWeight: 700,
+                      color: '#0f172a',
                     }}
                   >
                     List
@@ -748,13 +755,14 @@ export default function FullData() {
                       ...stickyTotal,
                       top: 0,
                       zIndex: 4,
-                      background: '#1e293b',
+                      background: '#dbeafe',
                       textAlign: 'center',
+                      color: '#0f172a',
                     }}
                   >
                     Total
                   </th>
-                  {report.days.map((d) => (
+                  {report.days.map((d, di) => (
                     <th
                       key={d.dateKey}
                       data-date-key={d.dateKey}
@@ -762,11 +770,13 @@ export default function FullData() {
                         position: 'sticky',
                         top: 0,
                         zIndex: 1,
-                        background: d.dateKey === todayDateKey() ? '#1e3a5f' : '#1e293b',
-                        padding: '0.45rem 0.5rem',
+                        background: d.dateKey === todayDateKey() ? '#fde68a' : '#e2e8f0',
+                        color: '#0f172a',
+                        padding: di === report.days.length - 1 ? '0.45rem 1.25rem 0.45rem 0.5rem' : '0.45rem 0.5rem',
                         whiteSpace: 'nowrap',
-                        minWidth: 88,
+                        minWidth: di === report.days.length - 1 ? 112 : 96,
                         textAlign: 'center',
+                        borderBottom: '1px solid #cbd5e1',
                       }}
                     >
                       {d.label}
@@ -783,8 +793,8 @@ export default function FullData() {
                             data-share-colspan
                             colSpan={report.days.length + 2}
                             style={{
-                              background: 'rgba(59,130,246,0.12)',
-                              color: 'var(--accent-blue)',
+                              background: '#dbeafe',
+                              color: '#1d4ed8',
                               fontWeight: 700,
                               padding: '0.45rem 0.65rem',
                               position: 'sticky',
@@ -797,10 +807,13 @@ export default function FullData() {
                         </tr>
                       )}
                       <tr style={{ opacity: metric.hold ? 0.55 : 1 }}>
-                        <td style={{ ...stickyCol, background: '#111827' }}>
+                        <td
+                          style={{ ...stickyCol, background: '#f8fafc' }}
+                          title={metric.hint || undefined}
+                        >
                           {metric.label}
                           {metric.hold ? (
-                            <span style={{ marginLeft: 6, fontSize: '0.65rem', color: 'var(--text-dim)' }}>
+                            <span style={{ marginLeft: 6, fontSize: '0.65rem', color: '#64748b' }}>
                               (hold)
                             </span>
                           ) : null}
@@ -808,17 +821,18 @@ export default function FullData() {
                         <td style={stickyTotal} data-metric-total={metric.key}>
                           {formatFullDataCell(report.totals[metric.key], metric.hold)}
                         </td>
-                        {report.days.map((d) => (
+                        {report.days.map((d, di) => (
                           <td
                             key={`${metric.key}-${d.dateKey}`}
                             data-date-key={d.dateKey}
                             style={{
                               textAlign: 'center',
-                              padding: '0.35rem 0.5rem',
+                              padding: di === report.days.length - 1 ? '0.35rem 1.25rem 0.35rem 0.5rem' : '0.35rem 0.5rem',
                               whiteSpace: 'nowrap',
-                              minWidth: 88,
-                              borderBottom: '1px solid rgba(255,255,255,0.04)',
-                              background: d.dateKey === todayDateKey() ? 'rgba(56,189,248,0.08)' : undefined,
+                              minWidth: di === report.days.length - 1 ? 112 : 96,
+                              color: '#0f172a',
+                              borderBottom: '1px solid #e2e8f0',
+                              background: d.dateKey === todayDateKey() ? '#fef9c3' : '#ffffff',
                             }}
                           >
                             {formatFullDataCell(report.byDate[d.dateKey]?.[metric.key], metric.hold)}

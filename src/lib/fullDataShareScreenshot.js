@@ -1,8 +1,8 @@
 import { toBlob, toCanvas, toPng } from 'html-to-image'
 
 const MAX_CANVAS_EDGE = 8192
-const CAPTURE_PAD_X = 28
-const CAPTURE_PAD_Y = 16
+const CAPTURE_PAD_X = 72
+const CAPTURE_PAD_Y = 20
 
 function nextPaint() {
   return new Promise((resolve) => {
@@ -11,12 +11,26 @@ function nextPaint() {
 }
 
 function measureNode(node) {
-  const rect = node.getBoundingClientRect?.() || { width: 0, height: 0 }
+  const table = node.querySelector?.('table')
   const width = Math.ceil(
-    Math.max(node.scrollWidth, node.offsetWidth, node.clientWidth, rect.width || 0, 1)
+    Math.max(
+      table?.scrollWidth || 0,
+      table?.offsetWidth || 0,
+      node.scrollWidth,
+      node.offsetWidth,
+      node.clientWidth,
+      1
+    )
   )
   const height = Math.ceil(
-    Math.max(node.scrollHeight, node.offsetHeight, node.clientHeight, rect.height || 0, 1)
+    Math.max(
+      table?.scrollHeight || 0,
+      table?.offsetHeight || 0,
+      node.scrollHeight,
+      node.offsetHeight,
+      node.clientHeight,
+      1
+    )
   )
   let pixelRatio = 2
   if (width * pixelRatio > MAX_CANVAS_EDGE || height * pixelRatio > MAX_CANVAS_EDGE) {
@@ -47,10 +61,23 @@ function applyShareYesterdayPrep(clone, prep) {
       el.setAttribute('colspan', String(prep.colSpan))
     })
   }
+  const dateKeys = [
+    ...new Set(
+      [...clone.querySelectorAll('[data-date-key]')].map((el) => el.getAttribute('data-date-key')).filter(Boolean)
+    ),
+  ].sort()
+  const lastKey = dateKeys[dateKeys.length - 1]
+  if (lastKey) {
+    clone.querySelectorAll(`[data-date-key="${lastKey}"]`).forEach((el) => {
+      if (!(el instanceof HTMLElement)) return
+      el.style.paddingRight = '28px'
+      el.style.minWidth = '112px'
+    })
+  }
 }
 
 function expandCloneForFullTable(root) {
-  root.style.boxSizing = 'border-box'
+  root.style.boxSizing = 'content-box'
   root.style.width = 'max-content'
   root.style.minWidth = 'max-content'
   root.style.maxWidth = 'none'
@@ -60,6 +87,16 @@ function expandCloneForFullTable(root) {
   root.style.transform = 'none'
   root.style.paddingRight = `${CAPTURE_PAD_X}px`
   root.style.paddingBottom = `${CAPTURE_PAD_Y}px`
+  root.style.background = '#ffffff'
+  root.style.color = '#0f172a'
+
+  const table = root.querySelector('table')
+  if (table instanceof HTMLElement) {
+    table.style.width = 'max-content'
+    table.style.minWidth = 'max-content'
+    table.style.maxWidth = 'none'
+    table.style.tableLayout = 'auto'
+  }
 
   root.querySelectorAll('*').forEach((el) => {
     if (!(el instanceof HTMLElement)) return
@@ -73,6 +110,14 @@ function expandCloneForFullTable(root) {
     }
     style.maxWidth = 'none'
     style.overflow = 'visible'
+    const tag = el.tagName
+    if (tag === 'TABLE' || tag === 'THEAD' || tag === 'TBODY' || tag === 'TR') {
+      if (!style.background && !style.backgroundColor) style.background = '#ffffff'
+      style.color = '#0f172a'
+    }
+    if (tag === 'TH' || tag === 'TD' || tag === 'DIV' || tag === 'SPAN' || tag === 'STRONG') {
+      if (!style.color) style.color = '#0f172a'
+    }
   })
 }
 
@@ -85,12 +130,14 @@ function captureOptions(node, { width, height, pixelRatio, backgroundColor }) {
     height,
     skipFonts: true,
     style: {
-      width: `${width}px`,
-      height: `${height}px`,
+      width: 'max-content',
+      height: 'auto',
       transform: 'none',
       overflow: 'visible',
       maxHeight: 'none',
       maxWidth: 'none',
+      boxSizing: 'content-box',
+      paddingRight: `${CAPTURE_PAD_X}px`,
     },
     filter: (el) => {
       if (!el || !el.tagName) return true
@@ -117,18 +164,20 @@ function canvasToPngBlob(canvas) {
  * Capture a DOM node as PNG Blob (robust for wide Full Data tables).
  * Clones off-screen at full table width so the last date column is not clipped.
  */
-export async function captureElementPngBlob(node, { backgroundColor = '#0f172a', sharePrep = null } = {}) {
+export async function captureElementPngBlob(node, { backgroundColor = '#ffffff', sharePrep = null } = {}) {
   if (!node) throw new Error('Nothing to capture')
 
   const host = document.createElement('div')
   host.style.cssText = [
-    'position:fixed',
+    'position:absolute',
     'left:0',
     'top:0',
     'z-index:-1',
-    'opacity:0',
+    'opacity:0.01',
     'pointer-events:none',
     'overflow:visible',
+    'width:max-content',
+    'min-width:max-content',
     `background:${backgroundColor}`,
   ].join(';')
 
@@ -141,8 +190,15 @@ export async function captureElementPngBlob(node, { backgroundColor = '#0f172a',
   try {
     await nextPaint()
     const size = measureNode(clone)
+    // Extra right/bottom so the last date column is never clipped
     size.width += CAPTURE_PAD_X
     size.height += CAPTURE_PAD_Y
+    host.style.width = `${size.width}px`
+    clone.style.width = 'max-content'
+    await nextPaint()
+    const size2 = measureNode(clone)
+    size.width = Math.max(size.width, size2.width + CAPTURE_PAD_X)
+    size.height = Math.max(size.height, size2.height + CAPTURE_PAD_Y)
     const opts = captureOptions(clone, { ...size, backgroundColor })
 
     // Prefer toBlob; fall back to canvas / data-URL if html-to-image fails on large nodes

@@ -8,7 +8,7 @@ import {
   subDays,
 } from 'date-fns'
 import { normalizeSummaryCity } from './citySummaryAliases'
-import { normalizeSummaryClient } from './clientSummaryClients'
+import { clientLookupKey, normalizeSummaryClient } from './clientSummaryClients'
 import { toMetricDateKey } from './mergeRiderMetrics'
 import { rowDateKey } from './ev91MisApi'
 import { vehiclePartitionKey } from './fleetDeployReturnExport'
@@ -38,6 +38,19 @@ export const FULL_DATA_METRICS = [
   { key: 'evOrder', label: 'EV order', section: 'Supply' },
   { key: 'nonEvOrder', label: 'Non-EV Order', section: 'Supply' },
   { key: 'zeroOrderRiderCount', label: '0 order Rider count', section: 'Supply' },
+  {
+    key: 'd1ZeroOrderRiderCount',
+    label: 'D-1 0 order rider count',
+    section: 'Supply',
+    hint: 'BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy only',
+  },
+  {
+    key: 'ordersPerRider',
+    label: 'Order per rider',
+    section: 'Supply',
+    ratio: true,
+    hint: 'Orders ÷ riders for BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy',
+  },
   { key: 'totalEarning', label: 'Total Earing', section: 'Supply' },
   { key: 'evEarning', label: 'EV Earing', section: 'Supply' },
   { key: 'nonEarning', label: 'Non Earing', section: 'Supply' },
@@ -70,8 +83,15 @@ export const FULL_DATA_METRICS = [
   })),
 ]
 
-const NUMERIC_KEYS = FULL_DATA_METRICS.filter((m) => !m.hold).map((m) => m.key)
+const NUMERIC_KEYS = FULL_DATA_METRICS.filter((m) => !m.hold && !m.ratio).map((m) => m.key)
 const MONEY_KEYS = new Set(['totalEarning', 'evEarning', 'nonEarning', 'mfAmount', 'rent', 'totalRevenue'])
+const RATIO_KEYS = new Set(FULL_DATA_METRICS.filter((m) => m.ratio).map((m) => m.key))
+
+function calcOrdersPerRider(orders, riders) {
+  const r = Number(riders) || 0
+  if (r <= 0) return 0
+  return Math.ceil(Number(orders) / r)
+}
 
 function isEvType(type1) {
   const t = String(type1 || '').toUpperCase()
@@ -89,6 +109,8 @@ function emptyDayMetrics() {
     evOrder: 0,
     nonEvOrder: 0,
     zeroOrderRiderCount: 0,
+    d1ZeroOrderRiderCount: 0,
+    ordersPerRider: 0,
     totalEarning: 0,
     evEarning: 0,
     nonEarning: 0,
@@ -238,6 +260,27 @@ function buildOrderDeliveredIndex(orderRows = []) {
     dayMap.set(dateKey, (dayMap.get(dateKey) || 0) + delivered)
   }
   return byWorker
+}
+
+/**
+ * D-1 0-order row: only these clients.
+ * BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy.
+ */
+function isD1ZeroOrderClient(clientName) {
+  const key = clientLookupKey(normalizeSummaryClient(clientName) || clientName)
+  if (!key) return false
+  if (key === 'bb' || key.startsWith('bb ') || key.includes('bigbasket') || key.includes('big basket')) {
+    return true
+  }
+  if (key.includes('blinkit') || key.includes('blinket') || key.includes('binkit')) return true
+  if (key.includes('zepto')) return true
+  if (key.includes('porter')) return true
+  if (key.includes('flipkart-lma') || key.includes('flipkart lma') || key.includes('fkm-lma') || key.includes('fkm lma')) {
+    return true
+  }
+  if (key === 'amazon' || key.startsWith('amazon')) return true
+  if (key.includes('swiggy') || key === 'instamart' || key.includes('instamart')) return true
+  return false
 }
 
 function workerZeroOrdersInWindow(orderIndex, workerId, endDateKey) {
@@ -606,10 +649,13 @@ export async function fillZeroOrderIntoBaseAsync(
     // reset then rebuild for this date across parts
     const dayMap = base.slices.get(dateKey)
     if (dayMap) {
-      for (const m of dayMap.values()) m.zeroOrderRiderCount = 0
+      for (const m of dayMap.values()) {
+        m.zeroOrderRiderCount = 0
+        m.d1ZeroOrderRiderCount = 0
+      }
     }
 
-    // Never count today / future, or days with no order upload in the 4-day window
+    // Same 4-day 0-order window as "0 order Rider count"
     if (dateKey > maxEnd || !zeroOrderWindowHasOrders(activeDates, dateKey)) {
       await yieldToMain()
       if (shouldCancel()) return base
@@ -617,15 +663,27 @@ export async function fillZeroOrderIntoBaseAsync(
     }
 
     const seenRiders = new Set()
+    const seenD1Riders = new Set()
     for (let i = 0; i < relevant.length; i++) {
       const iv = relevant[i]
       if (iv.fromKey > dateKey) continue
       if (iv.toKey != null && iv.toKey <= dateKey) continue
-      if (!iv.riderId || seenRiders.has(iv.riderId)) continue
-      seenRiders.add(iv.riderId)
+      if (!iv.riderId) continue
       if (!workerZeroOrdersInWindow(orderIndex, iv.riderId, dateKey)) continue
-      const m = ensureSlice(base.slices, dateKey, iv.city, iv.client)
-      m.zeroOrderRiderCount += 1
+
+      if (!seenRiders.has(iv.riderId)) {
+        seenRiders.add(iv.riderId)
+        const m = ensureSlice(base.slices, dateKey, iv.city, iv.client)
+        m.zeroOrderRiderCount += 1
+      }
+
+      // Same 0-order riders, only the selected clients
+      if (isD1ZeroOrderClient(iv.client) && !seenD1Riders.has(iv.riderId)) {
+        seenD1Riders.add(iv.riderId)
+        const m = ensureSlice(base.slices, dateKey, iv.city, iv.client)
+        m.d1ZeroOrderRiderCount += 1
+      }
+
       if (i > 0 && i % 1000 === 0) {
         await yieldToMain()
         if (shouldCancel()) return base
@@ -662,12 +720,22 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
   for (const [dateKey, partMap] of base.slices || []) {
     if (!byDate[dateKey]) continue
     const dest = byDate[dateKey]
+    let d1ClientOrders = 0
+    let d1ClientRiders = 0
     for (const [pKey, src] of partMap) {
       if (!matchesPart(pKey, cityFilter, clientFilter)) continue
       for (const key of NUMERIC_KEYS) {
         dest[key] += Number(src[key]) || 0
       }
+      const { client } = parsePartKey(pKey)
+      if (isD1ZeroOrderClient(client)) {
+        d1ClientOrders += Number(src.totalOrder) || 0
+        d1ClientRiders += Number(src.riderCount) || 0
+      }
     }
+    dest._d1ClientOrders = d1ClientOrders
+    dest._d1ClientRiders = d1ClientRiders
+    dest.ordersPerRider = calcOrdersPerRider(d1ClientOrders, d1ClientRiders)
     dest.totalKm = Math.round(dest.totalKm * 100) / 100
     dest.deployKm = Math.round(dest.deployKm * 100) / 100
     dest.returnKm = Math.round(dest.returnKm * 100) / 100
@@ -680,6 +748,16 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
   for (const metric of FULL_DATA_METRICS) {
     if (metric.hold) {
       totals[metric.key] = null
+      continue
+    }
+    if (metric.ratio || RATIO_KEYS.has(metric.key)) {
+      let orders = 0
+      let riders = 0
+      for (const d of base.days) {
+        orders += Number(byDate[d.dateKey]?._d1ClientOrders) || 0
+        riders += Number(byDate[d.dateKey]?._d1ClientRiders) || 0
+      }
+      totals[metric.key] = calcOrdersPerRider(orders, riders)
       continue
     }
     let sum = 0
@@ -740,6 +818,16 @@ export function sliceFullDataReportThroughYesterday(report, asOf = new Date()) {
   for (const metric of report?.metrics || FULL_DATA_METRICS) {
     if (metric.hold) {
       totals[metric.key] = null
+      continue
+    }
+    if (metric.ratio || RATIO_KEYS.has(metric.key)) {
+      let orders = 0
+      let riders = 0
+      for (const d of days) {
+        orders += Number(report.byDate?.[d.dateKey]?._d1ClientOrders) || 0
+        riders += Number(report.byDate?.[d.dateKey]?._d1ClientRiders) || 0
+      }
+      totals[metric.key] = calcOrdersPerRider(orders, riders)
       continue
     }
     let sum = 0

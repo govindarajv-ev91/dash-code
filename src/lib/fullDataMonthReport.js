@@ -34,22 +34,23 @@ export const FULL_DATA_METRICS = [
   { key: 'riderCount', label: 'Rider Count', section: 'Supply' },
   { key: 'evRiderCount', label: 'EV rider Count', section: 'Supply' },
   { key: 'nonEvRiderCount', label: 'Non-EV rider Count', section: 'Supply' },
-  { key: 'totalOrder', label: 'Total Order', section: 'Supply' },
-  { key: 'evOrder', label: 'EV order', section: 'Supply' },
-  { key: 'nonEvOrder', label: 'Non-EV Order', section: 'Supply' },
-  { key: 'zeroOrderRiderCount', label: '0 order Rider count', section: 'Supply' },
-  {
-    key: 'd1ZeroOrderRiderCount',
-    label: 'D-1 0 order rider count',
-    section: 'Supply',
-    hint: 'BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy only',
-  },
   {
     key: 'ordersPerRider',
     label: 'Order per rider',
     section: 'Supply',
     ratio: true,
     hint: 'Orders ÷ riders for BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy',
+  },
+  { key: 'totalOrder', label: 'Total Order', section: 'Supply' },
+  { key: 'evOrder', label: 'EV order', section: 'Supply' },
+  { key: 'nonEvOrder', label: 'Non-EV Order', section: 'Supply' },
+  { key: 'zeroOrderRiderCount', label: '0 order Rider count', section: 'Supply', current: true },
+  {
+    key: 'd1ZeroOrderRiderCount',
+    label: 'D-1 0 order rider count',
+    section: 'Supply',
+    current: true,
+    hint: 'BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy only',
   },
   { key: 'totalEarning', label: 'Total Earing', section: 'Supply' },
   { key: 'evEarning', label: 'EV Earing', section: 'Supply' },
@@ -86,6 +87,21 @@ export const FULL_DATA_METRICS = [
 const NUMERIC_KEYS = FULL_DATA_METRICS.filter((m) => !m.hold && !m.ratio).map((m) => m.key)
 const MONEY_KEYS = new Set(['totalEarning', 'evEarning', 'nonEarning', 'mfAmount', 'rent', 'totalRevenue'])
 const RATIO_KEYS = new Set(FULL_DATA_METRICS.filter((m) => m.ratio).map((m) => m.key))
+const CURRENT_COUNT_KEYS = new Set(
+  FULL_DATA_METRICS.filter((m) => m.current).map((m) => m.key)
+)
+
+function latestDayMetricValue(byDate, days, key) {
+  const yKey = yesterdayDateKey()
+  for (let i = (days || []).length - 1; i >= 0; i--) {
+    const dateKey = days[i]?.dateKey
+    if (!dateKey) continue
+    // 0-order is closed through yesterday — don't use today's empty column as Total
+    if (dateKey > yKey) continue
+    return Number(byDate?.[dateKey]?.[key]) || 0
+  }
+  return 0
+}
 
 function calcOrdersPerRider(orders, riders) {
   const r = Number(riders) || 0
@@ -760,6 +776,10 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
       totals[metric.key] = calcOrdersPerRider(orders, riders)
       continue
     }
+    if (metric.current || CURRENT_COUNT_KEYS.has(metric.key)) {
+      totals[metric.key] = latestDayMetricValue(byDate, base.days, metric.key)
+      continue
+    }
     let sum = 0
     for (const d of base.days) {
       sum += Number(byDate[d.dateKey]?.[metric.key]) || 0
@@ -828,6 +848,10 @@ export function sliceFullDataReportThroughYesterday(report, asOf = new Date()) {
         riders += Number(report.byDate?.[d.dateKey]?._d1ClientRiders) || 0
       }
       totals[metric.key] = calcOrdersPerRider(orders, riders)
+      continue
+    }
+    if (metric.current || CURRENT_COUNT_KEYS.has(metric.key)) {
+      totals[metric.key] = latestDayMetricValue(report.byDate, days, metric.key)
       continue
     }
     let sum = 0

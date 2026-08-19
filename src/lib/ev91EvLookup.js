@@ -91,6 +91,7 @@ function pushRiderInterval(map, key, deployEvent, returnDate) {
     riderName: (deployEvent.row.riderName || '').toString().trim(),
     clientName: (deployEvent.row.clientName || '').toString().trim(),
     city: (deployEvent.row.cityName || deployEvent.row.city || '').toString().trim(),
+    sourceName: (deployEvent.row.sourceName || deployEvent.row.source || '').toString().trim(),
     deployDate: deployEvent.date,
   })
 }
@@ -109,6 +110,7 @@ function pushVehicleInterval(map, vehicleKey, deployEvent, returnDate) {
     mobile: (deployEvent.row.riderContact || '').toString().trim(),
     clientName: (deployEvent.row.clientName || '').toString().trim(),
     city: (deployEvent.row.cityName || deployEvent.row.city || '').toString().trim(),
+    sourceName: (deployEvent.row.sourceName || deployEvent.row.source || '').toString().trim(),
     deployDate: deployEvent.date,
   })
 }
@@ -304,6 +306,8 @@ export function mergeCurrentStatusIntoIndexes(indexes, currentRows = []) {
       clientName: row.clientName || '',
       cityName: row.city || row.cityName || '',
       city: row.city || '',
+      sourceName: row.sourceName || row.source || '',
+      source: row.source || row.sourceName || '',
     }
     const event = { date: day, row: mappedRow }
 

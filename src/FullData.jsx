@@ -17,6 +17,12 @@ import {
   trimOverallRowsForMonth,
   todayDateKey,
   sliceFullDataReportThroughYesterday,
+  buildFullDataSummaryExportRows,
+  buildFullDataOrderDetailRows,
+  buildFullDataOrderRiderDetailRows,
+  buildFullDataZeroOrderDetailRows,
+  buildFullDataDeployDetailRows,
+  buildFullDataIotDetailRows,
 } from './lib/fullDataMonthReport'
 import { shareFullDataScreenshot } from './lib/fullDataShareScreenshot'
 import { FULL_DATA_RATE_INFO, EV_DAILY_RENT } from './lib/fullDataCommercialRates'
@@ -225,22 +231,52 @@ export default function FullData() {
 
   const exportExcel = () => {
     if (!report.days.length) return
-    const rows = report.metrics.map((metric) => {
-      const out = {
-        Section: metric.section,
-        List: metric.label,
-        Total: metric.hold ? '' : report.totals[metric.key] ?? '',
-      }
-      for (const d of report.days) {
-        const v = report.byDate[d.dateKey]?.[metric.key]
-        out[d.label] = metric.hold || v == null ? '' : v
-      }
-      return out
-    })
+    const rows = buildFullDataSummaryExportRows(report)
     const ws = XLSX.utils.json_to_sheet(rows)
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Full Data')
     XLSX.writeFile(wb, `Full_Data_${selectedMonth || 'month'}.xlsx`)
+  }
+
+  const exportDetailExcel = () => {
+    if (!report.days.length) return
+    const filters = {
+      fromKey: report.fromKey,
+      toKey: report.toKey,
+      cityFilter,
+      clientFilter,
+      days: report.days,
+      flatIntervals: reportBase?._flatIntervals || [],
+    }
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildFullDataSummaryExportRows(report)), 'Summary')
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(buildFullDataOrderDetailRows(orderRows, filters)),
+      'Orders'
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(buildFullDataOrderRiderDetailRows(orderRows, overallRows, filters)),
+      'Order Riders'
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(buildFullDataZeroOrderDetailRows(orderRows, overallRows, filters)),
+      '0 Order'
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(buildFullDataDeployDetailRows(overallRows, filters)),
+      'Deploy Return'
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(buildFullDataIotDetailRows(iotRows, filters)),
+      'IoT KM'
+    )
+    const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilter}`.replace(/\s+/g, '_')
+    XLSX.writeFile(wb, `Full_Data_Detail_${suffix}.xlsx`)
   }
 
   const shareWhatsAppScreenshot = async () => {
@@ -418,6 +454,7 @@ export default function FullData() {
               className="glass"
               onClick={exportExcel}
               disabled={!report.days.length || loading || building}
+              title="Download the Full Data summary table"
               style={{
                 padding: '0.55rem 0.9rem',
                 display: 'flex',
@@ -429,6 +466,24 @@ export default function FullData() {
             >
               <Download size={16} />
               Export
+            </button>
+            <button
+              type="button"
+              className="glass"
+              onClick={exportDetailExcel}
+              disabled={!report.days.length || loading || building}
+              title="Download raw detail: orders, deploy/return, IoT KM"
+              style={{
+                padding: '0.55rem 0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                color: '#fff',
+                cursor: report.days.length ? 'pointer' : 'not-allowed',
+              }}
+            >
+              <Download size={16} />
+              Export Detail
             </button>
             <button
               type="button"

@@ -20,7 +20,7 @@ import {
 import { buildVehicleDayKmIndex } from './serviceScheduleReport'
 import { KM_PRODUCTIVITY_BUCKETS, kmToBucketKey } from './vehicleKmProductivityReport'
 import { parseOrderUploadMonthLabel } from './orderUploadDb'
-import { normalizeIotRunDate } from './iotDataReport'
+import { normalizeIotRunDate, iotRowDistanceKm } from './iotDataReport'
 import { getZeroOrderAsOfFromEndDate } from './riderPerformanceReport'
 import { calcOrderEarningAndMf, EV_DAILY_RENT } from './fullDataCommercialRates'
 
@@ -44,12 +44,12 @@ export const FULL_DATA_METRICS = [
   { key: 'totalOrder', label: 'Total Order', section: 'Supply' },
   { key: 'evOrder', label: 'EV order', section: 'Supply' },
   { key: 'nonEvOrder', label: 'Non-EV Order', section: 'Supply' },
-  { key: 'zeroOrderRiderCount', label: '0 order Rider count', section: 'Supply', current: true },
+  { key: 'zeroOrderRiderCount', label: '0 order Rider count', section: 'Supply', yesterdayTotal: true },
   {
     key: 'd1ZeroOrderRiderCount',
     label: 'D-1 0 order rider count',
     section: 'Supply',
-    current: true,
+    yesterdayTotal: true,
     hint: 'BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy only',
   },
   { key: 'totalEarning', label: 'Total Earing', section: 'Supply' },
@@ -87,19 +87,15 @@ export const FULL_DATA_METRICS = [
 const NUMERIC_KEYS = FULL_DATA_METRICS.filter((m) => !m.hold && !m.ratio).map((m) => m.key)
 const MONEY_KEYS = new Set(['totalEarning', 'evEarning', 'nonEarning', 'mfAmount', 'rent', 'totalRevenue'])
 const RATIO_KEYS = new Set(FULL_DATA_METRICS.filter((m) => m.ratio).map((m) => m.key))
-const CURRENT_COUNT_KEYS = new Set(
-  FULL_DATA_METRICS.filter((m) => m.current).map((m) => m.key)
+const YESTERDAY_TOTAL_KEYS = new Set(
+  FULL_DATA_METRICS.filter((m) => m.yesterdayTotal).map((m) => m.key)
 )
 
-function latestDayMetricValue(byDate, days, key) {
-  const yKey = yesterdayDateKey()
-  for (let i = (days || []).length - 1; i >= 0; i--) {
-    const dateKey = days[i]?.dateKey
-    if (!dateKey) continue
-    // 0-order is closed through yesterday — don't use today's empty column as Total
-    if (dateKey > yKey) continue
-    return Number(byDate?.[dateKey]?.[key]) || 0
-  }
+/** Total column = yesterday's count only (not month sum, not today). */
+function yesterdayMetricValue(byDate, days, key, asOf = new Date()) {
+  const yKey = yesterdayDateKey(asOf)
+  const inRange = (days || []).some((d) => d.dateKey === yKey)
+  if (inRange) return Number(byDate?.[yKey]?.[key]) || 0
   return 0
 }
 
@@ -351,6 +347,9 @@ function flattenDeployIntervals(vehicleIntervals) {
         city: iv.city || '',
         client: iv.clientName || '',
         riderId: (iv.clientId || iv.ev91RiderId || iv.riderId || '').toString().trim().toUpperCase(),
+        ev91RiderId: (iv.ev91RiderId || '').toString().trim(),
+        vehicleNumber: (iv.vehicleNumber || '').toString().trim(),
+        sourceName: (iv.sourceName || iv.source || '').toString().trim(),
       })
     }
   }
@@ -776,8 +775,8 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
       totals[metric.key] = calcOrdersPerRider(orders, riders)
       continue
     }
-    if (metric.current || CURRENT_COUNT_KEYS.has(metric.key)) {
-      totals[metric.key] = latestDayMetricValue(byDate, base.days, metric.key)
+    if (metric.yesterdayTotal || YESTERDAY_TOTAL_KEYS.has(metric.key)) {
+      totals[metric.key] = yesterdayMetricValue(byDate, base.days, metric.key)
       continue
     }
     let sum = 0
@@ -850,8 +849,8 @@ export function sliceFullDataReportThroughYesterday(report, asOf = new Date()) {
       totals[metric.key] = calcOrdersPerRider(orders, riders)
       continue
     }
-    if (metric.current || CURRENT_COUNT_KEYS.has(metric.key)) {
-      totals[metric.key] = latestDayMetricValue(report.byDate, days, metric.key)
+    if (metric.yesterdayTotal || YESTERDAY_TOTAL_KEYS.has(metric.key)) {
+      totals[metric.key] = yesterdayMetricValue(report.byDate, days, metric.key, asOf)
       continue
     }
     let sum = 0
@@ -919,4 +918,279 @@ export function shareFullDataWhatsApp(report, filters = {}) {
   const url = `https://wa.me/?text=${encodeURIComponent(text)}`
   window.open(url, '_blank', 'noopener,noreferrer')
   return text
+}
+
+function matchesCityClientFilter(city, client, cityFilter = 'All', clientFilter = 'All') {
+  const c = normalizeSummaryCity(city)
+  const cl = normalizeSummaryClient(client)
+  if (cityFilter && cityFilter !== 'All' && c !== cityFilter) return false
+  if (clientFilter && clientFilter !== 'All' && cl !== clientFilter) return false
+  return true
+}
+
+export function buildFullDataSummaryExportRows(report) {
+  return (report?.metrics || []).map((metric) => {
+    const out = {
+      Section: metric.section,
+      List: metric.label,
+      Total: metric.hold ? '' : report.totals?.[metric.key] ?? '',
+    }
+    for (const d of report?.days || []) {
+      const v = report.byDate?.[d.dateKey]?.[metric.key]
+      out[d.label] = metric.hold || v == null ? '' : v
+    }
+    return out
+  })
+}
+
+/** Rider-day order upload rows (raw detail behind Supply orders). */
+export function buildFullDataOrderDetailRows(
+  orderRows = [],
+  { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All' } = {}
+) {
+  const rows = []
+  for (const row of orderRows || []) {
+    const dateKey = toMetricDateKey(row.date_record)
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+    const city = normalizeSummaryCity(row.city)
+    const client = normalizeSummaryClient(row.client)
+    if (!matchesCityClientFilter(city, client, cityFilter, clientFilter)) continue
+    const delivered = Number(row.delivered) || 0
+    rows.push({
+      Date: dateKey,
+      City: city,
+      Client: client,
+      'Worker Code': (row.worker_code || '').toString().trim(),
+      Type: (row.type1 || '').toString().trim(),
+      'EV / Non-EV': isEvType(row.type1) ? 'EV' : 'Non-EV',
+      Delivered: delivered,
+    })
+  }
+  rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Client.localeCompare(b.Client) || a['Worker Code'].localeCompare(b['Worker Code']))
+  return rows
+}
+
+/** Unique rider + client order totals (detail behind Order per rider). */
+export function buildFullDataOrderRiderDetailRows(
+  orderRows = [],
+  overallRows = [],
+  { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All' } = {}
+) {
+  const nameByRider = new Map()
+  for (const row of overallRows || []) {
+    const id = (row.clientId || row.clientRiderId || row.ev91RiderId || '').toString().trim().toUpperCase()
+    const name = (row.riderName || '').toString().trim()
+    if (id && name && !nameByRider.has(id)) nameByRider.set(id, name)
+  }
+
+  const byKey = new Map()
+  for (const row of orderRows || []) {
+    const dateKey = toMetricDateKey(row.date_record)
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+    const city = normalizeSummaryCity(row.city)
+    const client = normalizeSummaryClient(row.client)
+    if (!matchesCityClientFilter(city, client, cityFilter, clientFilter)) continue
+    const worker = (row.worker_code || '').toString().trim().toUpperCase()
+    if (!worker) continue
+    const delivered = Number(row.delivered) || 0
+    const key = `${worker}|${client}|${city}`
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        worker,
+        client,
+        city,
+        days: new Set(),
+        totalDelivered: 0,
+        zeroOrderDays: 0,
+        evDays: 0,
+        nonEvDays: 0,
+      })
+    }
+    const rec = byKey.get(key)
+    rec.days.add(dateKey)
+    rec.totalDelivered += delivered
+    if (delivered <= 0) rec.zeroOrderDays += 1
+    if (isEvType(row.type1)) rec.evDays += 1
+    else rec.nonEvDays += 1
+  }
+
+  const rows = [...byKey.values()].map((rec) => {
+    const orderDays = rec.days.size
+    const avg = orderDays ? Math.ceil(rec.totalDelivered / orderDays) : 0
+    return {
+      'Worker Code': rec.worker,
+      'Rider Name': nameByRider.get(rec.worker) || '',
+      Client: rec.client,
+      City: rec.city,
+      'EV / Non-EV': rec.evDays >= rec.nonEvDays ? 'EV' : 'Non-EV',
+      'Order days': orderDays,
+      'Total Delivered': rec.totalDelivered,
+      'Order per rider / day': avg,
+      '0 order days': rec.zeroOrderDays,
+    }
+  })
+  rows.sort(
+    (a, b) =>
+      String(a.Client).localeCompare(String(b.Client)) ||
+      String(a.City).localeCompare(String(b.City)) ||
+      String(a['Worker Code']).localeCompare(String(b['Worker Code']))
+  )
+  return rows
+}
+
+/**
+ * One row per date × 0-order rider (same 4-day window as Full Data).
+ * Date + Client included.
+ */
+export function buildFullDataZeroOrderDetailRows(
+  orderRows = [],
+  overallRows = [],
+  {
+    days = [],
+    fromKey = '',
+    toKey = '',
+    cityFilter = 'All',
+    clientFilter = 'All',
+    flatIntervals = null,
+  } = {}
+) {
+  const nameByRider = new Map()
+  const extraByRider = new Map()
+  for (const row of overallRows || []) {
+    const clientId = (row.clientId || row.clientRiderId || '').toString().trim().toUpperCase()
+    const ev91Id = (row.ev91RiderId || '').toString().trim()
+    const id = clientId || ev91Id.toUpperCase()
+    if (!id) continue
+    const name = (row.riderName || '').toString().trim()
+    if (name && !nameByRider.has(id)) nameByRider.set(id, name)
+    const vehicle = (row.vehicleNumber || '').toString().trim()
+    const source = (row.sourceName || row.source || '').toString().trim()
+    const prev = extraByRider.get(id) || { vehicle: '', source: '', ev91Id: '' }
+    extraByRider.set(id, {
+      vehicle: prev.vehicle || vehicle,
+      source: prev.source || source,
+      ev91Id: prev.ev91Id || ev91Id,
+    })
+    if (ev91Id) {
+      const prevEv = extraByRider.get(ev91Id.toUpperCase()) || prev
+      extraByRider.set(ev91Id.toUpperCase(), {
+        vehicle: prevEv.vehicle || vehicle,
+        source: prevEv.source || source,
+        ev91Id: prevEv.ev91Id || ev91Id,
+      })
+    }
+  }
+
+  const orderIndex = buildOrderDeliveredIndex(orderRows)
+  const activeDates = buildOrderActiveDates(orderIndex)
+  const yesterday = maxZeroOrderEndDateKey()
+  let lastOrderDay = ''
+  for (const d of activeDates) {
+    if (d > lastOrderDay) lastOrderDay = d
+  }
+  const maxEnd = lastOrderDay && lastOrderDay < yesterday ? lastOrderDay : yesterday
+
+  const intervals = (flatIntervals || []).filter(
+    (iv) => iv.fromKey <= (toKey || iv.fromKey) && (iv.toKey == null || iv.toKey > (fromKey || iv.fromKey))
+  )
+
+  const rows = []
+  for (const day of days || []) {
+    const dateKey = day.dateKey
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+    if (dateKey > maxEnd || !zeroOrderWindowHasOrders(activeDates, dateKey)) continue
+
+    const seen = new Set()
+    for (const iv of intervals) {
+      if (iv.fromKey > dateKey) continue
+      if (iv.toKey != null && iv.toKey <= dateKey) continue
+      if (!iv.riderId || seen.has(iv.riderId)) continue
+      if (!matchesCityClientFilter(iv.city, iv.client, cityFilter, clientFilter)) continue
+      if (!workerZeroOrdersInWindow(orderIndex, iv.riderId, dateKey)) continue
+      seen.add(iv.riderId)
+      const extra = extraByRider.get(String(iv.riderId).toUpperCase()) || {}
+      rows.push({
+        Date: dateKey,
+        'Worker Code': iv.riderId,
+        'EV91 ID': iv.ev91RiderId || extra.ev91Id || '',
+        'Rider Name': nameByRider.get(String(iv.riderId).toUpperCase()) || '',
+        'V Number': iv.vehicleNumber || extra.vehicle || iv.vKey || '',
+        'Source Name': iv.sourceName || extra.source || '',
+        Client: normalizeSummaryClient(iv.client),
+        City: normalizeSummaryCity(iv.city),
+        'D-1 client': isD1ZeroOrderClient(iv.client) ? 'Yes' : 'No',
+      })
+    }
+  }
+  rows.sort(
+    (a, b) =>
+      String(a.Date).localeCompare(String(b.Date)) ||
+      String(a.Client).localeCompare(String(b.Client)) ||
+      String(a['Worker Code']).localeCompare(String(b['Worker Code']))
+  )
+  return rows
+}
+
+/** EV91 deploy / return event rows (raw detail behind Deployee / Return). */
+export function buildFullDataDeployDetailRows(
+  overallRows = [],
+  { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All' } = {}
+) {
+  const rows = []
+  const seen = new Set()
+  for (const row of overallRows || []) {
+    const dateKey = rowDateKey(row, 'statusDate')
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+    const status = String(row.vehicleStatus || '').toLowerCase()
+    let kind = ''
+    if (status.includes('deploy')) kind = 'Deploy'
+    else if (status.includes('return')) kind = 'Return'
+    else continue
+    const city = normalizeSummaryCity(row.cityName || row.city)
+    const client = normalizeSummaryClient(row.clientName)
+    if (!matchesCityClientFilter(city, client, cityFilter, clientFilter)) continue
+    const vehicle = (row.vehicleNumber || '').toString().trim()
+    const riderId = (row.clientId || row.clientRiderId || row.ev91RiderId || '').toString().trim()
+    const uniq = `${vehicle}|${dateKey}|${kind}|${riderId}`
+    if (seen.has(uniq)) continue
+    seen.add(uniq)
+    rows.push({
+      Date: dateKey,
+      Status: kind,
+      City: city,
+      Client: client,
+      Vehicle: vehicle,
+      'Rider ID': riderId,
+      'Rider Name': (row.riderName || '').toString().trim(),
+    })
+  }
+  rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Status.localeCompare(b.Status) || a.Vehicle.localeCompare(b.Vehicle))
+  return rows
+}
+
+/** IoT vehicle-day KM rows (raw detail behind Ev KM). */
+export function buildFullDataIotDetailRows(iotRows = [], { fromKey = '', toKey = '' } = {}) {
+  const rows = []
+  for (const row of iotRows || []) {
+    const dateKey = normalizeIotRunDate(row.run_date)
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+    const km = iotRowDistanceKm(row) || Number(row.total_distance) || 0
+    rows.push({
+      Date: dateKey,
+      Vehicle: (row.vehicle_number || '').toString().trim(),
+      KM: Math.round(km * 100) / 100,
+    })
+  }
+  rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Vehicle.localeCompare(b.Vehicle))
+  return rows
 }

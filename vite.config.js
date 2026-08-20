@@ -124,6 +124,7 @@ export default defineConfig({
     // silently opening 5174 (different origin = empty cache / "no data").
     port: 5173,
     strictPort: true,
+    host: true,
     proxy: {
       '/api/fleet-sheet-csv': {
         target: 'https://docs.google.com',

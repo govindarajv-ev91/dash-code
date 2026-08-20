@@ -31,9 +31,9 @@ const OVERALL_HISTORY_DAYS = 180
 export const FULL_DATA_METRICS = [
   { key: 'deployCount', label: 'Deployee Count', section: 'Supply' },
   { key: 'returnCount', label: 'Return Count', section: 'Supply' },
-  { key: 'riderCount', label: 'Rider Count', section: 'Supply' },
-  { key: 'evRiderCount', label: 'EV rider Count', section: 'Supply' },
-  { key: 'nonEvRiderCount', label: 'Non-EV rider Count', section: 'Supply' },
+  { key: 'riderCount', label: 'Rider Count', section: 'Supply', uniqueMonth: true },
+  { key: 'evRiderCount', label: 'EV rider Count', section: 'Supply', uniqueMonth: true },
+  { key: 'nonEvRiderCount', label: 'Non-EV rider Count', section: 'Supply', uniqueMonth: true },
   {
     key: 'ordersPerRider',
     label: 'Order per rider',
@@ -90,6 +90,19 @@ const RATIO_KEYS = new Set(FULL_DATA_METRICS.filter((m) => m.ratio).map((m) => m
 const YESTERDAY_TOTAL_KEYS = new Set(
   FULL_DATA_METRICS.filter((m) => m.yesterdayTotal).map((m) => m.key)
 )
+const UNIQUE_MONTH_KEYS = new Set(
+  FULL_DATA_METRICS.filter((m) => m.uniqueMonth).map((m) => m.key)
+)
+
+function uniqueIdsFromDays(byDate, days, listKey) {
+  const ids = new Set()
+  for (const d of days || []) {
+    const list = byDate?.[d.dateKey]?.[listKey]
+    if (!list) continue
+    for (const id of list) ids.add(id)
+  }
+  return ids.size
+}
 
 /** Total column = yesterday's count only (not month sum, not today). */
 function yesterdayMetricValue(byDate, days, key, asOf = new Date()) {
@@ -445,9 +458,23 @@ export async function buildFullDataMonthBaseAsync(
         if (info.hasEv) evRiders += 1
         if (info.hasNonEv) nonEvRiders += 1
       }
+      const riderIds = new Set()
+      const evRiderIds = new Set()
+      const nonEvRiderIds = new Set()
       m.riderCount = riders
       m.evRiderCount = evRiders
       m.nonEvRiderCount = nonEvRiders
+      for (const [worker, info] of workers) {
+        if (info.delivered <= 0) continue
+        const id = String(worker).trim().toUpperCase()
+        if (!id) continue
+        riderIds.add(id)
+        if (info.hasEv) evRiderIds.add(id)
+        if (info.hasNonEv) nonEvRiderIds.add(id)
+      }
+      m._riderIds = riderIds
+      m._evRiderIds = evRiderIds
+      m._nonEvRiderIds = nonEvRiderIds
     }
   }
 
@@ -737,6 +764,9 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
     const dest = byDate[dateKey]
     let d1ClientOrders = 0
     let d1ClientRiders = 0
+    const dayRiderIds = new Set()
+    const dayEvRiderIds = new Set()
+    const dayNonEvRiderIds = new Set()
     for (const [pKey, src] of partMap) {
       if (!matchesPart(pKey, cityFilter, clientFilter)) continue
       for (const key of NUMERIC_KEYS) {
@@ -747,7 +777,13 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
         d1ClientOrders += Number(src.totalOrder) || 0
         d1ClientRiders += Number(src.riderCount) || 0
       }
+      for (const id of src._riderIds || []) dayRiderIds.add(id)
+      for (const id of src._evRiderIds || []) dayEvRiderIds.add(id)
+      for (const id of src._nonEvRiderIds || []) dayNonEvRiderIds.add(id)
     }
+    dest._riderIds = [...dayRiderIds]
+    dest._evRiderIds = [...dayEvRiderIds]
+    dest._nonEvRiderIds = [...dayNonEvRiderIds]
     dest._d1ClientOrders = d1ClientOrders
     dest._d1ClientRiders = d1ClientRiders
     dest.ordersPerRider = calcOrdersPerRider(d1ClientOrders, d1ClientRiders)
@@ -777,6 +813,16 @@ export function materializeFullDataReport(base, cityFilter = 'All', clientFilter
     }
     if (metric.yesterdayTotal || YESTERDAY_TOTAL_KEYS.has(metric.key)) {
       totals[metric.key] = yesterdayMetricValue(byDate, base.days, metric.key)
+      continue
+    }
+    if (metric.uniqueMonth || UNIQUE_MONTH_KEYS.has(metric.key)) {
+      const listKey =
+        metric.key === 'evRiderCount'
+          ? '_evRiderIds'
+          : metric.key === 'nonEvRiderCount'
+            ? '_nonEvRiderIds'
+            : '_riderIds'
+      totals[metric.key] = uniqueIdsFromDays(byDate, base.days, listKey)
       continue
     }
     let sum = 0
@@ -851,6 +897,16 @@ export function sliceFullDataReportThroughYesterday(report, asOf = new Date()) {
     }
     if (metric.yesterdayTotal || YESTERDAY_TOTAL_KEYS.has(metric.key)) {
       totals[metric.key] = yesterdayMetricValue(report.byDate, days, metric.key, asOf)
+      continue
+    }
+    if (metric.uniqueMonth || UNIQUE_MONTH_KEYS.has(metric.key)) {
+      const listKey =
+        metric.key === 'evRiderCount'
+          ? '_evRiderIds'
+          : metric.key === 'nonEvRiderCount'
+            ? '_nonEvRiderIds'
+            : '_riderIds'
+      totals[metric.key] = uniqueIdsFromDays(report.byDate, days, listKey)
       continue
     }
     let sum = 0

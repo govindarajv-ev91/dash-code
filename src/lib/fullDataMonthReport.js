@@ -1,4 +1,5 @@
 import {
+  differenceInCalendarDays,
   eachDayOfInterval,
   endOfMonth,
   format,
@@ -23,6 +24,16 @@ import { parseOrderUploadMonthLabel } from './orderUploadDb'
 import { normalizeIotRunDate, iotRowDistanceKm } from './iotDataReport'
 import { getZeroOrderAsOfFromEndDate } from './riderPerformanceReport'
 import { calcOrderEarningAndMf, EV_DAILY_RENT } from './fullDataCommercialRates'
+import {
+  buildOnboardingSourceLookupIndex,
+  lookupOnboardingSource,
+  canonicalSourceName,
+  sourceNameGroupKey,
+} from './onboardingSourceLookup'
+import {
+  buildEv91PublicRiderIndex,
+  lookupEv91PublicRiderId,
+} from './ev91OnboardingPending'
 
 const PART_SEP = '\x1f'
 /** Keep this much EV91 history before month start (open deploys). */
@@ -1249,4 +1260,263 @@ export function buildFullDataIotDetailRows(iotRows = [], { fromKey = '', toKey =
   }
   rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Vehicle.localeCompare(b.Vehicle))
   return rows
+}
+
+/**
+ * Earliest order day per rider × city × client (all order upload history).
+ */
+function buildRiderWorkStartIndex(orderRows = []) {
+  const byKey = new Map()
+  for (const row of orderRows || []) {
+    const dateKey = toMetricDateKey(row.date_record)
+    if (!dateKey) continue
+    if ((Number(row.delivered) || 0) <= 0) continue
+    const worker = (row.worker_code || '').toString().trim().toUpperCase()
+    if (!worker) continue
+    const city = normalizeSummaryCity(row.city)
+    const client = normalizeSummaryClient(row.client)
+    const key = `${worker}\t${city}\t${client}`
+    const prev = byKey.get(key)
+    if (!prev || dateKey < prev) byKey.set(key, dateKey)
+  }
+  return byKey
+}
+
+/**
+ * Source-wise daily Supply from order upload.
+ * Source name comes from rider_onboarding.source_name (lookup by worker code).
+ */
+export function buildFullDataSourceWiseDailyRows(
+  orderRows = [],
+  onboardingRows = [],
+  overallRows = [],
+  mappingRows = [],
+  allOrderRows = [],
+  { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All' } = {}
+) {
+  const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
+  const ev91Index = buildEv91PublicRiderIndex(overallRows, mappingRows)
+  const workStartIndex = buildRiderWorkStartIndex(allOrderRows.length ? allOrderRows : orderRows)
+  const nameByRider = new Map()
+  for (const row of overallRows || []) {
+    const id = (row.clientId || row.clientRiderId || row.ev91RiderId || '').toString().trim().toUpperCase()
+    const name = (row.riderName || '').toString().trim()
+    if (id && name && !nameByRider.has(id)) nameByRider.set(id, name)
+  }
+
+  const buckets = new Map()
+  const riderBuckets = new Map()
+
+  for (const row of orderRows || []) {
+    const dateKey = toMetricDateKey(row.date_record)
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+    const city = normalizeSummaryCity(row.city)
+    const client = normalizeSummaryClient(row.client)
+    if (!matchesCityClientFilter(city, client, cityFilter, clientFilter)) continue
+
+    const worker = (row.worker_code || '').toString().trim().toUpperCase()
+    const delivered = Number(row.delivered) || 0
+    const isEv = isEvType(row.type1)
+    const source = canonicalSourceName(
+      lookupOnboardingSource(sourceIndex, { riderIds: [worker, row.worker_code, row.rider_id] }) || 'Unknown'
+    ) || 'Unknown'
+
+    const key = `${sourceNameGroupKey(source)}\t${city}\t${client}\t${dateKey}`
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        source,
+        city,
+        client,
+        dateKey,
+        riders: new Set(),
+        evRiders: new Set(),
+        nonEvRiders: new Set(),
+        totalOrder: 0,
+        evOrder: 0,
+        nonEvOrder: 0,
+        earning: 0,
+        evEarning: 0,
+        nonEarning: 0,
+        mfAmount: 0,
+      })
+    }
+    const b = buckets.get(key)
+    b.totalOrder += delivered
+    if (isEv) b.evOrder += delivered
+    else b.nonEvOrder += delivered
+
+    if (delivered > 0) {
+      const { earning, mf } = calcOrderEarningAndMf(client, city, delivered)
+      b.earning += earning
+      b.mfAmount += mf
+      if (isEv) b.evEarning += earning
+      else b.nonEarning += earning
+      if (worker) {
+        b.riders.add(worker)
+        if (isEv) b.evRiders.add(worker)
+        else b.nonEvRiders.add(worker)
+
+        const riderKey = `${worker}\t${sourceNameGroupKey(source)}\t${city}\t${client}`
+        if (!riderBuckets.has(riderKey)) {
+          riderBuckets.set(riderKey, {
+            worker,
+            source,
+            city,
+            client,
+            totalOrder: 0,
+            evOrder: 0,
+            nonEvOrder: 0,
+            earning: 0,
+            evEarning: 0,
+            nonEarning: 0,
+            mfAmount: 0,
+            evDays: 0,
+            nonEvDays: 0,
+            orderDays: new Set(),
+          })
+        }
+        const r = riderBuckets.get(riderKey)
+        r.totalOrder += delivered
+        if (isEv) {
+          r.evOrder += delivered
+          r.evDays += 1
+        } else {
+          r.nonEvOrder += delivered
+          r.nonEvDays += 1
+        }
+        r.earning += earning
+        r.mfAmount += mf
+        if (isEv) r.evEarning += earning
+        else r.nonEarning += earning
+        r.orderDays.add(dateKey)
+      }
+    }
+  }
+
+  const daily = [...buckets.values()]
+    .map((b) => ({
+      Source: b.source,
+      City: b.city || '',
+      Client: b.client || '',
+      Date: b.dateKey,
+      'Rider Count': b.riders.size,
+      'EV rider Count': b.evRiders.size,
+      'Non-EV rider Count': b.nonEvRiders.size,
+      'Total Order': b.totalOrder,
+      'EV Order': b.evOrder,
+      'Non-EV Order': b.nonEvOrder,
+      Earning: Math.round(b.earning * 100) / 100,
+      'EV Earning': Math.round(b.evEarning * 100) / 100,
+      'Non Earning': Math.round(b.nonEarning * 100) / 100,
+      'MF Amount': Math.round(b.mfAmount * 100) / 100,
+    }))
+    .sort(
+      (a, b) =>
+        a.Date.localeCompare(b.Date) ||
+        String(a.City).localeCompare(String(b.City)) ||
+        String(a.Client).localeCompare(String(b.Client)) ||
+        String(a.Source).localeCompare(String(b.Source))
+    )
+
+  const monthBySource = new Map()
+  for (const b of buckets.values()) {
+    const monthKey = `${sourceNameGroupKey(b.source)}\t${b.city}\t${b.client}`
+    if (!monthBySource.has(monthKey)) {
+      monthBySource.set(monthKey, {
+        source: b.source,
+        city: b.city,
+        client: b.client,
+        riders: new Set(),
+        evRiders: new Set(),
+        nonEvRiders: new Set(),
+        totalOrder: 0,
+        evOrder: 0,
+        nonEvOrder: 0,
+        earning: 0,
+        evEarning: 0,
+        nonEarning: 0,
+        mfAmount: 0,
+      })
+    }
+    const m = monthBySource.get(monthKey)
+    for (const id of b.riders) m.riders.add(id)
+    for (const id of b.evRiders) m.evRiders.add(id)
+    for (const id of b.nonEvRiders) m.nonEvRiders.add(id)
+    m.totalOrder += b.totalOrder
+    m.evOrder += b.evOrder
+    m.nonEvOrder += b.nonEvOrder
+    m.earning += b.earning
+    m.evEarning += b.evEarning
+    m.nonEarning += b.nonEarning
+    m.mfAmount += b.mfAmount
+  }
+
+  const month = [...monthBySource.values()]
+    .map((m) => ({
+      Source: m.source,
+      City: m.city || '',
+      Client: m.client || '',
+      'Unique Rider Count': m.riders.size,
+      'Unique EV rider Count': m.evRiders.size,
+      'Unique Non-EV rider Count': m.nonEvRiders.size,
+      'Total Order': m.totalOrder,
+      'EV Order': m.evOrder,
+      'Non-EV Order': m.nonEvOrder,
+      Earning: Math.round(m.earning * 100) / 100,
+      'EV Earning': Math.round(m.evEarning * 100) / 100,
+      'Non Earning': Math.round(m.nonEarning * 100) / 100,
+      'MF Amount': Math.round(m.mfAmount * 100) / 100,
+    }))
+    .sort(
+      (a, b) =>
+        String(a.City).localeCompare(String(b.City)) ||
+        String(a.Client).localeCompare(String(b.Client)) ||
+        b['Total Order'] - a['Total Order'] ||
+        String(a.Source).localeCompare(String(b.Source))
+    )
+
+  const riders = [...riderBuckets.values()]
+    .map((r) => {
+      const daysOrderDone = r.orderDays.size
+      const sortedDays = [...r.orderDays].sort()
+      const riderScopeKey = `${r.worker}\t${r.city}\t${r.client}`
+      const workStartDate = workStartIndex.get(riderScopeKey) || sortedDays[0] || ''
+      const lastWorkDate = sortedDays[sortedDays.length - 1] || ''
+      const durationDays =
+        workStartDate && lastWorkDate
+          ? differenceInCalendarDays(parseISO(lastWorkDate), parseISO(workStartDate)) + 1
+          : 0
+      return {
+        'Rider ID': r.worker,
+        'EV91 ID': lookupEv91PublicRiderId(ev91Index, r.worker) || '',
+        'Rider Name': nameByRider.get(r.worker) || '',
+        Source: r.source,
+        City: r.city || '',
+        Client: r.client || '',
+        'EV / Non-EV': r.evDays >= r.nonEvDays ? 'EV' : 'Non-EV',
+        'Work start date': workStartDate,
+        'Last work date': lastWorkDate,
+        'Duration days': durationDays,
+        'Days order done': daysOrderDone,
+        'Order per day': daysOrderDone ? Math.ceil(r.totalOrder / daysOrderDone) : 0,
+        'Total Order': r.totalOrder,
+        'EV Order': r.evOrder,
+        'Non-EV Order': r.nonEvOrder,
+        Earning: Math.round(r.earning * 100) / 100,
+        'EV Earning': Math.round(r.evEarning * 100) / 100,
+        'Non Earning': Math.round(r.nonEarning * 100) / 100,
+        'MF Amount': Math.round(r.mfAmount * 100) / 100,
+      }
+    })
+    .sort(
+      (a, b) =>
+        String(a.Source).localeCompare(String(b.Source)) ||
+        String(a.City).localeCompare(String(b.City)) ||
+        String(a.Client).localeCompare(String(b.Client)) ||
+        String(a['Rider ID']).localeCompare(String(b['Rider ID']))
+    )
+
+  return { daily, month, riders }
 }

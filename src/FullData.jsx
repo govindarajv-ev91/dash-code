@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, useRef } from 'react'
-import { Table2, Calendar, MapPin, Briefcase, Loader, RefreshCw, Download, MessageCircle, Info, X } from 'lucide-react'
+import { Table2, Calendar, MapPin, Briefcase, Loader, RefreshCw, Download, MessageCircle, Info, X, Users, ArrowLeft } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import {
   fetchOrderUploadsForHistory,
   fetchOrderUploadMonths,
+  fetchAllOrderUploads,
 } from './lib/orderUploadDb'
 import { fetchEv91OverallStatusAll, fetchEv91CurrentStatusAll } from './lib/ev91EvLookup'
 import { fetchIotDataInRange } from './lib/iotDataDb'
@@ -23,9 +24,58 @@ import {
   buildFullDataZeroOrderDetailRows,
   buildFullDataDeployDetailRows,
   buildFullDataIotDetailRows,
+  buildFullDataSourceWiseDailyRows,
 } from './lib/fullDataMonthReport'
+import { fetchRiderOnboardingRows } from './lib/riderOnboardingDb'
+import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
 import { shareFullDataScreenshot } from './lib/fullDataShareScreenshot'
 import { FULL_DATA_RATE_INFO, EV_DAILY_RENT } from './lib/fullDataCommercialRates'
+
+const SOURCE_DAILY_COLUMNS = [
+  'Source',
+  'City',
+  'Client',
+  'Date',
+  'Rider Count',
+  'EV rider Count',
+  'Non-EV rider Count',
+  'Total Order',
+  'EV Order',
+  'Non-EV Order',
+  'Earning',
+  'EV Earning',
+  'Non Earning',
+  'MF Amount',
+]
+
+const SOURCE_MONTH_COLUMNS = [
+  'Source',
+  'City',
+  'Client',
+  'Unique Rider Count',
+  'Unique EV rider Count',
+  'Unique Non-EV rider Count',
+  'Total Order',
+  'EV Order',
+  'Non-EV Order',
+  'Earning',
+  'EV Earning',
+  'Non Earning',
+  'MF Amount',
+]
+
+const SOURCE_MONEY_KEYS = new Set(['Earning', 'EV Earning', 'Non Earning', 'MF Amount'])
+
+function formatSourceCell(key, value) {
+  if (value == null || value === '') return '—'
+  if (typeof value === 'number') {
+    if (SOURCE_MONEY_KEYS.has(key)) {
+      return value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    }
+    return value.toLocaleString('en-IN')
+  }
+  return String(value)
+}
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -36,7 +86,7 @@ const selectStyle = {
   minWidth: '140px',
 }
 
-export default function FullData() {
+export default function FullData({ onboardingData = [] }) {
   const [months, setMonths] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [cityFilter, setCityFilter] = useState('All')
@@ -56,6 +106,13 @@ export default function FullData() {
   const [sharing, setSharing] = useState(false)
   const [shareHint, setShareHint] = useState('')
   const [ratesInfoOpen, setRatesInfoOpen] = useState(false)
+  const [exportingSource, setExportingSource] = useState(false)
+  const [sourceViewOpen, setSourceViewOpen] = useState(false)
+  const [sourceTab, setSourceTab] = useState('daily')
+  const [localOnboarding, setLocalOnboarding] = useState([])
+  const [mappingRows, setMappingRows] = useState([])
+  const [allOrderRows, setAllOrderRows] = useState([])
+  const [sourceLoading, setSourceLoading] = useState(false)
   const captureRef = useRef(null)
 
   useEffect(() => {
@@ -91,17 +148,21 @@ export default function FullData() {
     setError(null)
     setReportBase(null)
     try {
-      const [orders, overall, current, iot] = await Promise.all([
+      const [orders, overall, current, iot, onboardingRows, mappingRes] = await Promise.all([
         fetchOrderUploadsForHistory(monthLabel),
         fetchEv91OverallStatusAll({ force: false }),
         fetchEv91CurrentStatusAll({ force: false }).catch(() => ({ data: [] })),
         fetchIotDataInRange(fromKey, toKey),
+        fetchRiderOnboardingRows({ force: true, full: true }).catch(() => []),
+        fetchEv91ClientMappingAll().catch(() => ({ data: [] })),
       ])
       setOrderRows(orders || [])
       // Trim before state so we never hold/process years of EV91 history on this page
       setOverallRows(trimOverallRowsForMonth(overall?.data || [], fromKey, toKey))
       setCurrentRows(current?.data || [])
       setIotRows(iot || [])
+      if (onboardingRows?.length) setLocalOnboarding(onboardingRows)
+      setMappingRows(mappingRes?.data || [])
     } catch (err) {
       setError(err.message || 'Failed to load Full Data')
       setOrderRows([])
@@ -116,6 +177,10 @@ export default function FullData() {
   useEffect(() => {
     if (selectedMonth) loadMonth(selectedMonth)
   }, [selectedMonth, loadMonth])
+
+  useEffect(() => {
+    if (onboardingData?.length) setLocalOnboarding(onboardingData)
+  }, [onboardingData])
 
   const filterOptions = useMemo(
     () => collectFullDataFilterOptions(orderRows, overallRows),
@@ -222,6 +287,61 @@ export default function FullData() {
     return materializeFullDataReport(reportBase, deferredCity, deferredClient)
   }, [reportBase, deferredCity, deferredClient, selectedMonth])
 
+  const resolvedOnboarding = localOnboarding.length ? localOnboarding : onboardingData
+
+  const refreshOnboarding = useCallback(async () => {
+    const rows = await fetchRiderOnboardingRows({ force: true, full: true })
+    setLocalOnboarding(rows)
+    return rows
+  }, [])
+
+  const sourceReport = useMemo(() => {
+    if (!sourceViewOpen || !report.fromKey) return { daily: [], month: [], riders: [] }
+    return buildFullDataSourceWiseDailyRows(
+      orderRows,
+      resolvedOnboarding,
+      overallRows,
+      mappingRows,
+      allOrderRows,
+      {
+      fromKey: report.fromKey,
+      toKey: report.toKey,
+      cityFilter: deferredCity,
+      clientFilter: deferredClient,
+    })
+  }, [
+    sourceViewOpen,
+    orderRows,
+    resolvedOnboarding,
+    overallRows,
+    mappingRows,
+    allOrderRows,
+    report.fromKey,
+    report.toKey,
+    deferredCity,
+    deferredClient,
+  ])
+
+  const openSourceView = async () => {
+    if (!report.days.length) return
+    setSourceViewOpen(true)
+    setError(null)
+    setSourceLoading(true)
+    try {
+      const [, mappingRes, historyRows] = await Promise.all([
+        refreshOnboarding(),
+        fetchEv91ClientMappingAll().catch(() => ({ data: [] })),
+        fetchAllOrderUploads({ force: false }).catch(() => []),
+      ])
+      setMappingRows(mappingRes?.data || [])
+      setAllOrderRows(historyRows || [])
+    } catch (err) {
+      setError(err.message || 'Failed to load rider onboarding for source names')
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
   const onCityChange = (value) => {
     startTransition(() => setCityFilter(value))
   }
@@ -277,6 +397,23 @@ export default function FullData() {
     )
     const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilter}`.replace(/\s+/g, '_')
     XLSX.writeFile(wb, `Full_Data_Detail_${suffix}.xlsx`)
+  }
+
+  const exportSourceWiseDailyExcel = () => {
+    if (!sourceReport.daily.length && !sourceReport.month.length && !sourceReport.riders.length) return
+    setExportingSource(true)
+    try {
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.daily), 'Source Daily')
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.month), 'Source Month')
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.riders), 'Rider Wise')
+      const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilter}`.replace(/\s+/g, '_')
+      XLSX.writeFile(wb, `Full_Data_Source_Daily_${suffix}.xlsx`)
+    } catch (err) {
+      setError(err.message || 'Failed to export source-wise daily data')
+    } finally {
+      setExportingSource(false)
+    }
   }
 
   const shareWhatsAppScreenshot = async () => {
@@ -484,6 +621,26 @@ export default function FullData() {
             >
               <Download size={16} />
               Export Detail
+            </button>
+            <button
+              type="button"
+              className="glass"
+              onClick={() => (sourceViewOpen ? setSourceViewOpen(false) : openSourceView())}
+              disabled={!report.days.length || loading || building}
+              title="Open source-wise rider, order and earning (source from rider onboarding)"
+              style={{
+                padding: '0.55rem 0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                color: '#fff',
+                cursor: report.days.length ? 'pointer' : 'not-allowed',
+                border: sourceViewOpen ? '1px solid rgba(147,197,253,0.5)' : undefined,
+                background: sourceViewOpen ? 'rgba(59,130,246,0.18)' : undefined,
+              }}
+            >
+              <Users size={16} />
+              {sourceViewOpen ? 'Back to Full Data' : 'Source Detail'}
             </button>
             <button
               type="button"
@@ -742,6 +899,179 @@ export default function FullData() {
         className="table-card glass"
         style={{ padding: 0, overflow: 'hidden', opacity: filtersPending ? 0.72 : 1, transition: 'opacity 0.15s' }}
       >
+        {sourceViewOpen ? (
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.65rem',
+                padding: '0.75rem 0.9rem',
+                borderBottom: '1px solid var(--border-color)',
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+                  <Users size={16} style={{ color: 'var(--accent-blue)' }} />
+                  Source Detail
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.2rem' }}>
+                  Source from rider onboarding · {selectedMonth} · City: {cityFilter} · Client:{' '}
+                  {clientFilter}
+                  {sourceTab === 'daily'
+                    ? ` · ${sourceReport.daily.length.toLocaleString('en-IN')} rows`
+                    : ` · ${sourceReport.month.length.toLocaleString('en-IN')} rows`}
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="glass"
+                  onClick={() => setSourceTab('daily')}
+                  style={{
+                    padding: '0.4rem 0.7rem',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    border:
+                      sourceTab === 'daily'
+                        ? '1px solid rgba(147,197,253,0.55)'
+                        : '1px solid var(--border-color)',
+                    background: sourceTab === 'daily' ? 'rgba(59,130,246,0.2)' : undefined,
+                  }}
+                >
+                  Daily
+                </button>
+                <button
+                  type="button"
+                  className="glass"
+                  onClick={() => setSourceTab('month')}
+                  style={{
+                    padding: '0.4rem 0.7rem',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    border:
+                      sourceTab === 'month'
+                        ? '1px solid rgba(147,197,253,0.55)'
+                        : '1px solid var(--border-color)',
+                    background: sourceTab === 'month' ? 'rgba(59,130,246,0.2)' : undefined,
+                  }}
+                >
+                  Month unique
+                </button>
+                <button
+                  type="button"
+                  className="glass"
+                  onClick={exportSourceWiseDailyExcel}
+                  disabled={exportingSource || sourceLoading || (!sourceReport.daily.length && !sourceReport.month.length && !sourceReport.riders.length)}
+                  style={{
+                    padding: '0.4rem 0.75rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    color: '#fff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {exportingSource ? <Loader size={14} className="spin" /> : <Download size={14} />}
+                  Download
+                </button>
+                <button
+                  type="button"
+                  className="glass"
+                  onClick={() => setSourceViewOpen(false)}
+                  style={{
+                    padding: '0.4rem 0.75rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    color: '#fff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <ArrowLeft size={14} />
+                  Full Data
+                </button>
+              </div>
+            </div>
+            <div style={{ maxHeight: 'calc(100vh - 280px)', overflow: 'auto', background: '#ffffff' }}>
+              {sourceLoading ? (
+                <div className="loading-container" style={{ minHeight: '240px' }}>
+                  <span className="loader" />
+                </div>
+              ) : (
+                <div className="full-data-sheet" style={{ background: '#ffffff', color: '#0f172a' }}>
+                  <table
+                    style={{
+                      width: 'max-content',
+                      minWidth: '100%',
+                      borderCollapse: 'separate',
+                      borderSpacing: 0,
+                      fontSize: '0.78rem',
+                      color: '#0f172a',
+                      background: '#ffffff',
+                    }}
+                  >
+                    <thead>
+                      <tr>
+                        {(sourceTab === 'daily' ? SOURCE_DAILY_COLUMNS : SOURCE_MONTH_COLUMNS).map((col) => (
+                          <th
+                            key={col}
+                            style={{
+                              position: 'sticky',
+                              top: 0,
+                              zIndex: 2,
+                              background: '#e2e8f0',
+                              color: '#0f172a',
+                              padding: '0.45rem 0.55rem',
+                              whiteSpace: 'nowrap',
+                              textAlign: col === 'Source' || col === 'City' || col === 'Client' || col === 'Date' ? 'left' : 'right',
+                              borderBottom: '1px solid #cbd5e1',
+                            }}
+                          >
+                            {col}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(sourceTab === 'daily' ? sourceReport.daily : sourceReport.month).map((row, idx) => {
+                        const cols = sourceTab === 'daily' ? SOURCE_DAILY_COLUMNS : SOURCE_MONTH_COLUMNS
+                        return (
+                          <tr key={`${row.Source}-${row.City}-${row.Client}-${row.Date || ''}-${idx}`}>
+                            {cols.map((col) => (
+                              <td
+                                key={col}
+                                style={{
+                                  padding: '0.4rem 0.55rem',
+                                  whiteSpace: 'nowrap',
+                                  textAlign:
+                                    col === 'Source' || col === 'City' || col === 'Client' || col === 'Date'
+                                      ? 'left'
+                                      : 'right',
+                                  borderBottom: '1px solid #e2e8f0',
+                                  background: idx % 2 ? '#f8fafc' : '#ffffff',
+                                }}
+                              >
+                                {formatSourceCell(col, row[col])}
+                              </td>
+                            ))}
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                  {!(sourceTab === 'daily' ? sourceReport.daily : sourceReport.month).length && (
+                    <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
+                      No source-wise rows for this month / city / client.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
         <div style={{ maxHeight: 'calc(100vh - 260px)', overflow: 'auto', paddingRight: 4, background: '#ffffff' }}>
           {loading || building || (!report.days.length && selectedMonth) ? (
             <div className="loading-container" style={{ minHeight: '240px' }}>
@@ -901,7 +1231,8 @@ export default function FullData() {
             </div>
           )}
         </div>
-        {loading && report.days.length > 0 && (
+        )}
+        {loading && report.days.length > 0 && !sourceViewOpen && (
           <div
             style={{
               padding: '0.5rem 0.85rem',

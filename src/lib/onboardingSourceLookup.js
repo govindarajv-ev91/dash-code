@@ -8,6 +8,20 @@ function pickText(...values) {
   return ''
 }
 
+/** Group key so "Zuha" and "zuha" count as one source. */
+export function sourceNameGroupKey(value) {
+  return (value ?? '').toString().trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/** Display one casing: first letter of each word uppercase. */
+export function canonicalSourceName(value) {
+  const trimmed = (value ?? '').toString().trim().replace(/\s+/g, ' ')
+  if (!trimmed) return ''
+  const lower = trimmed.toLowerCase()
+  if (lower === 'unknown' || isMissingSourceName(trimmed)) return trimmed
+  return trimmed.replace(/(\S)(\S*)/g, (_, first, rest) => first.toUpperCase() + rest.toLowerCase())
+}
+
 function normalizePhoneDigits(value) {
   const digits = (value ?? '').toString().replace(/\D/g, '')
   if (digits.length >= 10) return digits.slice(-10)
@@ -52,7 +66,7 @@ export function buildOnboardingSourceLookupIndex(onboardingRows = []) {
   const byPhone = new Map()
 
   for (const row of onboardingRows || []) {
-    const source = pickText(row.source_name)
+    const source = canonicalSourceName(pickText(row.source_name))
     if (!source || source === '-') continue
 
     const keys = new Set()

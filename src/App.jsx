@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, Suspense, lazy, startTransition } from 'react'
+import React, { useState, useEffect, useCallback, Suspense, lazy, startTransition, useRef } from 'react'
 import Dashboard from './Dashboard'
 import RiderAttendance from './RiderAttendance'
 import TempSourceActive from './TempSourceActive'
@@ -6,6 +6,10 @@ import DailyMailer from './DailyMailer'
 import RiderDetails from './RiderDetails'
 import { fetchAllData } from './lib/supabaseFetch'
 import { scheduleCacheWrite } from './lib/deferredCache'
+import {
+  fetchRiderOnboardingRows,
+  clearRiderOnboardingMemoryCache,
+} from './lib/riderOnboardingDb'
 
 const VehicleTracking = lazy(() => import('./VehicleTracking'))
 const OnboardingAnalytics = lazy(() => import('./OnboardingAnalytics'))
@@ -185,11 +189,16 @@ async function fetchCoreDashboardData({ fullFleet = false } = {}) {
 }
 
 async function fetchSecondaryTables() {
-  return Promise.all([
+  const [kycRes, onboardingRows, inventoryRes] = await Promise.all([
     fetchAllData('rider_kyc', '*', 'id', { pageSize: 500 }),
-    fetchAllData('rider_onboarding', '*', 'id', { pageSize: 500 }),
+    fetchRiderOnboardingRows({ force: true, full: true }),
     fetchAllData('vehicle_inventory', '*', 'id', { pageSize: 500 }),
   ])
+  return [
+    kycRes,
+    { data: onboardingRows, totalCount: onboardingRows.length },
+    inventoryRes,
+  ]
 }
 
 function App() {
@@ -209,6 +218,7 @@ function App() {
   const [fleetDataFull, setFleetDataFull] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [dataUpdatedAt, setDataUpdatedAt] = useState(null)
+  const lastSecondaryFetchRef = useRef(0)
 
   const applyFleetToState = useCallback((fleetRes, formFleetRes, { cache = true } = {}) => {
     const { dbFleetRows, mergedFleetRows, formFleetRows } = applyFleetFetchResults(fleetRes, formFleetRes)
@@ -243,7 +253,11 @@ function App() {
     }
   }, [fleetFullLoading, fleetDataFull, applyFleetToState])
 
-  const loadSecondaryTables = useCallback(async () => {
+  const loadSecondaryTables = useCallback(async ({ force = false } = {}) => {
+    const now = Date.now()
+    if (!force && now - lastSecondaryFetchRef.current < 30_000) return
+    lastSecondaryFetchRef.current = now
+
     try {
       const [kycRes, onboardingRes, inventoryRes] = await fetchSecondaryTables()
       if (kycRes.data?.length) {
@@ -258,6 +272,7 @@ function App() {
         startTransition(() => setVehicleInventoryData(inventoryRes.data))
         scheduleCacheWrite(() => cacheData('vehicle_inventory', inventoryRes.data))
       }
+      setDataUpdatedAt(new Date())
     } catch (err) {
       console.error('Secondary tables load error:', err)
     }
@@ -277,7 +292,11 @@ function App() {
           'fleet_data',
           FLEET_FORM_CACHE_KEY,
           'fleet_sheet_data',
+          'rider_kyc',
+          'rider_onboarding',
+          'vehicle_inventory',
         ])
+        clearRiderOnboardingMemoryCache()
         clearOrderUploadCache()
         clearIotRiderOrderCache()
         const { riderRes, uploadRows, fleetRes, formFleetRes } = await fetchCoreDashboardData({ fullFleet })
@@ -293,7 +312,7 @@ function App() {
         const merged = applyFleetToState(fleetRes, formFleetRes)
         if (fullFleet) startTransition(() => setFleetDataFull(merged))
         setDataUpdatedAt(new Date())
-        setTimeout(() => loadSecondaryTables(), 2500)
+        void loadSecondaryTables({ force: true })
       } catch (error) {
         console.error('Refresh error:', error)
       } finally {
@@ -379,7 +398,7 @@ function App() {
         `Fleet loaded (slim): ${fleetRes.data?.length ?? 0} from ${FLEET_LEGACY_TABLE}, ${formFleetRes.data?.length ?? 0} from ${FLEET_FORM_TABLE} · orders: ${riderRes.data?.length ?? 0} metrics + ${uploadRows?.length ?? 0} uploads → ${mergedRiders.length} merged`
       )
 
-      setTimeout(() => loadSecondaryTables(), 2500)
+      void loadSecondaryTables({ force: true })
     } catch (error) {
       console.error('Fetch error:', error)
     } finally {
@@ -391,6 +410,19 @@ function App() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  // Keep rider_onboarding / kyc / inventory fresh while the app stays open
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void loadSecondaryTables({ force: true })
+    }
+    const intervalId = setInterval(refresh, 90_000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [loadSecondaryTables])
 
   const refreshOrdersAfterUpload = useCallback(async (uploadedRows) => {
     clearIotRiderOrderCache()
@@ -812,7 +844,7 @@ function App() {
             loading={loading}
           />
         ) : activePage === 'fulldata' ? (
-          <FullData />
+          <FullData onboardingData={onboardingData} />
         ) : activePage === 'fleetdata' ? (
           <FleetDataViewer
             fleetData={displayFleetData}

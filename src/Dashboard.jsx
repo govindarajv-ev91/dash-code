@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react'
-import {
+import { 
   LineChart,
   Line,
   PieChart,
@@ -14,7 +14,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import {
+import { 
   TrendingUp,
   Users,
   Truck,
@@ -919,16 +919,16 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
             }}
           >
             <Calendar size={18} style={{ color: 'var(--text-dim)' }} />
-            <input
-              type="date"
-              value={startDate}
+            <input 
+              type="date" 
+              value={startDate} 
               onChange={(e) => setStartDate(e.target.value)}
               style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none' }}
             />
             <span style={{ color: 'var(--text-dim)' }}>to</span>
-            <input
-              type="date"
-              value={endDate}
+            <input 
+              type="date" 
+              value={endDate} 
               onChange={(e) => setEndDate(e.target.value)}
               style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none' }}
             />
@@ -1094,8 +1094,8 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 No current-status data
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
                   <Pie
                     data={realVehicleStatusDist}
                     cx="50%"
@@ -1109,11 +1109,11 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                     {realVehicleStatusDist.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} />
                     ))}
-                  </Pie>
-                  <Tooltip />
+                </Pie>
+                <Tooltip />
                   <Legend verticalAlign="bottom" height={36} />
-                </PieChart>
-              </ResponsiveContainer>
+              </PieChart>
+            </ResponsiveContainer>
             )}
           </div>
         </div>
@@ -1148,8 +1148,8 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               <Bar dataKey="nonEv" name="Non-EV" fill="#f43f5e" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+          </div>
         </div>
-      </div>
 
       <div
         className="glass"

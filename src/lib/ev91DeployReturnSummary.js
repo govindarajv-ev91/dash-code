@@ -152,6 +152,19 @@ function isStrictNonEvType(type1) {
   return false
 }
 
+/** Strict EV type1 — first-order Ev Deployed from order_upload (same idea as IC). */
+function isStrictEvType(type1) {
+  if (isStrictNonEvType(type1)) return false
+  const t = String(type1 || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[_\s]+/g, '-')
+  if (!t) return false
+  if (t === 'EV' || t === 'E-V') return true
+  if (t.includes('EV') && !t.includes('NON')) return true
+  return false
+}
+
 function parseOrderDateKey(value) {
   const date = parseFleetDate(value) || (value ? startOfDay(new Date(value)) : null)
   if (!date || Number.isNaN(date.getTime())) return ''
@@ -210,15 +223,17 @@ export function buildFirstOrderIndex(orderRows = []) {
 }
 
 /**
- * IC Deployed from first order-upload day (NON-EV only) in the filter range.
+ * First-order deployed riders from order_upload in the filter range.
+ * @param {'EV'|'IC'} kind — EV = Type1 EV, IC = Type1 NON-EV
  */
-export function buildIcDeployedByClient(
+function buildOrderFirstDeployByClient(
   orderRowsOrIndex = [],
-  { city = 'All', startDate = '', endDate = '' } = {}
+  { city = 'All', startDate = '', endDate = '', kind = 'IC' } = {}
 ) {
   const filterCity = city && city !== 'All' ? city : null
   const firstGlobal =
     orderRowsOrIndex instanceof Map ? orderRowsOrIndex : buildFirstOrderIndex(orderRowsOrIndex)
+  const typeOk = kind === 'EV' ? isStrictEvType : isStrictNonEvType
 
   const byClient = new Map()
   const detailRows = []
@@ -226,7 +241,7 @@ export function buildIcDeployedByClient(
   for (const info of firstGlobal.values()) {
     if (startDate && info.dateKey < startDate) continue
     if (endDate && info.dateKey > endDate) continue
-    if (!isStrictNonEvType(info.type1)) continue
+    if (!typeOk(info.type1)) continue
     if (filterCity && !riderCityMatchesFilter(filterCity, info.row)) continue
 
     const client = info.client
@@ -234,7 +249,7 @@ export function buildIcDeployedByClient(
     byClient.get(client).add(info.riderKey)
 
     detailRows.push({
-      kind: 'IC',
+      kind,
       date: info.dateKey,
       city: info.city,
       client,
@@ -263,19 +278,50 @@ export function buildIcDeployedByClient(
 }
 
 /**
+ * IC Deployed from first order-upload day (NON-EV only) in the filter range.
+ */
+export function buildIcDeployedByClient(
+  orderRowsOrIndex = [],
+  { city = 'All', startDate = '', endDate = '' } = {}
+) {
+  return buildOrderFirstDeployByClient(orderRowsOrIndex, {
+    city,
+    startDate,
+    endDate,
+    kind: 'IC',
+  })
+}
+
+/**
+ * Ev Deployed from first order-upload day (EV only) — same logic as IC Deployed.
+ */
+export function buildEvDeployedByClient(
+  orderRowsOrIndex = [],
+  { city = 'All', startDate = '', endDate = '' } = {}
+) {
+  return buildOrderFirstDeployByClient(orderRowsOrIndex, {
+    city,
+    startDate,
+    endDate,
+    kind: 'EV',
+  })
+}
+
+/**
  * Raw EV / Return / IC rows behind the summary (same filters + logic).
  * Prefer passing a precomputed firstOrderIndex for speed.
  */
 export function buildEv91SummaryRawDetails(
   overallRows = [],
   riderDataOrIndex = [],
-  { city = 'All', startDate = '', endDate = '' } = {}
+  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'overall' } = {}
 ) {
   const summary = buildEv91ClientWiseSummary(overallRows, riderDataOrIndex, {
     city,
     startDate,
     endDate,
     includeDetails: true,
+    evDeployedSource,
   })
   return summary.details || { evRows: [], returnRows: [], icRows: [] }
 }
@@ -283,16 +329,25 @@ export function buildEv91SummaryRawDetails(
 /**
  * Client-wise summary from EV91 Overall Status + new NON-EV IC from orders.
  *
- * Ev Deployed  = every Overall Status Deployed row in range
- * IC Deployed  = brand-new NON-EV riders (first order-done ever in range),
- *                excluding Ev Deployed riders
+ * Ev Deployed  =
+ *   - overall (default): every Overall Status Deployed row in range
+ *   - order: brand-new EV riders (first order-done ever in range), same as IC logic
+ * IC Deployed  = brand-new NON-EV riders (first order-done ever in range)
  * Return       = every Overall Status Returned row in range
  * Net add on   = Total Deployed − Return
+ *
+ * @param {'overall'|'order'} options.evDeployedSource
  */
 export function buildEv91ClientWiseSummary(
   overallRows = [],
   riderDataOrIndex = [],
-  { city = 'All', startDate = '', endDate = '', includeDetails = false } = {}
+  {
+    city = 'All',
+    startDate = '',
+    endDate = '',
+    includeDetails = false,
+    evDeployedSource = 'overall',
+  } = {}
 ) {
   if (!startDate || !endDate) {
     return {
@@ -303,6 +358,7 @@ export function buildEv91ClientWiseSummary(
     }
   }
 
+  const useOrderEv = evDeployedSource === 'order'
   const filterCity = city && city !== 'All' ? city : null
   const filterCityKey = filterCity ? normalizeCityKey(filterCity) : null
 
@@ -344,22 +400,25 @@ export function buildEv91ClientWiseSummary(
 
     const stats = ensure(client)
     if (status === 'deployed') {
-      stats.evDeployed++
-      if (evRows) {
-        evRows.push({
-          kind: 'EV',
-          status: 'Deployed',
-          date: dKey,
-          city: rowCity,
-          client,
-          clientRaw: (row.clientName || '').toString().trim(),
-          vehicle,
-          riderId: (row.clientId || row.clientRiderId || '').toString().trim(),
-          ev91RiderId: (row.ev91RiderId || '').toString().trim(),
-          riderName: (row.riderName || '').toString().trim(),
-          contact: (row.riderContact || '').toString().trim(),
-          statusDate: row.statusDate || dKey,
-        })
+      // Overall Status Deployed only when not using order-data Ev Deployed
+      if (!useOrderEv) {
+        stats.evDeployed++
+        if (evRows) {
+          evRows.push({
+            kind: 'EV',
+            status: 'Deployed',
+            date: dKey,
+            city: rowCity,
+            client,
+            clientRaw: (row.clientName || '').toString().trim(),
+            vehicle,
+            riderId: (row.clientId || row.clientRiderId || '').toString().trim(),
+            ev91RiderId: (row.ev91RiderId || '').toString().trim(),
+            riderName: (row.riderName || '').toString().trim(),
+            contact: (row.riderContact || '').toString().trim(),
+            statusDate: row.statusDate || dKey,
+          })
+        }
       }
     } else {
       stats.returnCount++
@@ -379,6 +438,19 @@ export function buildEv91ClientWiseSummary(
           statusDate: row.statusDate || dKey,
         })
       }
+    }
+  }
+
+  let orderEvRows = []
+  if (useOrderEv) {
+    const { counts: evByClient, rows: orderEv } = buildEvDeployedByClient(riderDataOrIndex, {
+      city,
+      startDate,
+      endDate,
+    })
+    orderEvRows = orderEv
+    for (const [client, count] of evByClient) {
+      ensure(client).evDeployed = count
     }
   }
 
@@ -416,18 +488,22 @@ export function buildEv91ClientWiseSummary(
     { totalDeployed: 0, evDeployed: 0, icDeployed: 0, returnCount: 0, netAddon: 0 }
   )
 
-  const result = { clients: rows, totals, eventCount }
+  const result = { clients: rows, totals, eventCount, evDeployedSource: useOrderEv ? 'order' : 'overall' }
   if (includeDetails) {
     const sortEv = (a, b) => {
       const d = String(a.date).localeCompare(String(b.date))
       if (d !== 0) return d
       const c = String(a.client).localeCompare(String(b.client))
       if (c !== 0) return c
-      return String(a.vehicle).localeCompare(String(b.vehicle))
+      return String(a.vehicle || a.workerCode || '').localeCompare(String(b.vehicle || b.workerCode || ''))
     }
-    evRows.sort(sortEv)
-    returnRows.sort(sortEv)
-    result.details = { evRows, returnRows, icRows }
+    if (useOrderEv) {
+      result.details = { evRows: orderEvRows, returnRows: returnRows || [], icRows }
+    } else {
+      if (evRows) evRows.sort(sortEv)
+      if (returnRows) returnRows.sort(sortEv)
+      result.details = { evRows: evRows || [], returnRows: returnRows || [], icRows }
+    }
   }
   return result
 }

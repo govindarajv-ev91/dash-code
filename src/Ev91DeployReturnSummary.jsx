@@ -120,6 +120,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const [showRawData, setShowRawData] = useState(false)
   const [rawKind, setRawKind] = useState('EV') // EV | IC | Return
   const [rawClientFilter, setRawClientFilter] = useState('All')
+  /** Ev Deployed source: overall = EV91 Overall Status; order = first EV order day (like IC). */
+  const [evDeployedSource, setEvDeployedSource] = useState('overall')
 
   const load = useCallback((force = false) => {
     setLoading(true)
@@ -182,6 +184,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const deferredCity = useDeferredValue(selectedCity)
   const deferredStart = useDeferredValue(startDate)
   const deferredEnd = useDeferredValue(endDate)
+  const deferredEvSource = useDeferredValue(evDeployedSource)
 
   const cities = useMemo(() => {
     const fromApi = getCitiesFromEv91Rows(rows)
@@ -200,8 +203,9 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         startDate: deferredStart,
         endDate: deferredEnd,
         includeDetails: false,
+        evDeployedSource: deferredEvSource,
       }),
-    [rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd]
+    [rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd, deferredEvSource]
   )
 
   // Only build raw audit rows when the panel is open
@@ -211,8 +215,9 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
       city: deferredCity,
       startDate: deferredStart,
       endDate: deferredEnd,
+      evDeployedSource: deferredEvSource,
     })
-  }, [showRawData, rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd])
+  }, [showRawData, rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd, deferredEvSource])
 
   const weekTargetRows = useMemo(
     () => getTargetsForWeek(allTargets, selectedWeek),
@@ -345,6 +350,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
       startDate,
       endDate,
       includeDetails: false,
+      evDeployedSource,
     })
     const allTargetMaps = buildEv91TargetTotalsByEvType(weekTargetRows, 'All')
     const allMerged = mergeEv91SummaryWithTargets(allSummary, allTargetMaps)
@@ -360,6 +366,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         startDate,
         endDate,
         includeDetails: false,
+        evDeployedSource,
       })
       const cityTargets = buildEv91TargetTotalsByEvType(weekTargetRows, city)
       const merged = mergeEv91SummaryWithTargets(citySummary, cityTargets)
@@ -391,15 +398,16 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     XLSX.utils.book_append_sheet(wb, ws, 'All Cities')
     XLSX.writeFile(wb, `ev91_client_summary_all_cities_${selectedWeek}_${startDate}_${endDate}.xlsx`)
-  }, [cities, rows, firstOrderIndex, startDate, endDate, weekTargetRows, selectedWeek])
+  }, [cities, rows, firstOrderIndex, startDate, endDate, weekTargetRows, selectedWeek, evDeployedSource])
 
   const exportRawCsv = () => {
     const lines = []
-    if (rawKind === 'IC') {
+    const useOrderEvRaw = rawKind === 'EV' && evDeployedSource === 'order'
+    if (rawKind === 'IC' || useOrderEvRaw) {
       lines.push(['Kind', 'Date', 'City', 'Client', 'Client Raw', 'WorkerCode', 'Delivered', 'Type1', 'Source'].map(escapeCsv).join(','))
       for (const r of filteredRawRows) {
         lines.push(
-          [r.kind, r.date, r.city, r.client, r.clientRaw, r.workerCode, r.delivered, r.fl, r.type1, r.source]
+          [r.kind, r.date, r.city, r.client, r.clientRaw, r.workerCode, r.delivered, r.type1, r.source]
             .map(escapeCsv)
             .join(',')
         )
@@ -476,8 +484,11 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
           <div>
             <h1>City / Client Summary</h1>
             <p className="fdv-summary-subtitle">
-              EV91 Overall Status · Ev Deployed = Deployed rows · IC Deployed = first order-upload day
-              (NON-EV only; order_upload_data — not rider_metrics) · week Sun–Sat · Net = Total − Return
+              EV91 Overall Status · Ev Deployed ={' '}
+              {evDeployedSource === 'order'
+                ? 'first order-upload day (EV Type1, same as IC)'
+                : 'Overall Status Deployed rows'}{' '}
+              · IC Deployed = first order-upload day (NON-EV) · week Sun–Sat · Net = Total − Return
             </p>
           </div>
         </div>
@@ -511,6 +522,36 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
           <span>{error}</span>
         </div>
       )}
+
+      <div className="fdv-summary-target-upload glass">
+        <div className="fdv-summary-target-upload-info">
+          <Target size={18} style={{ color: '#c084fc' }} />
+          <div>
+            <strong>Upload targets (Excel)</strong>
+            <p>
+              Columns: <code>Week</code>, <code>City</code>, <code>Client</code>, <code>Type</code> (
+              <strong>EV</strong> or <strong>NON-EV</strong>), <code>Target</code> · week <code>22_2026</code>
+            </p>
+          </div>
+        </div>
+        <label className="fsr-export-btn fdv-summary-upload-btn">
+          <Upload size={16} /> Upload Excel
+          <input
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            onChange={handleTargetUpload}
+            disabled={targetsLoading}
+            hidden
+          />
+        </label>
+        <span className="fdv-summary-target-meta">
+          Week <strong>{selectedWeek}</strong>
+          {weekRangeLabel ? ` · ${weekRangeLabel}` : ''}
+          · {weekTargetRows.length} target row(s)
+          {targetsLoading ? ' · loading…' : ''}
+        </span>
+        {uploadMessage && <span className="fdv-summary-upload-msg">{uploadMessage}</span>}
+      </div>
 
       <div className="fdv-summary-filters glass">
         <div className="fdv-summary-filter">
@@ -553,36 +594,39 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
           </label>
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </div>
-      </div>
-
-      <div className="fdv-summary-target-upload glass">
-        <div className="fdv-summary-target-upload-info">
-          <Target size={18} style={{ color: '#c084fc' }} />
-          <div>
-            <strong>Upload targets (Excel)</strong>
-            <p>
-              Columns: <code>Week</code>, <code>City</code>, <code>Client</code>, <code>Type</code> (
-              <strong>EV</strong> or <strong>NON-EV</strong>), <code>Target</code> · week <code>22_2026</code>
-            </p>
+        <div className="fdv-summary-filter" style={{ minWidth: 220 }}>
+          <label>Ev Deployed source</label>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.35rem',
+              padding: '0.35rem 0',
+              fontSize: '0.82rem',
+            }}
+          >
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="evDeployedSource"
+                value="overall"
+                checked={evDeployedSource === 'overall'}
+                onChange={() => startTransition(() => setEvDeployedSource('overall'))}
+              />
+              Current (Overall Status)
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="evDeployedSource"
+                value="order"
+                checked={evDeployedSource === 'order'}
+                onChange={() => startTransition(() => setEvDeployedSource('order'))}
+              />
+              Order data (first EV day)
+            </label>
           </div>
         </div>
-        <label className="fsr-export-btn fdv-summary-upload-btn">
-          <Upload size={16} /> Upload Excel
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={handleTargetUpload}
-            disabled={targetsLoading}
-            hidden
-          />
-        </label>
-        <span className="fdv-summary-target-meta">
-          Week <strong>{selectedWeek}</strong>
-          {weekRangeLabel ? ` · ${weekRangeLabel}` : ''}
-          · {weekTargetRows.length} target row(s)
-          {targetsLoading ? ' · loading…' : ''}
-        </span>
-        {uploadMessage && <span className="fdv-summary-upload-msg">{uploadMessage}</span>}
       </div>
 
       <div className="fdv-summary-meta glass">
@@ -739,7 +783,10 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
             <div className="fdv-summary-filter">
               <label>Type</label>
               <select value={rawKind} onChange={(e) => setRawKind(e.target.value)}>
-                <option value="EV">EV Deployed ({rawDetails.evRows?.length || 0})</option>
+                <option value="EV">
+                  EV Deployed ({rawDetails.evRows?.length || 0})
+                  {evDeployedSource === 'order' ? ' · order' : ' · overall'}
+                </option>
                 <option value="IC">IC Deployed / New NON-EV ({rawDetails.icRows?.length || 0})</option>
                 <option value="Return">Return ({rawDetails.returnRows?.length || 0})</option>
               </select>
@@ -772,7 +819,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
           </p>
 
           <div className="fdv-summary-preview-scroll">
-            {rawKind === 'IC' ? (
+            {rawKind === 'IC' || (rawKind === 'EV' && evDeployedSource === 'order') ? (
               <table className="fdv-summary-preview-table">
                 <thead>
                   <tr>
@@ -783,7 +830,6 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                     <th>Client Raw</th>
                     <th>WorkerCode</th>
                     <th>Delivered</th>
-                    <th>FL</th>
                     <th>Type1</th>
                     <th>Source</th>
                   </tr>
@@ -791,8 +837,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                 <tbody>
                   {visibleRawRows.length === 0 ? (
                     <tr>
-                      <td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
-                        No IC rows for this filter
+                      <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
+                        No {rawKind === 'EV' ? 'EV order' : 'IC'} rows for this filter
                       </td>
                     </tr>
                   ) : (
@@ -805,7 +851,6 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                         <td>{r.clientRaw || '—'}</td>
                         <td>{r.workerCode}</td>
                         <td>{r.delivered}</td>
-                        <td>{r.fl ?? '1'}</td>
                         <td>{r.type1}</td>
                         <td>{r.source}</td>
                       </tr>

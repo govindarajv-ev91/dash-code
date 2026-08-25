@@ -17,12 +17,13 @@ import {
   buildEv91OverallIntervalIndexes,
   mergeCurrentStatusIntoIndexes,
   findEv91RiderForVehicleOnDate,
+  findEv91RiderVehicleOnDate,
 } from './ev91EvLookup'
 import { buildVehicleDayKmIndex } from './serviceScheduleReport'
 import { KM_PRODUCTIVITY_BUCKETS, kmToBucketKey } from './vehicleKmProductivityReport'
 import { parseOrderUploadMonthLabel } from './orderUploadDb'
 import { normalizeIotRunDate, iotRowDistanceKm } from './iotDataReport'
-import { getZeroOrderAsOfFromEndDate } from './riderPerformanceReport'
+import { getZeroOrderAsOfFromEndDate, riderIdLookupKeys } from './riderPerformanceReport'
 import { calcOrderEarningAndMf, EV_DAILY_RENT } from './fullDataCommercialRates'
 import {
   buildOnboardingSourceLookupIndex,
@@ -1282,9 +1283,72 @@ function buildRiderWorkStartIndex(orderRows = []) {
   return byKey
 }
 
+/** Identity keys for EV91 riderAssignments lookup (worker / EV91 id / phone). */
+function riderDeployIdentityKeys(...ids) {
+  const keys = new Set()
+  for (const raw of ids) {
+    const text = (raw ?? '').toString().trim()
+    if (!text) continue
+    keys.add(text)
+    keys.add(text.toUpperCase())
+    keys.add(text.toUpperCase().replace(/[_\s-]+/g, '-'))
+    for (const alias of riderIdLookupKeys(text)) keys.add(alias)
+  }
+  return [...keys]
+}
+
+/**
+ * EV for Rider Wise = vehicle still allotted on that date (EV91 Overall).
+ * Return day and after = Non-EV. If rider never appears in EV91, fall back to order Type1.
+ */
+function isRiderEvOnDate(riderAssignments, identityKeys, dateKey, type1Fallback) {
+  if (!dateKey) return isEvType(type1Fallback)
+  const asOf = startOfDay(parseISO(dateKey))
+  if (Number.isNaN(asOf.getTime())) return isEvType(type1Fallback)
+
+  const hit = findEv91RiderVehicleOnDate(riderAssignments, identityKeys, asOf)
+  if (hit?.vehicleNumber) return true
+
+  // Known in EV91 history but no open allotment on this day → returned / not deployed
+  if (riderAssignments && identityKeys?.length) {
+    let known = false
+    for (const key of identityKeys) {
+      if (riderAssignments.has(key) && riderAssignments.get(key)?.length) {
+        known = true
+        break
+      }
+    }
+    if (known) return false
+  }
+
+  return isEvType(type1Fallback)
+}
+
+function riderHasEv91VehicleHistory(riderAssignments, identityKeys) {
+  if (!riderAssignments || !identityKeys?.length) return false
+  for (const key of identityKeys) {
+    if (riderAssignments.has(key) && riderAssignments.get(key)?.length) return true
+  }
+  return false
+}
+
+/**
+ * V current status for Rider Wise (EV riders only).
+ * Deployee = vehicle currently allotted · Return = had vehicle but returned · blank = Non-EV (never EV91 vehicle).
+ */
+function riderVehicleCurrentStatus(riderAssignments, identityKeys, asOfDateKey) {
+  if (!riderHasEv91VehicleHistory(riderAssignments, identityKeys)) return ''
+  const asOf = asOfDateKey ? startOfDay(parseISO(asOfDateKey)) : startOfDay(new Date())
+  if (Number.isNaN(asOf.getTime())) return ''
+  const hit = findEv91RiderVehicleOnDate(riderAssignments, identityKeys, asOf)
+  if (hit?.vehicleNumber) return 'Deployee'
+  return 'Return'
+}
+
 /**
  * Source-wise daily Supply from order upload.
  * Source name comes from rider_onboarding.source_name (lookup by worker code).
+ * Rider Wise EV/Non-EV uses EV91 deploy/return intervals (not order Type1 alone).
  */
 export function buildFullDataSourceWiseDailyRows(
   orderRows = [],
@@ -1292,11 +1356,17 @@ export function buildFullDataSourceWiseDailyRows(
   overallRows = [],
   mappingRows = [],
   allOrderRows = [],
+  currentRows = [],
   { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All' } = {}
 ) {
   const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
   const ev91Index = buildEv91PublicRiderIndex(overallRows, mappingRows)
   const workStartIndex = buildRiderWorkStartIndex(allOrderRows.length ? allOrderRows : orderRows)
+
+  const deployIndexes = buildEv91OverallIntervalIndexes(overallRows)
+  mergeCurrentStatusIntoIndexes(deployIndexes, currentRows)
+  const { riderAssignments } = deployIndexes
+
   const nameByRider = new Map()
   for (const row of overallRows || []) {
     const id = (row.clientId || row.clientRiderId || row.ev91RiderId || '').toString().trim().toUpperCase()
@@ -1306,6 +1376,7 @@ export function buildFullDataSourceWiseDailyRows(
 
   const buckets = new Map()
   const riderBuckets = new Map()
+  const identityCache = new Map()
 
   for (const row of orderRows || []) {
     const dateKey = toMetricDateKey(row.date_record)
@@ -1318,10 +1389,13 @@ export function buildFullDataSourceWiseDailyRows(
 
     const worker = (row.worker_code || '').toString().trim().toUpperCase()
     const delivered = Number(row.delivered) || 0
-    const isEv = isEvType(row.type1)
+    const type1Ev = isEvType(row.type1)
     const source = canonicalSourceName(
       lookupOnboardingSource(sourceIndex, { riderIds: [worker, row.worker_code, row.rider_id] }) || 'Unknown'
     ) || 'Unknown'
+
+    // Source Daily / Month still follow order Type1 (same as Full Data matrix)
+    const isEv = type1Ev
 
     const key = `${sourceNameGroupKey(source)}\t${city}\t${client}\t${dateKey}`
     if (!buckets.has(key)) {
@@ -1375,11 +1449,23 @@ export function buildFullDataSourceWiseDailyRows(
             evDays: 0,
             nonEvDays: 0,
             orderDays: new Set(),
+            dayEvFlags: new Map(),
           })
         }
+
+        let identityKeys = identityCache.get(worker)
+        if (!identityKeys) {
+          const mappedEv91 = lookupEv91PublicRiderId(ev91Index, worker) || ''
+          identityKeys = riderDeployIdentityKeys(worker, row.worker_code, row.rider_id, mappedEv91)
+          identityCache.set(worker, identityKeys)
+        }
+
+        // Rider Wise: EV only while vehicle is allotted (return day onward = Non-EV)
+        const riderIsEv = isRiderEvOnDate(riderAssignments, identityKeys, dateKey, row.type1)
+
         const r = riderBuckets.get(riderKey)
         r.totalOrder += delivered
-        if (isEv) {
+        if (riderIsEv) {
           r.evOrder += delivered
           r.evDays += 1
         } else {
@@ -1388,9 +1474,10 @@ export function buildFullDataSourceWiseDailyRows(
         }
         r.earning += earning
         r.mfAmount += mf
-        if (isEv) r.evEarning += earning
+        if (riderIsEv) r.evEarning += earning
         else r.nonEarning += earning
         r.orderDays.add(dateKey)
+        r.dayEvFlags.set(dateKey, riderIsEv)
       }
     }
   }
@@ -1488,14 +1575,31 @@ export function buildFullDataSourceWiseDailyRows(
         workStartDate && lastWorkDate
           ? differenceInCalendarDays(parseISO(lastWorkDate), parseISO(workStartDate)) + 1
           : 0
+      // Status as of last order day (after vehicle return → Non-EV)
+      const lastDayEv =
+        lastWorkDate && r.dayEvFlags?.has(lastWorkDate)
+          ? r.dayEvFlags.get(lastWorkDate)
+          : r.evDays >= r.nonEvDays
+
+      const mappedEv91 = lookupEv91PublicRiderId(ev91Index, r.worker) || ''
+      const identityKeys =
+        identityCache.get(r.worker) || riderDeployIdentityKeys(r.worker, mappedEv91)
+      // Current vehicle status: Deployee / Return for EV91 riders only; blank for Non-EV
+      const vCurrentStatus = riderVehicleCurrentStatus(
+        riderAssignments,
+        identityKeys,
+        todayDateKey()
+      )
+
       return {
         'Rider ID': r.worker,
-        'EV91 ID': lookupEv91PublicRiderId(ev91Index, r.worker) || '',
+        'EV91 ID': mappedEv91,
         'Rider Name': nameByRider.get(r.worker) || '',
         Source: r.source,
         City: r.city || '',
         Client: r.client || '',
-        'EV / Non-EV': r.evDays >= r.nonEvDays ? 'EV' : 'Non-EV',
+        'EV / Non-EV': lastDayEv ? 'EV' : 'Non-EV',
+        'V current status': vCurrentStatus,
         'Work start date': workStartDate,
         'Last work date': lastWorkDate,
         'Duration days': durationDays,

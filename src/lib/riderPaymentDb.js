@@ -118,16 +118,37 @@ export async function saveRiderPaymentRows(rows, { replace = true } = {}) {
   if (!rows?.length) return 0
 
   if (replace) {
-    await clearRiderPaymentData()
+    // Prefer clearing only months in this file — full-table wipe times out on large data.
+    const monthsInFile = collectMonthsFromRows(rows)
+    if (monthsInFile.length) {
+      for (const month of monthsInFile) {
+        await clearRiderPaymentDataByMonth(month)
+      }
+    } else {
+      await clearRiderPaymentData()
+    }
   }
 
-  const chunkSize = 500
+  // Wide payment rows: small chunks + shrink on statement_timeout
+  let chunkSize = 100
   let inserted = 0
-  for (let i = 0; i < rows.length; i += chunkSize) {
+  let i = 0
+  while (i < rows.length) {
     const chunk = rows.slice(i, i + chunkSize)
     const { error } = await supabase.from(RIDER_PAYMENT_TABLE).insert(chunk)
-    if (error) throw error
+    if (error) {
+      if (isStatementTimeout(error) && chunkSize > 20) {
+        chunkSize = Math.max(20, Math.floor(chunkSize / 2))
+        console.warn(
+          `[rider-payment] insert timed out; retrying with chunk size ${chunkSize}`
+        )
+        await new Promise((r) => setTimeout(r, 400))
+        continue
+      }
+      throw error
+    }
     inserted += chunk.length
+    i += chunk.length
   }
   clearRiderPaymentCache()
   return inserted
@@ -268,4 +289,8 @@ export async function loadRiderPaymentSummary() {
 
 export function getRiderPaymentDbSetupMessage() {
   return 'Database table missing. Run sql/create_rider_payment_tables.sql in Supabase SQL Editor, then upload again.'
+}
+
+export function getRiderPaymentTimeoutMessage() {
+  return 'Upload timed out on a large table. Run sql/fix_rider_payment_timeout.sql in Supabase SQL Editor, then try again. Prefer uploading one month at a time.'
 }

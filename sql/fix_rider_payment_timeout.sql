@@ -69,7 +69,7 @@ returns integer
 language plpgsql
 security definer
 set search_path = public
-set statement_timeout = '30s'
+set statement_timeout = '60s'
 as $$
 declare
   tbl text;
@@ -109,3 +109,9 @@ end;
 $$;
 
 grant execute on function public.reset_upload_table_batch(text, text, integer) to anon, authenticated;
+
+-- Optional: raise DB statement_timeout for this role if inserts still fail (Supabase default is often ~8s).
+-- Uncomment only if your project allows it:
+-- alter role authenticator set statement_timeout = '60s';
+-- alter role anon set statement_timeout = '60s';
+-- notify pgrst, 'reload config';

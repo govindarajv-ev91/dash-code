@@ -303,6 +303,7 @@ export default function FullData({ onboardingData = [] }) {
       overallRows,
       mappingRows,
       allOrderRows,
+      currentRows,
       {
       fromKey: report.fromKey,
       toKey: report.toKey,
@@ -316,6 +317,7 @@ export default function FullData({ onboardingData = [] }) {
     overallRows,
     mappingRows,
     allOrderRows,
+    currentRows,
     report.fromKey,
     report.toKey,
     deferredCity,

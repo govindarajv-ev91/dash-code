@@ -172,6 +172,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
       (r) =>
         r.runDate.includes(q) ||
         r.vehicleNumber.toLowerCase().includes(q) ||
+        String(r.ev91RiderId || '').toLowerCase().includes(q) ||
         r.riderId.toLowerCase().includes(q) ||
         r.riderName.toLowerCase().includes(q) ||
         r.client.toLowerCase().includes(q) ||
@@ -195,6 +196,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     const rows = filtered.map((r) => ({
       Date: r.runDate,
       'Vehicle Number': r.vehicleNumber,
+      'EV91 ID': r.ev91RiderId === '—' ? '' : r.ev91RiderId,
       'Rider ID': r.riderId,
       'Rider Name': r.riderName,
       Client: r.client,
@@ -366,6 +368,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
                   <th>#</th>
                   <th>Date</th>
                   <th>Vehicle</th>
+                  <th>EV91 ID</th>
                   <th>Rider</th>
                   <th>Client</th>
                   <th>City / Hub</th>
@@ -386,6 +389,9 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
                           <Truck size={14} />
                           {r.vehicleNumber}
                         </div>
+                      </td>
+                      <td style={{ fontSize: '0.8rem', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                        {r.ev91RiderId || '—'}
                       </td>
                       <td>
                         <div style={{ fontWeight: 600 }}>{r.riderName}</div>
@@ -423,7 +429,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={10} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-dim)' }}>
+                    <td colSpan={11} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-dim)' }}>
                       No IoT data for this range
                     </td>
                   </tr>

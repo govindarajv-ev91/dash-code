@@ -1,4 +1,4 @@
-import { format, isValid, parseISO } from 'date-fns'
+import { format, isValid, parseISO, startOfDay } from 'date-fns'
 import { parseFleetDate } from './fleetDeployReturnExport'
 import { vehiclePartitionKey } from './fleetDeployReturnExport'
 import {
@@ -16,6 +16,7 @@ import {
   mergeCurrentStatusIntoIndexes,
   findEv91RiderForVehicleOnDate,
 } from './ev91EvLookup'
+import { normalizeCurrentVehicleStatus } from './ev91MisApi'
 
 function parseRangeDate(value) {
   if (!value) return null
@@ -110,6 +111,7 @@ function assignmentFromEv91Interval(interval) {
   return {
     vehicleNumber: interval.vehicleNumber || '',
     riderId: interval.riderId || interval.clientId || interval.ev91RiderId || '',
+    ev91RiderId: interval.ev91RiderId || '',
     riderName: interval.riderName || '—',
     mobile: interval.mobile || '',
     client: interval.clientName || '—',
@@ -130,6 +132,7 @@ function resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91His
     return {
       vehicleNumber: interval.vehicleNumber,
       riderId: interval.riderId || openAssignment?.riderId || '',
+      ev91RiderId: interval.ev91RiderId || openAssignment?.ev91RiderId || '',
       riderName: interval.riderName || openAssignment?.riderName || '—',
       mobile: interval.mobile || openAssignment?.mobile || '',
       client: openAssignment?.client || '—',
@@ -138,7 +141,9 @@ function resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91His
       source: 'fleet',
     }
   }
-  return openAssignment ? { ...openAssignment, source: 'fleet' } : null
+  return openAssignment
+    ? { ...openAssignment, ev91RiderId: openAssignment.ev91RiderId || '', source: 'fleet' }
+    : null
 }
 
 /** Pre-compute open fleet assignments per IoT run date (avoids O(rows × fleet) work). */
@@ -180,6 +185,26 @@ export function buildIotVehicleReport(
   mergeCurrentStatusIntoIndexes(ev91Indexes, ev91CurrentRows || [])
   const ev91VehicleIntervals = ev91Indexes.vehicleIntervals
 
+  // Current Status EV91 id + since-date when vehicle is not currently deployed
+  // (only blocks fleet fallback on/after that date — never wipe historical allotments)
+  const currentNotDeployedSince = new Map()
+  const currentEv91ByVehicle = new Map()
+  for (const row of ev91CurrentRows || []) {
+    const vehicleKey = vehiclePartitionKey(row.vehicleNumber)
+    if (!vehicleKey) continue
+    const ev91Id = (row.ev91RiderId || '').toString().trim()
+    if (ev91Id && !currentEv91ByVehicle.has(vehicleKey)) {
+      currentEv91ByVehicle.set(vehicleKey, ev91Id)
+    }
+    const label = normalizeCurrentVehicleStatus(row.currentStatus)
+    if (label === 'Not yet to deploy' || label === 'Returned') {
+      const sinceAt = parseFleetDate(row.lastStatusDate) || new Date()
+      const sinceKey = format(startOfDay(sinceAt), 'yyyy-MM-dd')
+      const prev = currentNotDeployedSince.get(vehicleKey)
+      if (!prev || sinceKey > prev) currentNotDeployedSince.set(vehicleKey, sinceKey)
+    }
+  }
+
   const runDates = new Set()
   const parsedIot = []
   for (const row of iotRows) {
@@ -201,10 +226,25 @@ export function buildIotVehicleReport(
     const ev91Interval = asOf
       ? findEv91RiderForVehicleOnDate(ev91VehicleIntervals, vehicleKey, asOf)
       : null
-    const hasEv91History = ev91VehicleIntervals.has(vehicleKey)
+    const hasEv91History =
+      ev91VehicleIntervals.has(vehicleKey) || currentNotDeployedSince.has(vehicleKey)
     const openAssignment = assignmentByDate.get(runDate)?.get(vehicleKey)
-    const assignment = resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91History)
+    // After Current Status return / yet-not-deployed date, don't use stale fleet Deployed
+    const notDeployedSince = currentNotDeployedSince.get(vehicleKey)
+    const blockFleet =
+      Boolean(notDeployedSince) && runDate >= notDeployedSince && !ev91Interval
+    const assignment = resolveIotAssignment(
+      interval,
+      blockFleet ? null : openAssignment,
+      ev91Interval,
+      hasEv91History
+    )
     const orderCount = lookupRiderDayOrders(assignment, runDate, orderIndex)
+    const ev91RiderId =
+      assignment?.ev91RiderId ||
+      ev91Interval?.ev91RiderId ||
+      (runDate >= (notDeployedSince || '') ? currentEv91ByVehicle.get(vehicleKey) : '') ||
+      ''
 
     rows.push({
       rowKey: `${vehicleKey}|${runDate}`,
@@ -214,11 +254,12 @@ export function buildIotVehicleReport(
       dataSource: row.data_source ? String(row.data_source) : '—',
       lookupMatched: row.lookup_matched === true,
       riderId: assignment?.riderId || '—',
+      ev91RiderId: ev91RiderId || '—',
       riderName: assignment?.riderName || '—',
       client: assignment?.client || '—',
       city: assignment?.city || '—',
       hub: assignment?.hub || '—',
-      // Day-wise: Deployed only on/after EV91 deploy date until Return (not before).
+      // Day-wise: Deployed only while an EV91/fleet allotment covers that run date.
       deployStatus: assignment ? 'Deployed' : 'Not deployed',
       deploySource: assignment?.source || '',
       orderCount,

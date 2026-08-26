@@ -28,8 +28,18 @@ function normalizeEv91OverallStatus(status) {
 
 function normalizeCurrentStatus(status) {
   const s = String(status || '').toLowerCase()
-  if (s.includes('deploy')) return 'Deployed'
+  if (!s) return ''
+  // Must check before includes('deploy') — "Yet not deployed" / "Not deployed" contain "deploy"
+  if (
+    s.includes('yet') ||
+    s.includes('not yet') ||
+    (s.includes('not') && s.includes('deploy')) ||
+    s.includes('pending')
+  ) {
+    return 'Not yet to deploy'
+  }
   if (s.includes('return')) return 'Returned'
+  if (s.includes('deploy') || s.includes('on road') || s.includes('on-road')) return 'Deployed'
   return ''
 }
 
@@ -279,23 +289,54 @@ export function buildEv91OverallIntervalIndexes(overallRows = []) {
 }
 
 /**
- * Ensure currently-deployed Current Status rows are open-ended in the indexes.
- * Covers cases where Overall Status history is incomplete or same-day ordering was messy.
+ * Merge Current Vehicle Status into Overall deploy intervals.
+ * - Deployed → keep/add open-ended allotment
+ * - Returned / Yet not deployed → close any open allotment for that vehicle
+ *   (fixes Overall open Deploy + Current "Yet not deployed" still showing Deployed)
  */
 export function mergeCurrentStatusIntoIndexes(indexes, currentRows = []) {
   const { riderAssignments, vehicleIntervals } = indexes
   if (!currentRows?.length) return indexes
 
+  const closeOpenVehicleIntervals = (vehicleKey, endDay) => {
+    const endMs = startOfDay(endDay).getTime()
+    const list = vehicleIntervals.get(vehicleKey) || []
+    for (const iv of list) {
+      if (iv.to) continue
+      const fromMs = startOfDay(iv.from).getTime()
+      // Never set to < from (corrupt lastStatusDate would wipe all historical days)
+      iv.to = endMs >= fromMs ? startOfDay(endDay) : startOfDay(new Date())
+    }
+    for (const intervals of riderAssignments.values()) {
+      for (const iv of intervals) {
+        if (iv.to || vehiclePartitionKey(iv.vehicleNumber) !== vehicleKey) continue
+        const fromMs = startOfDay(iv.from).getTime()
+        iv.to = endMs >= fromMs ? startOfDay(endDay) : startOfDay(new Date())
+      }
+    }
+  }
+
   for (const row of currentRows) {
-    if (normalizeCurrentStatus(row.currentStatus) !== 'Deployed') continue
+    const status = normalizeCurrentStatus(row.currentStatus)
+    if (!status) continue
+
     const vehicleNumber = (row.vehicleNumber || '').toString().trim()
     const vehicleKey = vehiclePartitionKey(vehicleNumber)
     if (!vehicleKey) continue
 
     const at = parseEventInstant(row.lastStatusDate)
-    // Never invent "today" — that makes historical IoT days look Not deployed.
+    const day = at && !Number.isNaN(at.getTime()) ? startOfDay(at) : startOfDay(new Date())
+
+    if (status === 'Returned' || status === 'Not yet to deploy') {
+      closeOpenVehicleIntervals(vehicleKey, day)
+      continue
+    }
+
+    if (status !== 'Deployed') continue
+
+    // Never invent "today" for lastStatusDate when adding open deploy
     if (!at || Number.isNaN(at.getTime())) continue
-    const day = startOfDay(at)
+
     const mappedRow = {
       vehicleNumber,
       clientId: row.clientRiderId || row.clientId || '',
@@ -311,7 +352,7 @@ export function mergeCurrentStatusIntoIndexes(indexes, currentRows = []) {
     }
     const event = { date: day, row: mappedRow }
 
-    // If rider already has an open interval covering "today", skip; else add open-ended.
+    // If rider already has an open interval covering this vehicle, skip; else add open-ended.
     const idKeys = identityKeysForOverallRow(mappedRow)
     let hasOpen = false
     for (const key of idKeys) {

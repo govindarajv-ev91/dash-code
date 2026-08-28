@@ -841,6 +841,7 @@ function App() {
           <IotData
             fleetData={fleetData}
             riderData={riderData}
+            vehicleInventoryData={vehicleInventoryData}
             loading={loading}
           />
         ) : activePage === 'fulldata' ? (

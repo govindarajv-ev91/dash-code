@@ -35,6 +35,10 @@ function pushVehicleInterval(map, vehicleKey, deployEvent, returnDate) {
     riderId: (deployEvent.row.rider_id || '').toString().trim(),
     riderName: (deployEvent.row.rider_name || '').toString().trim(),
     mobile: (deployEvent.row.rider_contact_number || '').toString().trim(),
+    client: (deployEvent.row.client_name || '').toString().trim(),
+    city: (deployEvent.row.city_locations || deployEvent.row.city || '').toString().trim(),
+    hub: (deployEvent.row.hub_location || '').toString().trim(),
+    source: extractFleetSource(deployEvent.row),
     deployDate: deployEvent.date,
   })
 }

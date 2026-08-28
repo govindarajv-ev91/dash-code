@@ -10,6 +10,7 @@ import {
   Briefcase,
   Database,
   AlertTriangle,
+  MapPin,
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import {
@@ -20,6 +21,7 @@ import {
   isMissingIotTable,
 } from './lib/iotDataDb'
 import { buildIotVehicleReport, summarizeIotReport } from './lib/iotDataReport'
+import { dedupeCanonicalCities, normalizeSummaryCity } from './lib/citySummaryAliases'
 import { formatLastUploadAt } from './lib/paymentMonthList'
 import {
   fetchEv91OverallStatusAll,
@@ -28,28 +30,32 @@ import {
 
 const ROWS_PER_PAGE = 50
 
-export default function IotData({ fleetData, riderData, loading: appLoading }) {
+export default function IotData({ fleetData, riderData, vehicleInventoryData = [], loading: appLoading }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   const defaultFrom = format(subDays(new Date(), 6), 'yyyy-MM-dd')
 
   const [dateFrom, setDateFrom] = useState(defaultFrom)
   const [dateTo, setDateTo] = useState(today)
   const [iotRows, setIotRows] = useState([])
-  const [iotLoading, setIotLoading] = useState(false)
+  const [iotLoading, setIotLoading] = useState(true)
   const [iotError, setIotError] = useState(null)
   const [missingTable, setMissingTable] = useState(false)
   const [dbCount, setDbCount] = useState(0)
   const [lastUploadAt, setLastUploadAt] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [cityFilter, setCityFilter] = useState('All')
   const [currentPage, setCurrentPage] = useState(1)
   const [riderOrderRows, setRiderOrderRows] = useState([])
-  const [riderOrdersLoading, setRiderOrdersLoading] = useState(false)
+  const [riderOrdersLoading, setRiderOrdersLoading] = useState(true)
   const [riderOrdersError, setRiderOrdersError] = useState(null)
   const [ev91OverallRows, setEv91OverallRows] = useState([])
   const [ev91CurrentRows, setEv91CurrentRows] = useState([])
-  const [ev91Loading, setEv91Loading] = useState(false)
+  const [ev91Loading, setEv91Loading] = useState(true)
   const riderDataRef = useRef(riderData)
   riderDataRef.current = riderData
+
+  const deferredFleet = useDeferredValue(fleetData)
+  const deferredInventory = useDeferredValue(vehicleInventoryData)
 
   const loadSummary = useCallback(async () => {
     try {
@@ -84,15 +90,32 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     if (!dateFrom || !dateTo || dateFrom > dateTo) {
       setIotError('Select a valid date range (From ≤ To).')
       setIotRows([])
+      setRiderOrderRows([])
+      setIotLoading(false)
+      setRiderOrdersLoading(false)
       return
     }
 
     setIotLoading(true)
+    setRiderOrdersLoading(true)
     setIotError(null)
+    setRiderOrdersError(null)
+
     try {
-      const rows = await fetchIotDataInRange(dateFrom, dateTo)
+      const [rows, orders] = await Promise.all([
+        fetchIotDataInRange(dateFrom, dateTo),
+        fetchRiderOrdersForIot(dateFrom, dateTo, {
+          fallbackRows: riderDataRef.current,
+        }),
+      ])
       setIotRows(rows)
-      if (!rows.length) setIotError('No IoT records for this date range in iot_data. Widen the range or check run_date values.')
+      setRiderOrderRows(orders)
+      if (!rows.length) {
+        setIotError('No IoT records for this date range in iot_data. Widen the range or check run_date values.')
+      }
+      if (!orders.length) {
+        setRiderOrdersError('No order_upload_data rows for this date range. Orders will show as 0.')
+      }
     } catch (err) {
       if (isMissingIotTable(err)) {
         setMissingTable(true)
@@ -101,8 +124,10 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
         setIotError(err.message || 'Failed to load IoT data')
       }
       setIotRows([])
+      setRiderOrderRows([])
     } finally {
       setIotLoading(false)
+      setRiderOrdersLoading(false)
     }
   }, [dateFrom, dateTo])
 
@@ -111,40 +136,13 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     loadEv91DeployStatus()
   }, [loadSummary, loadEv91DeployStatus])
 
-  const loadRiderOrders = useCallback(async () => {
-    if (!dateFrom || !dateTo || dateFrom > dateTo) {
-      setRiderOrderRows([])
-      return
-    }
-    setRiderOrdersLoading(true)
-    setRiderOrdersError(null)
-    try {
-      const rows = await fetchRiderOrdersForIot(dateFrom, dateTo, {
-        fallbackRows: riderDataRef.current,
-      })
-      setRiderOrderRows(rows)
-      if (!rows.length) {
-        setRiderOrdersError('No order_upload_data rows for this date range. Orders will show as 0.')
-      }
-    } catch (err) {
-      console.warn('IoT rider orders load failed:', err)
-      setRiderOrdersError(err?.message || 'Failed to load rider orders')
-      setRiderOrderRows([])
-    } finally {
-      setRiderOrdersLoading(false)
-    }
-  }, [dateFrom, dateTo])
-
   const applyRange = useCallback(() => {
     loadRangeData()
-    loadRiderOrders()
-    loadEv91DeployStatus()
-  }, [loadRangeData, loadRiderOrders, loadEv91DeployStatus])
+  }, [loadRangeData])
 
   useEffect(() => {
     if (!missingTable) {
       loadRangeData()
-      loadRiderOrders()
     }
     // Only reload when date range or table availability changes — not on every App riderData update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,19 +152,31 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
 
   const reportRows = useMemo(
     () =>
-      buildIotVehicleReport(iotRows, fleetData, riderOrderRows, {
+      buildIotVehicleReport(iotRows, deferredFleet, riderOrderRows, {
         dateFrom,
         dateTo,
         ev91OverallRows,
         ev91CurrentRows,
+        vehicleInventoryRows: deferredInventory,
       }),
-    [iotRows, fleetData, riderOrderRows, dateFrom, dateTo, ev91OverallRows, ev91CurrentRows]
+    [iotRows, deferredFleet, riderOrderRows, dateFrom, dateTo, ev91OverallRows, ev91CurrentRows, deferredInventory]
   )
 
+  const reportPending = iotRows.length > 0 && (deferredFleet !== fleetData || deferredInventory !== vehicleInventoryData)
+
+  const cityOptions = useMemo(() => {
+    const cities = dedupeCanonicalCities(reportRows.map((r) => r.city))
+    return ['All', ...cities]
+  }, [reportRows])
+
   const filtered = useMemo(() => {
+    let rows = reportRows
+    if (cityFilter && cityFilter !== 'All') {
+      rows = rows.filter((r) => normalizeSummaryCity(r.city) === cityFilter)
+    }
     const q = deferredSearch.trim().toLowerCase()
-    if (!q) return reportRows
-    return reportRows.filter(
+    if (!q) return rows
+    return rows.filter(
       (r) =>
         r.runDate.includes(q) ||
         r.vehicleNumber.toLowerCase().includes(q) ||
@@ -177,9 +187,9 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
         r.city.toLowerCase().includes(q) ||
         String(r.orderCount).includes(q)
     )
-  }, [reportRows, deferredSearch])
+  }, [reportRows, deferredSearch, cityFilter])
 
-  // Stats follow search + date-range filter (e.g. one vehicle → that vehicle's KM only)
+  // Stats follow city + search + date-range filter (e.g. one vehicle → that vehicle's KM only)
   const stats = useMemo(() => summarizeIotReport(filtered), [filtered])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE))
@@ -190,7 +200,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchTerm, dateFrom, dateTo, reportRows.length])
+  }, [searchTerm, cityFilter, dateFrom, dateTo, reportRows.length])
 
   const exportExcel = () => {
     if (!filtered.length) return
@@ -214,13 +224,15 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     XLSX.writeFile(wb, `IoT_Data_${dateFrom}_to_${dateTo}.xlsx`)
   }
 
-  if (appLoading) {
+  if (appLoading && !fleetData?.length) {
     return (
       <div className="loading-container">
         <span className="loader" />
       </div>
     )
   }
+
+  const tableLoading = iotLoading || reportPending
 
   return (
     <div className="dashboard-container">
@@ -298,9 +310,24 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
             style={{ padding: '0.45rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
           />
         </label>
-        <button type="button" className="btn-primary" onClick={applyRange} disabled={iotLoading || riderOrdersLoading || ev91Loading} style={{ padding: '0.5rem 1rem' }}>
-          {iotLoading || riderOrdersLoading || ev91Loading ? <Loader size={16} className="spin" /> : 'Apply range'}
+        <button type="button" className="btn-primary" onClick={applyRange} disabled={iotLoading || riderOrdersLoading} style={{ padding: '0.5rem 1rem' }}>
+          {iotLoading || riderOrdersLoading ? <Loader size={16} className="spin" /> : 'Apply range'}
         </button>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+            <MapPin size={14} /> City
+          </span>
+          <select
+            value={cityFilter}
+            onChange={(e) => setCityFilter(e.target.value)}
+            className="fsr-select"
+            style={{ padding: '0.45rem 0.6rem', minWidth: '140px', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
+          >
+            {cityOptions.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </label>
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
           <input
@@ -358,7 +385,7 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
 
       <div className="table-card glass">
         <div className="table-container" style={{ maxHeight: 'calc(100vh - 420px)' }}>
-          {iotLoading ? (
+          {tableLoading ? (
             <div className="loading-container" style={{ minHeight: '200px' }}>
               <span className="loader" />
             </div>

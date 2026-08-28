@@ -1,3 +1,4 @@
+import { eachMonthOfInterval, format, parseISO } from 'date-fns'
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
 import {
@@ -7,7 +8,7 @@ import {
   fetchTableCount,
   isStatementTimeout,
 } from './paymentMonthList'
-import { toMetricDateKey } from './mergeRiderMetrics'
+import { mapOrderUploadToRiderMetric, toMetricDateKey } from './mergeRiderMetrics'
 
 export const ORDER_UPLOAD_TABLE = 'order_upload_data'
 /** Slim columns for dashboard merge / overview (faster than select *). */
@@ -20,6 +21,67 @@ export const ORDER_HISTORY_COLUMNS =
 const MONTH_ABBR = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+}
+
+const MONTH_LABEL = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Month labels (Jul-2026) covering a yyyy-MM-dd range — for scoped order_upload fetches. */
+export function orderUploadMonthLabelsForRange(dateFrom, dateTo) {
+  const fromStr = (dateFrom ?? '').toString().trim()
+  const toStr = (dateTo ?? '').toString().trim()
+  if (!fromStr || !toStr || fromStr > toStr) return []
+
+  const start = parseISO(fromStr)
+  const end = parseISO(toStr)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return []
+
+  return [
+    ...new Set(
+      eachMonthOfInterval({ start, end }).map(
+        (d) => `${MONTH_LABEL[d.getMonth()]}-${d.getFullYear()}`
+      )
+    ),
+  ]
+}
+
+function filterMappedOrderRowsToDateRange(rows, dateFrom, dateTo) {
+  const from = (dateFrom ?? '').toString().trim()
+  const to = (dateTo ?? '').toString().trim()
+  if (!from || !to) return []
+
+  const out = []
+  for (const row of rows || []) {
+    const dateKey = (row.date_record ?? '').toString().trim()
+    if (dateKey && dateKey >= from && dateKey <= to) out.push(row)
+  }
+  return out
+}
+
+/**
+ * Fetch order_upload_data for a date range via month index (fast).
+ * Avoids loading the entire order_upload_data table.
+ */
+export async function fetchOrderUploadsForDateRange(dateFrom, dateTo, { force = false } = {}) {
+  const from = (dateFrom ?? '').toString().trim()
+  const to = (dateTo ?? '').toString().trim()
+  if (!from || !to || from > to) return []
+
+  const labels = orderUploadMonthLabelsForRange(from, to)
+  if (!labels.length) return []
+
+  const monthChunks = await Promise.all(
+    labels.map((label) => fetchOrderUploadsForHistory(label, { force }))
+  )
+
+  const mapped = []
+  for (const rows of monthChunks) {
+    for (const row of rows || []) {
+      const metric = mapOrderUploadToRiderMetric(row)
+      if (metric) mapped.push(metric)
+    }
+  }
+
+  return filterMappedOrderRowsToDateRange(mapped, from, to)
 }
 
 export function isMissingOrderUploadTable(error) {

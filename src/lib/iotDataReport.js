@@ -2,10 +2,6 @@ import { format, isValid, parseISO, startOfDay } from 'date-fns'
 import { parseFleetDate } from './fleetDeployReturnExport'
 import { vehiclePartitionKey } from './fleetDeployReturnExport'
 import {
-  getCurrentlyDeployedAssignments,
-  parseMetricDate,
-} from './riderPerformanceReport'
-import {
   buildFleetIntervalIndexes,
   extractRiderIdAliases,
   findRiderForVehicleOnDate,
@@ -17,6 +13,7 @@ import {
   findEv91RiderForVehicleOnDate,
 } from './ev91EvLookup'
 import { normalizeCurrentVehicleStatus } from './ev91MisApi'
+import { parseMetricDate } from './riderPerformanceReport'
 
 function parseRangeDate(value) {
   if (!value) return null
@@ -121,7 +118,7 @@ function assignmentFromEv91Interval(interval) {
   }
 }
 
-function resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91History) {
+function resolveIotAssignment(interval, ev91Interval, hasEv91History) {
   // Prefer EV91 Overall/Current intervals — fleet master often lags API deploy status.
   if (ev91Interval) return assignmentFromEv91Interval(ev91Interval)
 
@@ -131,35 +128,34 @@ function resolveIotAssignment(interval, openAssignment, ev91Interval, hasEv91His
   if (interval) {
     return {
       vehicleNumber: interval.vehicleNumber,
-      riderId: interval.riderId || openAssignment?.riderId || '',
-      ev91RiderId: interval.ev91RiderId || openAssignment?.ev91RiderId || '',
-      riderName: interval.riderName || openAssignment?.riderName || '—',
-      mobile: interval.mobile || openAssignment?.mobile || '',
-      client: openAssignment?.client || '—',
-      city: openAssignment?.city || '—',
-      hub: openAssignment?.hub || '—',
+      riderId: interval.riderId || '',
+      ev91RiderId: '',
+      riderName: interval.riderName || '—',
+      mobile: interval.mobile || '',
+      client: interval.client || '—',
+      city: interval.city || '—',
+      hub: interval.hub || '—',
       source: 'fleet',
     }
   }
-  return openAssignment
-    ? { ...openAssignment, ev91RiderId: openAssignment.ev91RiderId || '', source: 'fleet' }
-    : null
+  return null
 }
 
-/** Pre-compute open fleet assignments per IoT run date (avoids O(rows × fleet) work). */
-function buildAssignmentCacheByDate(fleetRows, runDates) {
-  const cache = new Map()
-  for (const runDate of runDates) {
-    const asOf = parseRangeDate(runDate)
-    if (!asOf) continue
-    const openByVehicle = new Map()
-    for (const assignment of getCurrentlyDeployedAssignments(fleetRows, asOf)) {
-      const key = vehiclePartitionKey(assignment.vehicleNumber)
-      if (key) openByVehicle.set(key, assignment)
-    }
-    cache.set(runDate, openByVehicle)
+/**
+ * Static vehicle → city from Vehicle Inventory (master table).
+ * Used when a vehicle is Not deployed on an IoT run date (no rider assignment).
+ */
+export function buildVehicleMasterCityIndex(inventoryRows = []) {
+  const byVehicle = new Map()
+
+  for (const row of inventoryRows || []) {
+    const key = vehiclePartitionKey(row.vehregno || row.vehicle_number)
+    const c = (row.city ?? '').toString().trim()
+    if (!key || !c || c === '—' || c === 'N/A') continue
+    if (!byVehicle.has(key)) byVehicle.set(key, c)
   }
-  return cache
+
+  return byVehicle
 }
 
 /**
@@ -170,7 +166,7 @@ export function buildIotVehicleReport(
   iotRows,
   fleetRows,
   riderRows,
-  { dateFrom, dateTo, ev91OverallRows = [], ev91CurrentRows = [] } = {}
+  { dateFrom, dateTo, ev91OverallRows = [], ev91CurrentRows = [], vehicleInventoryRows = [] } = {}
 ) {
   void dateFrom
   void dateTo
@@ -212,11 +208,10 @@ export function buildIotVehicleReport(
     const vehicleKey = vehiclePartitionKey(vehicleNumber)
     const runDate = normalizeIotRunDate(row.run_date ?? row.record_date)
     if (!vehicleKey || !runDate) continue
-    runDates.add(runDate)
     parsedIot.push({ row, vehicleNumber, vehicleKey, runDate })
   }
 
-  const assignmentByDate = buildAssignmentCacheByDate(fleetRows, runDates)
+  const masterCityByVehicle = buildVehicleMasterCityIndex(vehicleInventoryRows)
   const rows = []
 
   for (const { row, vehicleNumber, vehicleKey, runDate } of parsedIot) {
@@ -228,14 +223,12 @@ export function buildIotVehicleReport(
       : null
     const hasEv91History =
       ev91VehicleIntervals.has(vehicleKey) || currentNotDeployedSince.has(vehicleKey)
-    const openAssignment = assignmentByDate.get(runDate)?.get(vehicleKey)
     // After Current Status return / yet-not-deployed date, don't use stale fleet Deployed
     const notDeployedSince = currentNotDeployedSince.get(vehicleKey)
     const blockFleet =
       Boolean(notDeployedSince) && runDate >= notDeployedSince && !ev91Interval
     const assignment = resolveIotAssignment(
-      interval,
-      blockFleet ? null : openAssignment,
+      blockFleet ? null : interval,
       ev91Interval,
       hasEv91History
     )
@@ -245,6 +238,12 @@ export function buildIotVehicleReport(
       ev91Interval?.ev91RiderId ||
       (runDate >= (notDeployedSince || '') ? currentEv91ByVehicle.get(vehicleKey) : '') ||
       ''
+
+    let city = assignment?.city || '—'
+    if (!city || city === '—') {
+      const masterCity = masterCityByVehicle.get(vehicleKey)
+      if (masterCity) city = masterCity
+    }
 
     rows.push({
       rowKey: `${vehicleKey}|${runDate}`,
@@ -257,7 +256,7 @@ export function buildIotVehicleReport(
       ev91RiderId: ev91RiderId || '—',
       riderName: assignment?.riderName || '—',
       client: assignment?.client || '—',
-      city: assignment?.city || '—',
+      city,
       hub: assignment?.hub || '—',
       // Day-wise: Deployed only while an EV91/fleet allotment covers that run date.
       deployStatus: assignment ? 'Deployed' : 'Not deployed',

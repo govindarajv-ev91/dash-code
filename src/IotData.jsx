@@ -163,8 +163,6 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
     [iotRows, fleetData, riderOrderRows, dateFrom, dateTo, ev91OverallRows, ev91CurrentRows]
   )
 
-  const stats = useMemo(() => summarizeIotReport(reportRows), [reportRows])
-
   const filtered = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase()
     if (!q) return reportRows
@@ -180,6 +178,9 @@ export default function IotData({ fleetData, riderData, loading: appLoading }) {
         String(r.orderCount).includes(q)
     )
   }, [reportRows, deferredSearch])
+
+  // Stats follow search + date-range filter (e.g. one vehicle → that vehicle's KM only)
+  const stats = useMemo(() => summarizeIotReport(filtered), [filtered])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE))
   const paginated = useMemo(() => {

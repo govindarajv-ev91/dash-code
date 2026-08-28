@@ -25,6 +25,7 @@ const OrderHistory = lazy(() => import('./OrderHistory'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
 const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
 const IotData = lazy(() => import('./IotData'))
+const EvEnvironmentalImpact = lazy(() => import('./EvEnvironmentalImpact'))
 const Ev91DbData = lazy(() => import('./Ev91DbData'))
 const Ev91RiderPerformance = lazy(() => import('./Ev91RiderPerformance'))
 const Ev91OnboardingPending = lazy(() => import('./Ev91OnboardingPending'))
@@ -48,7 +49,7 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard, Leaf } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
@@ -612,6 +613,13 @@ function App() {
             IoT Data
           </button>
           <button
+            className={`nav-item nav-item-green ${activePage === 'evimpact' ? 'active' : ''}`}
+            onClick={() => setActivePage('evimpact')}
+          >
+            <Leaf size={20} />
+            CO₂ &amp; Savings
+          </button>
+          <button
             className={`nav-item nav-item-green ${activePage === 'fulldata' ? 'active' : ''}`}
             onClick={() => setActivePage('fulldata')}
           >
@@ -841,6 +849,11 @@ function App() {
           <IotData
             fleetData={fleetData}
             riderData={riderData}
+            vehicleInventoryData={vehicleInventoryData}
+            loading={loading}
+          />
+        ) : activePage === 'evimpact' ? (
+          <EvEnvironmentalImpact
             vehicleInventoryData={vehicleInventoryData}
             loading={loading}
           />

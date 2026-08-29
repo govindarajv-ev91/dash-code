@@ -179,11 +179,36 @@ function parsePartKey(key) {
   return { city: key.slice(0, i), client: key.slice(i + 1) }
 }
 
+/** Empty array or 'All' = no client filter; string[] = include only those clients. */
+export function normalizeClientFilterSelection(clientFilter) {
+  if (!clientFilter || clientFilter === 'All') return []
+  if (Array.isArray(clientFilter)) return clientFilter.filter(Boolean)
+  return [String(clientFilter)]
+}
+
+function clientFilterActiveSet(clientFilter) {
+  const list = normalizeClientFilterSelection(clientFilter)
+  if (!list.length) return null
+  return new Set(list.map((c) => normalizeSummaryClient(c)))
+}
+
+function matchesClientFilterValue(client, clientFilter) {
+  const set = clientFilterActiveSet(clientFilter)
+  if (!set) return true
+  return set.has(normalizeSummaryClient(client))
+}
+
+export function formatClientFilterLabel(clientFilter) {
+  const list = normalizeClientFilterSelection(clientFilter)
+  if (!list.length) return 'All'
+  if (list.length === 1) return list[0]
+  return `${list.length} clients`
+}
+
 function matchesPart(key, cityFilter, clientFilter) {
-  if ((!cityFilter || cityFilter === 'All') && (!clientFilter || clientFilter === 'All')) return true
   const { city, client } = parsePartKey(key)
   if (cityFilter && cityFilter !== 'All' && city !== cityFilter) return false
-  if (clientFilter && clientFilter !== 'All' && client !== clientFilter) return false
+  if (!matchesClientFilterValue(client, clientFilter)) return false
   return true
 }
 
@@ -957,7 +982,7 @@ export function buildFullDataWhatsAppText(
     '*FleetPro — Full Data Report*',
     `Month: ${monthLabel || report?.monthLabel || '—'}`,
     `City: ${cityFilter || 'All'}`,
-    `Client: ${clientFilter || 'All'}`,
+    `Client: ${formatClientFilterLabel(clientFilter)}`,
   ]
   if (report?.fromKey && report?.toKey) {
     lines.push(`Range: ${report.fromKey} → ${report.toKey}`)
@@ -990,9 +1015,8 @@ export function shareFullDataWhatsApp(report, filters = {}) {
 
 function matchesCityClientFilter(city, client, cityFilter = 'All', clientFilter = 'All') {
   const c = normalizeSummaryCity(city)
-  const cl = normalizeSummaryClient(client)
   if (cityFilter && cityFilter !== 'All' && c !== cityFilter) return false
-  if (clientFilter && clientFilter !== 'All' && cl !== clientFilter) return false
+  if (!matchesClientFilterValue(client, clientFilter)) return false
   return true
 }
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition, useRef } from 'react'
-import { Table2, Calendar, MapPin, Briefcase, Loader, RefreshCw, Download, MessageCircle, Info, X, Users, ArrowLeft } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Table2, Calendar, MapPin, Briefcase, Loader, RefreshCw, Download, MessageCircle, Info, X, Users, ArrowLeft, Check, Search } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import {
   fetchOrderUploadsForHistory,
@@ -25,6 +26,7 @@ import {
   buildFullDataDeployDetailRows,
   buildFullDataIotDetailRows,
   buildFullDataSourceWiseDailyRows,
+  formatClientFilterLabel,
 } from './lib/fullDataMonthReport'
 import { fetchRiderOnboardingRows } from './lib/riderOnboardingDb'
 import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
@@ -86,11 +88,269 @@ const selectStyle = {
   minWidth: '140px',
 }
 
+function clientFiltersEqual(a, b) {
+  if (a === b) return true
+  const listA = Array.isArray(a) ? [...a].sort() : []
+  const listB = Array.isArray(b) ? [...b].sort() : []
+  if (listA.length !== listB.length) return false
+  return listA.every((v, i) => v === listB[i])
+}
+
+function ClientMultiSelect({ options, selected, onChange }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [menuStyle, setMenuStyle] = useState(null)
+  const containerRef = useRef(null)
+  const buttonRef = useRef(null)
+  const menuRef = useRef(null)
+
+  const updateMenuPosition = useCallback(() => {
+    const btn = buttonRef.current
+    if (!btn) return
+    const rect = btn.getBoundingClientRect()
+    const menuWidth = Math.max(rect.width, 280)
+    const spaceBelow = window.innerHeight - rect.bottom - 8
+    const spaceAbove = rect.top - 8
+    const preferBelow = spaceBelow >= 180 || spaceBelow >= spaceAbove
+    const maxHeight = Math.min(320, preferBelow ? spaceBelow - 4 : spaceAbove - 4)
+    const top = preferBelow ? rect.bottom + 4 : Math.max(8, rect.top - maxHeight - 4)
+    let left = rect.left
+    if (left + menuWidth > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - menuWidth - 8)
+    }
+    setMenuStyle({
+      position: 'fixed',
+      top,
+      left,
+      width: menuWidth,
+      maxHeight: Math.max(160, maxHeight),
+      zIndex: 10050,
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!isOpen) return undefined
+    updateMenuPosition()
+    const onScrollOrResize = () => updateMenuPosition()
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true)
+      window.removeEventListener('resize', onScrollOrResize)
+    }
+  }, [isOpen, updateMenuPosition])
+
+  useEffect(() => {
+    if (!isOpen) return undefined
+    const handleClickOutside = (event) => {
+      if (containerRef.current?.contains(event.target) || menuRef.current?.contains(event.target)) return
+      setIsOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isOpen])
+
+  const filteredOptions = options.filter((opt) =>
+    opt.toString().toLowerCase().includes(search.toLowerCase())
+  )
+
+  const toggleOption = (opt) => {
+    onChange(
+      selected.includes(opt) ? selected.filter((s) => s !== opt) : [...selected, opt]
+    )
+  }
+
+  const selectAll = (e) => {
+    e.stopPropagation()
+    if (search.trim()) {
+      onChange([...new Set([...selected, ...filteredOptions])])
+    } else {
+      onChange([...options])
+    }
+  }
+
+  const unselectAll = (e) => {
+    e.stopPropagation()
+    if (search.trim()) {
+      const removeSet = new Set(filteredOptions)
+      onChange(selected.filter((s) => !removeSet.has(s)))
+    } else {
+      onChange([])
+    }
+  }
+
+  const label = formatClientFilterLabel(selected)
+
+  const menu = isOpen && menuStyle
+    ? createPortal(
+        <div
+          ref={menuRef}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            ...menuStyle,
+            background: '#1e293b',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: '8px',
+            boxShadow: '0 16px 40px rgba(0, 0, 0, 0.55)',
+            padding: '0.5rem',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              background: 'rgba(255,255,255,0.05)',
+              padding: '0.4rem 0.6rem',
+              borderRadius: '6px',
+              marginBottom: '0.5rem',
+              flexShrink: 0,
+            }}
+          >
+            <Search size={12} color="var(--text-dim)" />
+            <input
+              autoFocus
+              type="text"
+              placeholder="Search clients..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#fff',
+                fontSize: '0.75rem',
+                outline: 'none',
+                width: '100%',
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '0.5rem', flexShrink: 0 }}>
+            <button type="button" onClick={selectAll} style={multiBtnStyle}>
+              Select all
+            </button>
+            <button type="button" onClick={unselectAll} style={multiBtnStyle}>
+              Clear
+            </button>
+          </div>
+          <div
+            style={{
+              padding: '0.4rem 0.6rem',
+              fontSize: '0.75rem',
+              color: selected.length === 0 ? '#fff' : '#94a3b8',
+              background: selected.length === 0 ? 'rgba(255,255,255,0.08)' : 'transparent',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontWeight: selected.length === 0 ? 600 : 400,
+              marginBottom: '0.25rem',
+              flexShrink: 0,
+            }}
+            onClick={() => onChange([])}
+          >
+            All clients (no filter)
+          </div>
+          <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+            {!options.length ? (
+              <div style={{ padding: '0.5rem 0.6rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+                No clients for this month
+              </div>
+            ) : !filteredOptions.length ? (
+              <div style={{ padding: '0.5rem 0.6rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+                No matching clients
+              </div>
+            ) : (
+              filteredOptions.map((opt) => {
+                const checked = selected.includes(opt)
+                return (
+                  <div
+                    key={opt}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      padding: '0.4rem 0.6rem',
+                      fontSize: '0.75rem',
+                      color: checked ? '#fff' : '#cbd5e1',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      background: checked ? 'rgba(255,255,255,0.05)' : 'transparent',
+                    }}
+                    onClick={() => toggleOption(opt)}
+                  >
+                    <div
+                      style={{
+                        width: '14px',
+                        height: '14px',
+                        border: `1px solid ${checked ? '#fbbf24' : 'rgba(255,255,255,0.3)'}`,
+                        borderRadius: '3px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: checked ? '#fbbf24' : 'transparent',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {checked && <Check size={10} color="#000" strokeWidth={4} />}
+                    </div>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt}</span>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>,
+        document.body
+      )
+    : null
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => {
+          setIsOpen((v) => {
+            const next = !v
+            if (next) updateMenuPosition()
+            return next
+          })
+        }}
+        style={{
+          ...selectStyle,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.45rem',
+          cursor: 'pointer',
+          minWidth: '160px',
+          textAlign: 'left',
+        }}
+      >
+        <Briefcase size={14} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      </button>
+      {menu}
+    </div>
+  )
+}
+
+const multiBtnStyle = {
+  flex: 1,
+  fontSize: '0.68rem',
+  background: 'rgba(255,255,255,0.1)',
+  border: '1px solid rgba(255,255,255,0.12)',
+  color: '#fff',
+  padding: '0.25rem 0.4rem',
+  borderRadius: '4px',
+  cursor: 'pointer',
+}
+
 export default function FullData({ onboardingData = [] }) {
   const [months, setMonths] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [cityFilter, setCityFilter] = useState('All')
-  const [clientFilter, setClientFilter] = useState('All')
+  const [clientFilter, setClientFilter] = useState([])
 
   const [orderRows, setOrderRows] = useState([])
   const [overallRows, setOverallRows] = useState([])
@@ -194,13 +454,10 @@ export default function FullData({ onboardingData = [] }) {
   }, [filterOptions.cities, cityFilter])
 
   useEffect(() => {
-    if (
-      clientFilter !== 'All' &&
-      filterOptions.clients.length &&
-      !filterOptions.clients.includes(clientFilter)
-    ) {
-      setClientFilter('All')
-    }
+    if (!clientFilter.length || !filterOptions.clients.length) return
+    const valid = new Set(filterOptions.clients)
+    const next = clientFilter.filter((c) => valid.has(c))
+    if (next.length !== clientFilter.length) setClientFilter(next)
   }, [filterOptions.clients, clientFilter])
 
   // Chunked async build — show table ASAP, then fill 0-order in background
@@ -270,7 +527,8 @@ export default function FullData({ onboardingData = [] }) {
 
   const deferredCity = useDeferredValue(cityFilter)
   const deferredClient = useDeferredValue(clientFilter)
-  const filtersPending = deferredCity !== cityFilter || deferredClient !== clientFilter
+  const filtersPending = deferredCity !== cityFilter || !clientFiltersEqual(deferredClient, clientFilter)
+  const clientFilterLabel = formatClientFilterLabel(clientFilter)
 
   const report = useMemo(() => {
     if (!reportBase) {
@@ -397,7 +655,7 @@ export default function FullData({ onboardingData = [] }) {
       XLSX.utils.json_to_sheet(buildFullDataIotDetailRows(iotRows, filters)),
       'IoT KM'
     )
-    const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilter}`.replace(/\s+/g, '_')
+    const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilterLabel}`.replace(/\s+/g, '_')
     XLSX.writeFile(wb, `Full_Data_Detail_${suffix}.xlsx`)
   }
 
@@ -409,7 +667,7 @@ export default function FullData({ onboardingData = [] }) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.daily), 'Source Daily')
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.month), 'Source Month')
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.riders), 'Rider Wise')
-      const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilter}`.replace(/\s+/g, '_')
+      const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilterLabel}`.replace(/\s+/g, '_')
       XLSX.writeFile(wb, `Full_Data_Source_Daily_${suffix}.xlsx`)
     } catch (err) {
       setError(err.message || 'Failed to export source-wise daily data')
@@ -440,7 +698,7 @@ export default function FullData({ onboardingData = [] }) {
         'FleetPro — Full Data',
         `Month: ${selectedMonth || '—'}`,
         `City: ${cityFilter}`,
-        `Client: ${clientFilter}`,
+        `Client: ${clientFilterLabel}`,
         shareReport.fromKey && shareReport.toKey
           ? `Range: ${shareReport.fromKey} → ${shareReport.toKey} (through yesterday)`
           : '',
@@ -455,7 +713,7 @@ export default function FullData({ onboardingData = [] }) {
 
       const result = await shareFullDataScreenshot({
         node: captureRef.current,
-        filename: `Full_Data_${selectedMonth || 'month'}_${cityFilter}_${clientFilter}.png`.replace(
+        filename: `Full_Data_${selectedMonth || 'month'}_${cityFilter}_${clientFilterLabel}.png`.replace(
           /\s+/g,
           '_'
         ),
@@ -464,7 +722,7 @@ export default function FullData({ onboardingData = [] }) {
         sharePrep: hideDateKey
           ? {
               hideDateKey,
-              headerText: `${selectedMonth} · City: ${cityFilter} · Client: ${clientFilter}${
+              headerText: `${selectedMonth} · City: ${cityFilter} · Client: ${clientFilterLabel}${
                 shareReport.fromKey && shareReport.toKey
                   ? ` · ${shareReport.fromKey} → ${shareReport.toKey}`
                   : ''
@@ -538,7 +796,7 @@ export default function FullData({ onboardingData = [] }) {
 
   return (
     <div className="dashboard-container">
-      <header className="header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '1rem' }}>
+      <header className="header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '1rem', overflow: 'visible' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
             <h1 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
@@ -677,6 +935,9 @@ export default function FullData({ onboardingData = [] }) {
             flexWrap: 'wrap',
             alignItems: 'flex-end',
             width: '100%',
+            overflow: 'visible',
+            position: 'relative',
+            zIndex: 20,
           }}
         >
           <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
@@ -710,19 +971,16 @@ export default function FullData({ onboardingData = [] }) {
               ))}
             </select>
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
               <Briefcase size={14} /> Clients
             </span>
-            <select value={clientFilter} onChange={(e) => onClientChange(e.target.value)} style={selectStyle}>
-              <option value="All">All</option>
-              {filterOptions.clients.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
+            <ClientMultiSelect
+              options={filterOptions.clients}
+              selected={clientFilter}
+              onChange={onClientChange}
+            />
+          </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-dim)', paddingBottom: '0.35rem' }}>
             {loading || building
               ? loading
@@ -921,7 +1179,7 @@ export default function FullData({ onboardingData = [] }) {
                 </div>
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.2rem' }}>
                   Source from rider onboarding · {selectedMonth} · City: {cityFilter} · Client:{' '}
-                  {clientFilter}
+                  {clientFilterLabel}
                   {sourceTab === 'daily'
                     ? ` · ${sourceReport.daily.length.toLocaleString('en-IN')} rows`
                     : ` · ${sourceReport.month.length.toLocaleString('en-IN')} rows`}
@@ -1108,7 +1366,7 @@ export default function FullData({ onboardingData = [] }) {
               >
                 <strong>FleetPro Full Data</strong>
                 <span data-share-header style={{ color: '#475569', marginLeft: '0.5rem' }}>
-                  {selectedMonth} · City: {cityFilter} · Client: {clientFilter}
+                  {selectedMonth} · City: {cityFilter} · Client: {clientFilterLabel}
                   {report.fromKey && report.toKey ? ` · ${report.fromKey} → ${report.toKey}` : ''}
                 </span>
               </div>

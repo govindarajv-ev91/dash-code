@@ -54,6 +54,32 @@ function normalizePhone(value) {
   return digits.length >= 6 ? digits : ''
 }
 
+function formatRiderPhone(value) {
+  const phone = normalizePhone(value)
+  return phone || ''
+}
+
+/** Phone from deploy/fleet contact, then EV91 Rider Details by EV91 ID / client rider ID. */
+export function resolveIotRiderPhone(assignment, ev91RiderId, ev91RiderDetails) {
+  const fromAssignment = formatRiderPhone(assignment?.mobile)
+  if (fromAssignment) return fromAssignment
+
+  const ids = [
+    (ev91RiderId || '').toString().trim(),
+    (assignment?.ev91RiderId || '').toString().trim(),
+    (assignment?.riderId || '').toString().trim(),
+  ].filter((id) => id && id !== '—')
+
+  if (!ev91RiderDetails?.size) return ''
+
+  for (const id of ids) {
+    const detail = ev91RiderDetails.get(id)
+    const phone = formatRiderPhone(detail?.phone || detail?.mobile)
+    if (phone) return phone
+  }
+  return ''
+}
+
 /** rider_id/worker_code + date → delivered orders (from order_upload_data). */
 export function buildRiderDayOrderIndex(riderRows) {
   const byWorkerDate = new Map()
@@ -166,7 +192,7 @@ export function buildIotVehicleReport(
   iotRows,
   fleetRows,
   riderRows,
-  { dateFrom, dateTo, ev91OverallRows = [], ev91CurrentRows = [], vehicleInventoryRows = [] } = {}
+  { dateFrom, dateTo, ev91OverallRows = [], ev91CurrentRows = [], vehicleInventoryRows = [], ev91RiderDetails = null } = {}
 ) {
   void dateFrom
   void dateTo
@@ -245,6 +271,8 @@ export function buildIotVehicleReport(
       if (masterCity) city = masterCity
     }
 
+    const riderPhone = resolveIotRiderPhone(assignment, ev91RiderId, ev91RiderDetails)
+
     rows.push({
       rowKey: `${vehicleKey}|${runDate}`,
       runDate,
@@ -255,6 +283,7 @@ export function buildIotVehicleReport(
       riderId: assignment?.riderId || '—',
       ev91RiderId: ev91RiderId || '—',
       riderName: assignment?.riderName || '—',
+      riderPhone: riderPhone || '—',
       client: assignment?.client || '—',
       city,
       hub: assignment?.hub || '—',

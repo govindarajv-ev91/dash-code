@@ -27,6 +27,7 @@ import {
   fetchEv91OverallStatusAll,
   fetchEv91CurrentStatusAll,
 } from './lib/ev91EvLookup'
+import { fetchEv91RiderDetails } from './lib/ev91RiderPerformance'
 
 const ROWS_PER_PAGE = 50
 
@@ -50,6 +51,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
   const [riderOrdersError, setRiderOrdersError] = useState(null)
   const [ev91OverallRows, setEv91OverallRows] = useState([])
   const [ev91CurrentRows, setEv91CurrentRows] = useState([])
+  const [ev91RiderDetails, setEv91RiderDetails] = useState(() => new Map())
   const [ev91Loading, setEv91Loading] = useState(true)
   const riderDataRef = useRef(riderData)
   riderDataRef.current = riderData
@@ -71,16 +73,19 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
   const loadEv91DeployStatus = useCallback(async () => {
     setEv91Loading(true)
     try {
-      const [overall, current] = await Promise.all([
+      const [overall, current, details] = await Promise.all([
         fetchEv91OverallStatusAll({ force: false }),
         fetchEv91CurrentStatusAll({ force: false }).catch(() => ({ data: [] })),
+        fetchEv91RiderDetails().catch(() => new Map()),
       ])
       setEv91OverallRows(overall?.data || [])
       setEv91CurrentRows(current?.data || [])
+      setEv91RiderDetails(details instanceof Map ? details : new Map())
     } catch (err) {
       console.warn('IoT EV91 deploy status load failed:', err)
       setEv91OverallRows([])
       setEv91CurrentRows([])
+      setEv91RiderDetails(new Map())
     } finally {
       setEv91Loading(false)
     }
@@ -158,8 +163,9 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
         ev91OverallRows,
         ev91CurrentRows,
         vehicleInventoryRows: deferredInventory,
+        ev91RiderDetails,
       }),
-    [iotRows, deferredFleet, riderOrderRows, dateFrom, dateTo, ev91OverallRows, ev91CurrentRows, deferredInventory]
+    [iotRows, deferredFleet, riderOrderRows, dateFrom, dateTo, ev91OverallRows, ev91CurrentRows, deferredInventory, ev91RiderDetails]
   )
 
   const reportPending = iotRows.length > 0 && (deferredFleet !== fleetData || deferredInventory !== vehicleInventoryData)
@@ -175,7 +181,8 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
       rows = rows.filter((r) => normalizeSummaryCity(r.city) === cityFilter)
     }
     const q = deferredSearch.trim().toLowerCase()
-    if (!q) return rows
+    const phoneQ = deferredSearch.replace(/\D/g, '')
+    if (!q && !phoneQ) return rows
     return rows.filter(
       (r) =>
         r.runDate.includes(q) ||
@@ -183,6 +190,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
         String(r.ev91RiderId || '').toLowerCase().includes(q) ||
         r.riderId.toLowerCase().includes(q) ||
         r.riderName.toLowerCase().includes(q) ||
+        (phoneQ && String(r.riderPhone || '').replace(/\D/g, '').includes(phoneQ)) ||
         r.client.toLowerCase().includes(q) ||
         r.city.toLowerCase().includes(q) ||
         String(r.orderCount).includes(q)
@@ -210,6 +218,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
       'EV91 ID': r.ev91RiderId === '—' ? '' : r.ev91RiderId,
       'Rider ID': r.riderId,
       'Rider Name': r.riderName,
+      'Rider Phone': r.riderPhone === '—' ? '' : r.riderPhone,
       Client: r.client,
       City: r.city,
       Hub: r.hub,
@@ -270,6 +279,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
               <span><strong>{dbCount.toLocaleString()}</strong> rows in <code style={{ color: '#fff' }}>iot_data</code></span>
               <span>· Orders from <code style={{ color: '#fff' }}>order_upload_data</code> only</span>
               <span>· Deploy Status from EV91 Overall / Current API</span>
+              <span>· Phone from EV91 Rider Details</span>
               {lastUploadAt && (
                 <span style={{ color: 'var(--accent-blue)' }}>· Last upload: {formatLastUploadAt(lastUploadAt)}</span>
               )}
@@ -332,7 +342,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
           <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
           <input
             type="text"
-            placeholder="Search vehicle, rider, client, city..."
+            placeholder="Search vehicle, rider, phone, client, city..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             style={{ width: '100%', padding: '0.55rem 0.75rem 0.55rem 2.25rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '10px', color: '#fff', outline: 'none' }}
@@ -424,6 +434,9 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
                       <td>
                         <div style={{ fontWeight: 600 }}>{r.riderName}</div>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{r.riderId}</div>
+                        {r.riderPhone && r.riderPhone !== '—' && (
+                          <div style={{ fontSize: '0.75rem', color: '#93c5fd' }}>{r.riderPhone}</div>
+                        )}
                       </td>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>

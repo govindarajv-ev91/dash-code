@@ -30,6 +30,7 @@ import {
 } from './lib/fullDataMonthReport'
 import { fetchRiderOnboardingRows } from './lib/riderOnboardingDb'
 import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
+import { fetchEv91RiderDetails } from './lib/ev91RiderPerformance'
 import { shareFullDataScreenshot } from './lib/fullDataShareScreenshot'
 import { FULL_DATA_RATE_INFO, EV_DAILY_RENT } from './lib/fullDataCommercialRates'
 
@@ -57,6 +58,11 @@ const SOURCE_MONTH_COLUMNS = [
   'Unique Rider Count',
   'Unique EV rider Count',
   'Unique Non-EV rider Count',
+  'Active Rider Count (last 4 days)',
+  'Active EV Rider Count',
+  'Active Non-EV Rider Count',
+  '0 Order Rider Count (last 4 days)',
+  'Active window end',
   'Total Order',
   'EV Order',
   'Non-EV Order',
@@ -372,6 +378,7 @@ export default function FullData({ onboardingData = [] }) {
   const [localOnboarding, setLocalOnboarding] = useState([])
   const [mappingRows, setMappingRows] = useState([])
   const [allOrderRows, setAllOrderRows] = useState([])
+  const [ev91RiderDetails, setEv91RiderDetails] = useState(() => new Map())
   const [sourceLoading, setSourceLoading] = useState(false)
   const captureRef = useRef(null)
 
@@ -554,7 +561,7 @@ export default function FullData({ onboardingData = [] }) {
   }, [])
 
   const sourceReport = useMemo(() => {
-    if (!sourceViewOpen || !report.fromKey) return { daily: [], month: [], riders: [] }
+    if (!sourceViewOpen || !report.fromKey) return { daily: [], month: [], riders: [], activeSummary: [] }
     return buildFullDataSourceWiseDailyRows(
       orderRows,
       resolvedOnboarding,
@@ -567,6 +574,7 @@ export default function FullData({ onboardingData = [] }) {
       toKey: report.toKey,
       cityFilter: deferredCity,
       clientFilter: deferredClient,
+      ev91RiderDetails,
     })
   }, [
     sourceViewOpen,
@@ -576,6 +584,7 @@ export default function FullData({ onboardingData = [] }) {
     mappingRows,
     allOrderRows,
     currentRows,
+    ev91RiderDetails,
     report.fromKey,
     report.toKey,
     deferredCity,
@@ -588,13 +597,15 @@ export default function FullData({ onboardingData = [] }) {
     setError(null)
     setSourceLoading(true)
     try {
-      const [, mappingRes, historyRows] = await Promise.all([
+      const [, mappingRes, historyRows, riderDetails] = await Promise.all([
         refreshOnboarding(),
         fetchEv91ClientMappingAll().catch(() => ({ data: [] })),
         fetchAllOrderUploads({ force: false }).catch(() => []),
+        fetchEv91RiderDetails().catch(() => new Map()),
       ])
       setMappingRows(mappingRes?.data || [])
       setAllOrderRows(historyRows || [])
+      setEv91RiderDetails(riderDetails instanceof Map ? riderDetails : new Map())
     } catch (err) {
       setError(err.message || 'Failed to load rider onboarding for source names')
     } finally {
@@ -666,6 +677,9 @@ export default function FullData({ onboardingData = [] }) {
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.daily), 'Source Daily')
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.month), 'Source Month')
+      if (sourceReport.activeSummary?.length) {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.activeSummary), 'Active Summary')
+      }
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sourceReport.riders), 'Rider Wise')
       const suffix = `${selectedMonth || 'month'}_${cityFilter}_${clientFilterLabel}`.replace(/\s+/g, '_')
       XLSX.writeFile(wb, `Full_Data_Source_Daily_${suffix}.xlsx`)

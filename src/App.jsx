@@ -34,6 +34,7 @@ const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
 const FullData = lazy(() => import('./FullData'))
+const SourceWiseData = lazy(() => import('./SourceWiseData'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -626,6 +627,13 @@ function App() {
             <Table2 size={20} />
             Full Data
           </button>
+          <button
+            className={`nav-item nav-item-green ${activePage === 'sourcewise' ? 'active' : ''}`}
+            onClick={() => setActivePage('sourcewise')}
+          >
+            <Users size={20} />
+            Source Wise Data
+          </button>
           <button 
             className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
             onClick={() => setActivePage('fleetdata')}
@@ -859,6 +867,8 @@ function App() {
           />
         ) : activePage === 'fulldata' ? (
           <FullData onboardingData={onboardingData} />
+        ) : activePage === 'sourcewise' ? (
+          <SourceWiseData onboardingData={onboardingData} />
         ) : activePage === 'fleetdata' ? (
           <FleetDataViewer
             fleetData={displayFleetData}

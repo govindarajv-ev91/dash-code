@@ -358,6 +358,160 @@ function workerZeroOrdersInWindow(orderIndex, workerId, endDateKey) {
   return true
 }
 
+/** Calendar dates in the last-4-day order window ending on endDateKey (sorted). */
+function activeWindowDateKeys(endDateKey) {
+  const endDate = startOfDay(parseISO(endDateKey))
+  if (Number.isNaN(endDate.getTime())) return []
+  const asOf = getZeroOrderAsOfFromEndDate(endDate)
+  return [1, 2, 3, 4].map((n) => format(subDays(asOf, n), 'yyyy-MM-dd')).sort()
+}
+
+/** Days in the last-4 window where this worker had delivered > 0. */
+function workerOrderDaysInLast4Window(orderIndex, workerId, endDateKey) {
+  if (!workerId || !endDateKey) return []
+  const endDate = startOfDay(parseISO(endDateKey))
+  if (Number.isNaN(endDate.getTime())) return []
+  const asOf = getZeroOrderAsOfFromEndDate(endDate)
+  const dayMap = orderIndex.get(workerId.toUpperCase())
+  const out = []
+  for (let n = 1; n <= 4; n++) {
+    const dayKey = format(subDays(asOf, n), 'yyyy-MM-dd')
+    if ((dayMap?.get(dayKey) || 0) > 0) out.push(dayKey)
+  }
+  return out
+}
+
+/** Source Wise: 4 calendar days immediately before end date (e.g. Sep 01 → Aug 28–31). */
+export function sourceActiveWindowDateKeys(endDateKey) {
+  const endDate = startOfDay(parseISO(endDateKey))
+  if (Number.isNaN(endDate.getTime())) return []
+  return [1, 2, 3, 4].map((n) => format(subDays(endDate, n), 'yyyy-MM-dd')).sort()
+}
+
+function sourceActiveWindowHasOrders(orderIndex, endDateKey) {
+  const days = sourceActiveWindowDateKeys(endDateKey)
+  if (!days.length) return false
+  for (const dayMap of orderIndex.values()) {
+    for (const d of days) {
+      if ((dayMap?.get(d) || 0) > 0) return true
+    }
+  }
+  return false
+}
+
+function workerZeroOrdersInSourceWindow(orderIndex, workerId, endDateKey) {
+  if (!workerId) return true
+  const dayMap = orderIndex.get(workerId.toUpperCase())
+  for (const dayKey of sourceActiveWindowDateKeys(endDateKey)) {
+    if ((dayMap?.get(dayKey) || 0) > 0) return false
+  }
+  return true
+}
+
+function workerOrderDaysInSourceWindow(orderIndex, workerId, endDateKey) {
+  if (!workerId || !endDateKey) return []
+  const dayMap = orderIndex.get(workerId.toUpperCase())
+  const out = []
+  for (const dayKey of sourceActiveWindowDateKeys(endDateKey)) {
+    if ((dayMap?.get(dayKey) || 0) > 0) out.push(dayKey)
+  }
+  return out
+}
+
+/** Selected range end date (To), capped at yesterday — anchor for last-4-day active window. */
+function resolveSourceActiveWindowEnd(fromKey, toKey) {
+  const yesterday = maxZeroOrderEndDateKey()
+  if (!toKey) return ''
+  let end = toKey
+  if (end > yesterday) end = yesterday
+  return end || ''
+}
+
+export function summarizeSourceMonthRows(rows = [], { windowEnd = '', windowDates = [] } = {}) {
+  const totals = {
+    rowCount: 0,
+    uniqueRiders: 0,
+    uniqueEvRiders: 0,
+    uniqueNonEvRiders: 0,
+    activeRiders: 0,
+    activeEvRiders: 0,
+    activeNonEvRiders: 0,
+    zeroOrderRiders: 0,
+    totalOrders: 0,
+    evOrders: 0,
+    nonEvOrders: 0,
+    earning: 0,
+    evEarning: 0,
+    nonEarning: 0,
+    mfAmount: 0,
+    windowEnd: windowEnd || '',
+    windowDates: windowDates || [],
+  }
+  for (const r of rows || []) {
+    totals.rowCount += 1
+    totals.uniqueRiders += Number(r['Unique Rider Count']) || 0
+    totals.uniqueEvRiders += Number(r['Unique EV rider Count']) || 0
+    totals.uniqueNonEvRiders += Number(r['Unique Non-EV rider Count']) || 0
+    totals.activeRiders += Number(r['Active Rider Count (last 4 days)']) || 0
+    totals.activeEvRiders += Number(r['Active EV Rider Count']) || 0
+    totals.activeNonEvRiders += Number(r['Active Non-EV Rider Count']) || 0
+    totals.zeroOrderRiders += Number(r['0 Order Rider Count (last 4 days)']) || 0
+    totals.totalOrders += Number(r['Total Order']) || 0
+    totals.evOrders += Number(r['EV Order']) || 0
+    totals.nonEvOrders += Number(r['Non-EV Order']) || 0
+    totals.earning += Number(r.Earning) || 0
+    totals.evEarning += Number(r['EV Earning']) || 0
+    totals.nonEarning += Number(r['Non Earning']) || 0
+    totals.mfAmount += Number(r['MF Amount']) || 0
+  }
+  return totals
+}
+
+export function buildFullDataSourceActiveSummary(monthRows = [], { windowEnd = '', windowDates = [] } = {}) {
+  const t = summarizeSourceMonthRows(monthRows, { windowEnd, windowDates })
+  return [
+    { Metric: 'Active window end date (To)', Value: t.windowEnd || '—' },
+    { Metric: 'Active window dates (4 days before To)', Value: (t.windowDates || []).join(', ') || '—' },
+    { Metric: 'Total Active Riders', Value: t.activeRiders },
+    { Metric: 'Total Active EV Riders', Value: t.activeEvRiders },
+    { Metric: 'Total Active Non-EV Riders', Value: t.activeNonEvRiders },
+    { Metric: 'Total 0-order Riders (last 4 days)', Value: t.zeroOrderRiders },
+    {
+      Metric: 'Note',
+      Value:
+        'Active = at least 1 order on any of the 4 calendar days before the To date. Example: To = Sep 01 checks Aug 28–31.',
+    },
+  ]
+}
+
+/** Rider name from EV91 Rider Details API (by EV91 ID / client rider ID), then fleet overall fallback. */
+export function resolveSourceRiderName(ev91RiderDetails, { ev91Id = '', workerCode = '', nameByRider = null } = {}) {
+  if (ev91RiderDetails?.size) {
+    const ids = [
+      (ev91Id || '').toString().trim(),
+      (workerCode || '').toString().trim(),
+      (workerCode || '').toString().trim().toUpperCase(),
+    ].filter(Boolean)
+    const seen = new Set()
+    for (const id of ids) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      const detail = ev91RiderDetails.get(id)
+      const name = (detail?.name || detail?.riderName || '').toString().trim()
+      if (name) return name
+    }
+    for (const alias of riderIdLookupKeys(workerCode)) {
+      if (seen.has(alias)) continue
+      seen.add(alias)
+      const detail = ev91RiderDetails.get(alias)
+      const name = (detail?.name || detail?.riderName || '').toString().trim()
+      if (name) return name
+    }
+  }
+  const worker = (workerCode || '').toString().trim().toUpperCase()
+  return (nameByRider?.get(worker) || '').toString().trim()
+}
+
 /** Latest allowed 0-order window end = yesterday (never today/future). */
 function maxZeroOrderEndDateKey(asOf = new Date()) {
   return format(subDays(startOfDay(asOf), 1), 'yyyy-MM-dd')
@@ -1369,6 +1523,186 @@ function riderVehicleCurrentStatus(riderAssignments, identityKeys, asOfDateKey) 
   return 'Return'
 }
 
+export function filterSourceMonthRows(rows = [], { cityFilter = 'All', clientFilter = 'All' } = {}) {
+  let out = rows || []
+  if (cityFilter && cityFilter !== 'All') {
+    out = out.filter((r) => normalizeSummaryCity(r.City) === cityFilter)
+  }
+  const clientSet = clientFilterActiveSet(clientFilter)
+  if (clientSet) {
+    out = out.filter((r) => clientSet.has(normalizeSummaryClient(r.Client)))
+  }
+  return out
+}
+
+/**
+ * Fast path for Source Wise Data page — month summary only (no daily / rider-wise sheets).
+ * Build once with All filters; narrow with filterSourceMonthRows in the UI.
+ */
+export function buildFullDataSourceMonthRows(
+  orderRows = [],
+  onboardingRows = [],
+  overallRows = [],
+  mappingRows = [],
+  currentRows = [],
+  { fromKey = '', toKey = '', byClient = true } = {}
+) {
+  const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
+  const ev91Index = buildEv91PublicRiderIndex(overallRows, mappingRows)
+  const deployIndexes = buildEv91OverallIntervalIndexes(overallRows)
+  mergeCurrentStatusIntoIndexes(deployIndexes, currentRows)
+  const { riderAssignments } = deployIndexes
+  const orderIndex = buildOrderDeliveredIndex(orderRows)
+  const activeWindowEnd = resolveSourceActiveWindowEnd(fromKey, toKey)
+  const activeWindowValid =
+    Boolean(activeWindowEnd) && sourceActiveWindowHasOrders(orderIndex, activeWindowEnd)
+  const activeWindowDates = activeWindowEnd ? sourceActiveWindowDateKeys(activeWindowEnd) : []
+
+  const monthBySource = new Map()
+  const monthRidersByKey = new Map()
+  const identityCache = new Map()
+
+  for (const row of orderRows || []) {
+    const dateKey = toMetricDateKey(row.date_record)
+    if (!dateKey) continue
+    if (fromKey && dateKey < fromKey) continue
+    if (toKey && dateKey > toKey) continue
+
+    const city = normalizeSummaryCity(row.city)
+    const client = normalizeSummaryClient(row.client)
+    const worker = (row.worker_code || '').toString().trim().toUpperCase()
+    const delivered = Number(row.delivered) || 0
+    const isEv = isEvType(row.type1)
+    const source = canonicalSourceName(
+      lookupOnboardingSource(sourceIndex, { riderIds: [worker, row.worker_code, row.rider_id] }) || 'Unknown'
+    ) || 'Unknown'
+
+    const monthKey = byClient
+      ? `${sourceNameGroupKey(source)}\t${city}\t${client}`
+      : `${sourceNameGroupKey(source)}\t${city}`
+    if (!monthBySource.has(monthKey)) {
+      monthBySource.set(monthKey, {
+        source,
+        city,
+        client: byClient ? client : '',
+        riders: new Set(),
+        evRiders: new Set(),
+        nonEvRiders: new Set(),
+        totalOrder: 0,
+        evOrder: 0,
+        nonEvOrder: 0,
+        earning: 0,
+        evEarning: 0,
+        nonEarning: 0,
+        mfAmount: 0,
+      })
+    }
+    const m = monthBySource.get(monthKey)
+    m.totalOrder += delivered
+    if (isEv) m.evOrder += delivered
+    else m.nonEvOrder += delivered
+
+    if (delivered > 0) {
+      const { earning, mf } = calcOrderEarningAndMf(client, city, delivered)
+      m.earning += earning
+      m.mfAmount += mf
+      if (isEv) m.evEarning += earning
+      else m.nonEarning += earning
+    }
+
+    if (delivered > 0 && worker) {
+      m.riders.add(worker)
+      if (isEv) m.evRiders.add(worker)
+      else m.nonEvRiders.add(worker)
+      if (!monthRidersByKey.has(monthKey)) monthRidersByKey.set(monthKey, new Set())
+      monthRidersByKey.get(monthKey).add(worker)
+    }
+  }
+
+  const activeCountsByMonthKey = new Map()
+  if (activeWindowValid && activeWindowEnd) {
+    for (const [monthKey, riders] of monthRidersByKey) {
+      const counts = { activeTotal: 0, activeEv: 0, activeNonEv: 0, zeroOrder: 0 }
+      for (const worker of riders) {
+        if (workerZeroOrdersInSourceWindow(orderIndex, worker, activeWindowEnd)) {
+          counts.zeroOrder += 1
+          continue
+        }
+        counts.activeTotal += 1
+        const orderDaysInWindow = workerOrderDaysInSourceWindow(orderIndex, worker, activeWindowEnd)
+        const lastActiveDay = orderDaysInWindow.sort().pop()
+        let riderIsEv = false
+        if (lastActiveDay) {
+          let identityKeys = identityCache.get(worker)
+          if (!identityKeys) {
+            const mappedEv91 = lookupEv91PublicRiderId(ev91Index, worker) || ''
+            identityKeys = riderDeployIdentityKeys(worker, mappedEv91)
+            identityCache.set(worker, identityKeys)
+          }
+          riderIsEv = isRiderEvOnDate(riderAssignments, identityKeys, lastActiveDay, '')
+        }
+        if (riderIsEv) counts.activeEv += 1
+        else counts.activeNonEv += 1
+      }
+      activeCountsByMonthKey.set(monthKey, counts)
+    }
+  }
+
+  const month = [...monthBySource.values()]
+    .map((m) => {
+      const monthKey = byClient
+        ? `${sourceNameGroupKey(m.source)}\t${m.city}\t${m.client}`
+        : `${sourceNameGroupKey(m.source)}\t${m.city}`
+      const active = activeCountsByMonthKey.get(monthKey) || {
+        activeTotal: 0,
+        activeEv: 0,
+        activeNonEv: 0,
+        zeroOrder: 0,
+      }
+      const row = {
+        Source: m.source,
+        City: m.city || '',
+        'Unique Rider Count': m.riders.size,
+        'Unique EV rider Count': m.evRiders.size,
+        'Unique Non-EV rider Count': m.nonEvRiders.size,
+        'Active Rider Count (last 4 days)': active.activeTotal,
+        'Active EV Rider Count': active.activeEv,
+        'Active Non-EV Rider Count': active.activeNonEv,
+        '0 Order Rider Count (last 4 days)': active.zeroOrder,
+        'Active window end': activeWindowValid ? activeWindowEnd : '',
+        'Active window dates': activeWindowValid ? activeWindowDates.join(', ') : '',
+        'Total Order': m.totalOrder,
+        'EV Order': m.evOrder,
+        'Non-EV Order': m.nonEvOrder,
+        Earning: Math.round(m.earning * 100) / 100,
+        'EV Earning': Math.round(m.evEarning * 100) / 100,
+        'Non Earning': Math.round(m.nonEarning * 100) / 100,
+        'MF Amount': Math.round(m.mfAmount * 100) / 100,
+      }
+      if (byClient) row.Client = m.client || ''
+      return row
+    })
+    .sort(
+      (a, b) =>
+        String(a.City).localeCompare(String(b.City)) ||
+        (byClient ? String(a.Client || '').localeCompare(String(b.Client || '')) : 0) ||
+        b['Total Order'] - a['Total Order'] ||
+        String(a.Source).localeCompare(String(b.Source))
+    )
+
+  const activeSummary = buildFullDataSourceActiveSummary(month, {
+    windowEnd: activeWindowValid ? activeWindowEnd : '',
+    windowDates: activeWindowValid ? activeWindowDates : [],
+  })
+
+  return {
+    month,
+    activeSummary,
+    windowEnd: activeWindowValid ? activeWindowEnd : '',
+    windowDates: activeWindowValid ? activeWindowDates : [],
+  }
+}
+
 /**
  * Source-wise daily Supply from order upload.
  * Source name comes from rider_onboarding.source_name (lookup by worker code).
@@ -1381,7 +1715,7 @@ export function buildFullDataSourceWiseDailyRows(
   mappingRows = [],
   allOrderRows = [],
   currentRows = [],
-  { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All' } = {}
+  { fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All', ev91RiderDetails = null } = {}
 ) {
   const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
   const ev91Index = buildEv91PublicRiderIndex(overallRows, mappingRows)
@@ -1390,6 +1724,11 @@ export function buildFullDataSourceWiseDailyRows(
   const deployIndexes = buildEv91OverallIntervalIndexes(overallRows)
   mergeCurrentStatusIntoIndexes(deployIndexes, currentRows)
   const { riderAssignments } = deployIndexes
+  const orderIndex = buildOrderDeliveredIndex(orderRows)
+  const activeWindowEnd = resolveSourceActiveWindowEnd(fromKey, toKey)
+  const activeWindowValid =
+    Boolean(activeWindowEnd) && sourceActiveWindowHasOrders(orderIndex, activeWindowEnd)
+  const activeWindowDates = activeWindowEnd ? sourceActiveWindowDateKeys(activeWindowEnd) : []
 
   const nameByRider = new Map()
   for (const row of overallRows || []) {
@@ -1564,22 +1903,71 @@ export function buildFullDataSourceWiseDailyRows(
     m.mfAmount += b.mfAmount
   }
 
+  const activeCountsByMonthKey = new Map()
+  if (activeWindowValid && activeWindowEnd) {
+    for (const r of riderBuckets.values()) {
+      const monthKey = `${sourceNameGroupKey(r.source)}\t${r.city}\t${r.client}`
+      if (!activeCountsByMonthKey.has(monthKey)) {
+        activeCountsByMonthKey.set(monthKey, {
+          activeTotal: 0,
+          activeEv: 0,
+          activeNonEv: 0,
+          zeroOrder: 0,
+        })
+      }
+      const counts = activeCountsByMonthKey.get(monthKey)
+      if (workerZeroOrdersInSourceWindow(orderIndex, r.worker, activeWindowEnd)) {
+        counts.zeroOrder += 1
+        continue
+      }
+      counts.activeTotal += 1
+      const orderDaysInWindow = workerOrderDaysInSourceWindow(orderIndex, r.worker, activeWindowEnd)
+      const lastActiveDay = orderDaysInWindow.sort().pop()
+      let riderIsEv = false
+      if (lastActiveDay && r.dayEvFlags?.has(lastActiveDay)) {
+        riderIsEv = r.dayEvFlags.get(lastActiveDay)
+      } else if (lastActiveDay) {
+        const mappedEv91 = lookupEv91PublicRiderId(ev91Index, r.worker) || ''
+        const identityKeys =
+          identityCache.get(r.worker) || riderDeployIdentityKeys(r.worker, mappedEv91)
+        riderIsEv = isRiderEvOnDate(riderAssignments, identityKeys, lastActiveDay, '')
+      }
+      if (riderIsEv) counts.activeEv += 1
+      else counts.activeNonEv += 1
+    }
+  }
+
   const month = [...monthBySource.values()]
-    .map((m) => ({
-      Source: m.source,
-      City: m.city || '',
-      Client: m.client || '',
-      'Unique Rider Count': m.riders.size,
-      'Unique EV rider Count': m.evRiders.size,
-      'Unique Non-EV rider Count': m.nonEvRiders.size,
-      'Total Order': m.totalOrder,
-      'EV Order': m.evOrder,
-      'Non-EV Order': m.nonEvOrder,
-      Earning: Math.round(m.earning * 100) / 100,
-      'EV Earning': Math.round(m.evEarning * 100) / 100,
-      'Non Earning': Math.round(m.nonEarning * 100) / 100,
-      'MF Amount': Math.round(m.mfAmount * 100) / 100,
-    }))
+    .map((m) => {
+      const monthKey = `${sourceNameGroupKey(m.source)}\t${m.city}\t${m.client}`
+      const active = activeCountsByMonthKey.get(monthKey) || {
+        activeTotal: 0,
+        activeEv: 0,
+        activeNonEv: 0,
+        zeroOrder: 0,
+      }
+      return {
+        Source: m.source,
+        City: m.city || '',
+        Client: m.client || '',
+        'Unique Rider Count': m.riders.size,
+        'Unique EV rider Count': m.evRiders.size,
+        'Unique Non-EV rider Count': m.nonEvRiders.size,
+        'Active Rider Count (last 4 days)': active.activeTotal,
+        'Active EV Rider Count': active.activeEv,
+        'Active Non-EV Rider Count': active.activeNonEv,
+        '0 Order Rider Count (last 4 days)': active.zeroOrder,
+        'Active window end': activeWindowValid ? activeWindowEnd : '',
+        'Active window dates': activeWindowValid ? activeWindowDates.join(', ') : '',
+        'Total Order': m.totalOrder,
+        'EV Order': m.evOrder,
+        'Non-EV Order': m.nonEvOrder,
+        Earning: Math.round(m.earning * 100) / 100,
+        'EV Earning': Math.round(m.evEarning * 100) / 100,
+        'Non Earning': Math.round(m.nonEarning * 100) / 100,
+        'MF Amount': Math.round(m.mfAmount * 100) / 100,
+      }
+    })
     .sort(
       (a, b) =>
         String(a.City).localeCompare(String(b.City)) ||
@@ -1615,14 +2003,26 @@ export function buildFullDataSourceWiseDailyRows(
         todayDateKey()
       )
 
+      const zeroOrderLast4 =
+        activeWindowValid && activeWindowEnd
+          ? workerZeroOrdersInSourceWindow(orderIndex, r.worker, activeWindowEnd)
+          : null
+      const activeLast4 = zeroOrderLast4 === null ? null : !zeroOrderLast4
+
       return {
         'Rider ID': r.worker,
         'EV91 ID': mappedEv91,
-        'Rider Name': nameByRider.get(r.worker) || '',
+        'Rider Name': resolveSourceRiderName(ev91RiderDetails, {
+          ev91Id: mappedEv91,
+          workerCode: r.worker,
+          nameByRider,
+        }),
         Source: r.source,
         City: r.city || '',
         Client: r.client || '',
         'EV / Non-EV': lastDayEv ? 'EV' : 'Non-EV',
+        'Active (last 4 days)': activeLast4 === null ? '' : activeLast4 ? 'Yes' : 'No',
+        '0 Order (last 4 days)': zeroOrderLast4 === null ? '' : zeroOrderLast4 ? 'Yes' : 'No',
         'V current status': vCurrentStatus,
         'Work start date': workStartDate,
         'Last work date': lastWorkDate,
@@ -1646,5 +2046,10 @@ export function buildFullDataSourceWiseDailyRows(
         String(a['Rider ID']).localeCompare(String(b['Rider ID']))
     )
 
-  return { daily, month, riders }
+  const activeSummary = buildFullDataSourceActiveSummary(month, {
+    windowEnd: activeWindowValid ? activeWindowEnd : '',
+    windowDates: activeWindowValid ? activeWindowDates : [],
+  })
+
+  return { daily, month, riders, activeSummary }
 }

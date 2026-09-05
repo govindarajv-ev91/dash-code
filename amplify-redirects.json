@@ -6,6 +6,12 @@
     "condition": null
   },
   {
+    "source": "/api/rental-pending",
+    "target": "https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending",
+    "status": "200",
+    "condition": null
+  },
+  {
     "source": "</^[^.]+$|\\.(?!(css|gif|ico|jpg|js|png|txt|svg|woff|woff2|ttf|map|json|webp)$)([^.]+$)/>",
     "target": "/index.html",
     "status": "200",

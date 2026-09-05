@@ -1,22 +1,19 @@
 /**
  * Public transfer API for rental pending (and related amounts) by EV91 Rider ID.
  *
- * Hosting: this dashboard is on AWS Amplify (not Vercel):
- *   https://main.d2y6lleakorn3s.amplifyapp.com/
- *
- * Production transfer (Amplify is static — use Supabase RPC):
- *   POST https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer
- *   Body: { "p_ev91_rider_id": "12345", "p_api_key": "ev91-rental-pending-2026", "p_history": false }
- *   Run sql/create_rental_pending_transfer_rpc.sql once in Supabase.
- *
- * Local Vite (browser-friendly — include api_key in the URL):
+ * Local:
  *   http://localhost:5173/api/rental-pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
  *
- * Or header:
- *   x-api-key: ev91-rental-pending-2026
+ * Production (same path on Amplify — after redirects deploy + SQL):
+ *   https://main.d2y6lleakorn3s.amplifyapp.com/api/rental-pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026&apikey=YOUR_SUPABASE_ANON_KEY
  *
- * Auth: RENTAL_PENDING_API_KEY (default: ev91-rental-pending-2026).
- * Optional: &history=1 returns all weeks for that EV91 ID.
+ * Production direct (works once SQL is applied; same query params):
+ *   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
+ *   Header: apikey: YOUR_SUPABASE_ANON_KEY
+ *   Header: Authorization: Bearer YOUR_SUPABASE_ANON_KEY
+ *
+ * Run sql/create_rental_pending_transfer_rpc.sql in Supabase (includes localhost-style alias).
+ * Optional: &history=1
  */
 import { getSupabase } from './lib/supabaseServer.js'
 

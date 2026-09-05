@@ -20,6 +20,7 @@ const VehicleInventory = lazy(() => import('./VehicleInventory'))
 const FleetDataViewer = lazy(() => import('./FleetDataViewer'))
 const RiderPerformance = lazy(() => import('./RiderPerformance'))
 const RiderPaymentUpload = lazy(() => import('./RiderPaymentUpload'))
+const DeployedRentalPending = lazy(() => import('./DeployedRentalPending'))
 const OrderUpload = lazy(() => import('./OrderUpload'))
 const OrderHistory = lazy(() => import('./OrderHistory'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
@@ -50,7 +51,7 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard, Leaf } from 'lucide-react'
+import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard, Leaf, CircleDollarSign } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
@@ -578,6 +579,13 @@ function App() {
             <Wallet size={20} />
             Payment Upload
           </button>
+          <button
+            className={`nav-item nav-item-green ${activePage === 'deployedrental' ? 'active' : ''}`}
+            onClick={() => setActivePage('deployedrental')}
+          >
+            <CircleDollarSign size={20} />
+            Deployed Rental
+          </button>
           <button 
             className={`nav-item ${activePage === 'orderupload' ? 'active' : ''}`}
             onClick={() => setActivePage('orderupload')}
@@ -845,6 +853,8 @@ function App() {
           />
         ) : activePage === 'paymentupload' ? (
           <RiderPaymentUpload />
+        ) : activePage === 'deployedrental' ? (
+          <DeployedRentalPending />
         ) : activePage === 'orderupload' ? (
           <OrderUpload onOrdersSaved={refreshOrdersAfterUpload} />
         ) : activePage === 'orderhistory' ? (

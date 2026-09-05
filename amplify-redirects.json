@@ -7,7 +7,7 @@
   },
   {
     "source": "/api/rental-pending",
-    "target": "https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending",
+    "target": "https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rental-pending",
     "status": "200",
     "condition": null
   },

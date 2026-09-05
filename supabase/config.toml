@@ -1,0 +1,5 @@
+# Supabase local/CLI config for Edge Functions
+project_id = "arnxvnkednpzyzyfculx"
+
+[functions.rental-pending]
+verify_jwt = false

@@ -4,16 +4,16 @@
  * Local:
  *   http://localhost:5173/api/rental-pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
  *
- * Production (same path on Amplify — after redirects deploy + SQL):
- *   https://main.d2y6lleakorn3s.amplifyapp.com/api/rental-pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026&apikey=YOUR_SUPABASE_ANON_KEY
+ * Production browser GET (Supabase REST always needs `apikey` as well as p_api_key):
+ *   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer?p_ev91_rider_id=CHE-26-R001580&p_api_key=ev91-rental-pending-2026&apikey=sb_publishable_o04xyDV5z09-dAfxP6awvA_FIdop2lH
  *
- * Production direct (works once SQL is applied; same query params):
- *   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
- *   Header: apikey: YOUR_SUPABASE_ANON_KEY
- *   Header: Authorization: Bearer YOUR_SUPABASE_ANON_KEY
+ * Prefer POST (more reliable):
+ *   POST https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer
+ *   Headers: apikey + Authorization Bearer (anon key), Content-Type: application/json
+ *   Body: {"p_ev91_rider_id":"...","p_api_key":"ev91-rental-pending-2026","p_history":false}
  *
- * Run sql/create_rental_pending_transfer_rpc.sql in Supabase (includes localhost-style alias).
- * Optional: &history=1
+ * Run sql/create_rental_pending_transfer_rpc.sql in Supabase after changes.
+ * Optional: &history=1 / "p_history": true
  */
 import { getSupabase } from './lib/supabaseServer.js'
 

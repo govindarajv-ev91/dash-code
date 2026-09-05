@@ -51,7 +51,10 @@ Deno.serve(async (req) => {
   const url = new URL(req.url)
   const expected = (Deno.env.get('RENTAL_PENDING_API_KEY') || DEFAULT_API_KEY).trim()
   const provided = extractApiKey(req, url)
-  if (!provided || provided !== expected) {
+  // Also accept Supabase-style p_api_key (same as RPC query)
+  const providedOrP =
+    provided || (url.searchParams.get('p_api_key') || '').trim()
+  if (!providedOrP || providedOrP !== expected) {
     return json(401, {
       success: false,
       message: 'Unauthorized. Provide a valid x-api-key.',
@@ -59,7 +62,12 @@ Deno.serve(async (req) => {
     })
   }
 
-  const ev91 = (url.searchParams.get('ev91_rider_id') || url.searchParams.get('ev91RiderId') || '').trim()
+  const ev91 = (
+    url.searchParams.get('ev91_rider_id') ||
+    url.searchParams.get('ev91RiderId') ||
+    url.searchParams.get('p_ev91_rider_id') ||
+    ''
+  ).trim()
   if (!ev91) {
     return json(400, {
       success: false,
@@ -67,7 +75,9 @@ Deno.serve(async (req) => {
     })
   }
 
-  const historyRaw = (url.searchParams.get('history') || '').trim().toLowerCase()
+  const historyRaw = (url.searchParams.get('history') || url.searchParams.get('p_history') || '')
+    .trim()
+    .toLowerCase()
   const history = historyRaw === '1' || historyRaw === 'true' || historyRaw === 'yes'
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL') || Deno.env.get('VITE_SUPABASE_URL')

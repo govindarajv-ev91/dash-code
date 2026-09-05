@@ -11,6 +11,7 @@ import {
 } from './paymentMonthList'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { parseFleetDate } from './fleetDeployReturnExport.js'
+import { clientLookupKey } from './clientSummaryClients'
 
 export const RENTAL_PENDING_TABLE = 'rental_pending_data'
 export const RENTAL_PENDING_COLUMNS = '*'
@@ -246,4 +247,54 @@ export function lookupRentalPendingAmount(index, riderId) {
   }
 
   return null
+}
+
+/** True if any status field indicates Deployed. */
+export function isDeployedRentalRow(row) {
+  const statuses = [
+    row?.db_current_status,
+    row?.vehicle_status,
+    row?.current_status,
+  ]
+  return statuses.some((s) => /deploy/i.test(String(s ?? '').trim()))
+}
+
+export function filterDeployedRentalPendingRows(rows = []) {
+  return (rows || []).filter(isDeployedRentalRow)
+}
+
+export function summarizeDeployedRentalPending(rows = []) {
+  let riders = 0
+  let totalPending = 0
+  let positivePending = 0
+  let totalRent = 0
+  let totalSd = 0
+  const cities = new Set()
+  const clients = new Set()
+
+  for (const row of rows || []) {
+    riders += 1
+    const pending = Number(row.actual_pending_for_week_after_sd)
+    if (Number.isFinite(pending)) {
+      totalPending += pending
+      if (pending > 0) positivePending += pending
+    }
+    const rent = Number(row.total_rent_amount)
+    if (Number.isFinite(rent)) totalRent += rent
+    const sd = Number(row.total_sd_amount)
+    if (Number.isFinite(sd)) totalSd += sd
+    if (row.city) cities.add(String(row.city).trim())
+    const clientKey = clientLookupKey(row.client_name)
+    if (clientKey) clients.add(clientKey)
+  }
+
+  return {
+    riders,
+    totalPending,
+    positivePending,
+    totalRent,
+    totalSd,
+    cityCount: cities.size,
+    clientCount: clients.size,
+  }
 }

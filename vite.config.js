@@ -116,9 +116,61 @@ function ev91MisApiPlugin() {
   }
 }
 
+function rentalPendingApiPlugin() {
+  return {
+    name: 'rental-pending-api',
+    configureServer(server) {
+      server.middlewares.use('/api/rental-pending', async (req, res, next) => {
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.setHeader('Access-Control-Allow-Origin', '*')
+          res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+          res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type, x-api-key')
+          res.end()
+          return
+        }
+        if (req.method !== 'GET') return next()
+
+        const env = loadEnv(server.config.mode, process.cwd(), '')
+        process.env.VITE_SUPABASE_URL = env.VITE_SUPABASE_URL || process.env.VITE_SUPABASE_URL
+        process.env.VITE_SUPABASE_ANON_KEY =
+          env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
+        process.env.RENTAL_PENDING_API_KEY =
+          env.RENTAL_PENDING_API_KEY || process.env.RENTAL_PENDING_API_KEY
+
+        const url = new URL(req.url || '/', 'http://localhost')
+        const query = Object.fromEntries(url.searchParams.entries())
+        const mockReq = {
+          method: 'GET',
+          query,
+          url: req.url,
+          headers: {
+            'x-api-key': req.headers['x-api-key'] || '',
+          },
+        }
+        const mockRes = createMockRes(res)
+
+        try {
+          const { default: handler } = await import('./api/rental-pending.js')
+          await handler(mockReq, mockRes)
+        } catch (err) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(
+            JSON.stringify({
+              success: false,
+              message: err?.message || 'API error',
+            })
+          )
+        }
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), riderPerformanceApiPlugin(), ev91MisApiPlugin()],
+  plugins: [react(), riderPerformanceApiPlugin(), ev91MisApiPlugin(), rentalPendingApiPlugin()],
   server: {
     // Always use 5173. If an old npm run dev is still running, fail instead of
     // silently opening 5174 (different origin = empty cache / "no data").

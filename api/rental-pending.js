@@ -9,12 +9,14 @@
  *   Body: { "p_ev91_rider_id": "12345", "p_api_key": "ev91-rental-pending-2026", "p_history": false }
  *   Run sql/create_rental_pending_transfer_rpc.sql once in Supabase.
  *
- * Local Vite:
- *   GET /api/rental-pending?ev91_rider_id=12345
- *   Header: x-api-key: ev91-rental-pending-2026
+ * Local Vite (browser-friendly — include api_key in the URL):
+ *   http://localhost:5173/api/rental-pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
+ *
+ * Or header:
+ *   x-api-key: ev91-rental-pending-2026
  *
  * Auth: RENTAL_PENDING_API_KEY (default: ev91-rental-pending-2026).
- * Optional: ?history=1 returns all weeks for that EV91 ID.
+ * Optional: &history=1 returns all weeks for that EV91 ID.
  */
 import { getSupabase } from './lib/supabaseServer.js'
 
@@ -29,6 +31,8 @@ function getExpectedApiKey() {
     process.env.VITE_RENTAL_PENDING_API_KEY ||
     DEFAULT_API_KEY
   )
+    .toString()
+    .trim()
 }
 
 function getQuery(req) {
@@ -36,7 +40,8 @@ function getQuery(req) {
     return req.query
   }
   try {
-    const rawUrl = req?.url || '/'
+    // Vite/Connect mount strips the path; prefer originalUrl so ?api_key= stays intact
+    const rawUrl = req?.originalUrl || req?.url || '/'
     const url = new URL(rawUrl, 'http://localhost')
     return Object.fromEntries(url.searchParams.entries())
   } catch {
@@ -56,9 +61,29 @@ function getHeader(req, name) {
 function extractApiKey(req, query) {
   const fromHeader = getHeader(req, 'x-api-key')
   if (fromHeader && String(fromHeader).trim()) return String(fromHeader).trim()
-  const fromQuery = query?.api_key || query?.apiKey || query?.['x-api-key']
+
+  const auth = getHeader(req, 'authorization')
+  if (auth && /^Bearer\s+/i.test(auth)) {
+    return auth.replace(/^Bearer\s+/i, '').trim()
+  }
+
+  const fromQuery =
+    query?.api_key || query?.apiKey || query?.['x-api-key'] || query?.key
   if (fromQuery != null && String(fromQuery).trim()) return String(fromQuery).trim()
   return ''
+}
+
+function unauthorizedBody() {
+  return {
+    success: false,
+    message: 'Unauthorized. Provide a valid x-api-key.',
+    hint: `Browser test: /api/rental-pending?ev91_rider_id=YOUR_ID&api_key=${DEFAULT_API_KEY}`,
+  }
+}
+
+function isAuthorized(req, query) {
+  const provided = extractApiKey(req, query)
+  return Boolean(provided) && provided === getExpectedApiKey()
 }
 
 function sendNode(res, status, body) {
@@ -294,12 +319,8 @@ export default async function handler(req, res) {
     }
 
     const query = Object.fromEntries(new URL(request.url).searchParams.entries())
-    const provided = extractApiKey(request, query)
-    if (!provided || provided !== getExpectedApiKey()) {
-      return Response.json(
-        { success: false, message: 'Unauthorized. Provide a valid x-api-key.' },
-        { status: 401, headers: corsHeaders() }
-      )
+    if (!isAuthorized(request, query)) {
+      return Response.json(unauthorizedBody(), { status: 401, headers: corsHeaders() })
     }
 
     try {
@@ -327,12 +348,8 @@ export default async function handler(req, res) {
   }
 
   const query = getQuery(req)
-  const provided = extractApiKey(req, query)
-  if (!provided || provided !== getExpectedApiKey()) {
-    return sendNode(res, 401, {
-      success: false,
-      message: 'Unauthorized. Provide a valid x-api-key.',
-    })
+  if (!isAuthorized(req, query)) {
+    return sendNode(res, 401, unauthorizedBody())
   }
 
   try {

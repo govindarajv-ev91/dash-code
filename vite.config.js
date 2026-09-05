@@ -135,17 +135,33 @@ function rentalPendingApiPlugin() {
         process.env.VITE_SUPABASE_URL = env.VITE_SUPABASE_URL || process.env.VITE_SUPABASE_URL
         process.env.VITE_SUPABASE_ANON_KEY =
           env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
-        process.env.RENTAL_PENDING_API_KEY =
-          env.RENTAL_PENDING_API_KEY || process.env.RENTAL_PENDING_API_KEY
+        process.env.RENTAL_PENDING_API_KEY = (
+          env.RENTAL_PENDING_API_KEY ||
+          process.env.RENTAL_PENDING_API_KEY ||
+          'ev91-rental-pending-2026'
+        ).trim()
 
-        const url = new URL(req.url || '/', 'http://localhost')
+        // Mount strips path; keep full URL so ?api_key= / ?ev91_rider_id= parse correctly
+        const rawUrl = req.originalUrl || req.url || '/'
+        const url = new URL(rawUrl, 'http://localhost')
         const query = Object.fromEntries(url.searchParams.entries())
+        const headerKey =
+          req.headers['x-api-key'] ||
+          (typeof req.headers.authorization === 'string' &&
+          /^Bearer\s+/i.test(req.headers.authorization)
+            ? req.headers.authorization.replace(/^Bearer\s+/i, '')
+            : '') ||
+          query.api_key ||
+          query.apiKey ||
+          query.key ||
+          ''
         const mockReq = {
           method: 'GET',
           query,
-          url: req.url,
+          url: rawUrl,
+          originalUrl: rawUrl,
           headers: {
-            'x-api-key': req.headers['x-api-key'] || '',
+            'x-api-key': String(headerKey).trim(),
           },
         }
         const mockRes = createMockRes(res)

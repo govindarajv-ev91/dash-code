@@ -792,12 +792,14 @@ export default function RiderPaymentUpload() {
         preview={rentalPreview}
         previewColumns={[
           { key: 'rider_id', label: 'Rider ID' },
+          { key: 'ev91_rider_id', label: 'EV91 Rider ID' },
           { key: 'rider_name', label: 'Rider Name' },
           { key: 'client_name', label: 'Client' },
           { key: 'city', label: 'City' },
+          { key: 'db_current_status', label: 'DB Status' },
           { key: 'vehicle_number', label: 'Vehicle' },
           { key: 'week_end_date', label: 'Week End' },
-          { key: 'actual_pending_for_week_after_sd', label: 'Pending After SD' },
+          { key: 'actual_pending_for_week_after_sd', label: 'Actual Pending' },
           { key: 'month', label: 'Month' },
         ]}
         message={rentalMessage}

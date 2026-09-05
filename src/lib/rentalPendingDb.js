@@ -160,7 +160,7 @@ export async function loadRentalPendingSummary() {
 }
 
 export function getRentalPendingDbSetupMessage() {
-  return 'Database table missing. Run sql/create_rider_payment_tables.sql in Supabase SQL Editor, then upload again.'
+  return 'Database table missing or outdated. Run sql/create_rider_payment_tables.sql (or sql/alter_rental_pending_new_format.sql) in Supabase SQL Editor, then upload again.'
 }
 
 function isNumericWorkerCode(raw) {
@@ -215,13 +215,18 @@ export function buildRentalPendingByRiderIndex(rentalRows) {
   const byAlias = new Map()
 
   for (const row of rentalRows || []) {
-    const riderId = (row?.rider_id ?? '').toString().trim()
-    if (!riderId) continue
+    const ids = [
+      (row?.rider_id ?? '').toString().trim(),
+      (row?.ev91_rider_id ?? '').toString().trim(),
+    ].filter(Boolean)
+    if (!ids.length) continue
 
-    for (const alias of rentalRiderAliases(riderId)) {
-      const prev = byAlias.get(alias)
-      if (!prev || preferRentalRow(row, prev)) {
-        byAlias.set(alias, row)
+    for (const riderId of ids) {
+      for (const alias of rentalRiderAliases(riderId)) {
+        const prev = byAlias.get(alias)
+        if (!prev || preferRentalRow(row, prev)) {
+          byAlias.set(alias, row)
+        }
       }
     }
   }

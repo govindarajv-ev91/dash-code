@@ -179,11 +179,13 @@ function deriveMonthLabel(dateText) {
 
 const RENTAL_PENDING_FIELD_ALIASES = {
   deployed_date: ['deployed_date', 'deployeddate'],
+  db_current_status: ['db_current_status', 'dbcurrentstatus', 'db_current'],
   vehicle_status: ['vehicle_status', 'vehiclestatus'],
   current_status: ['current_status', 'currentstatus'],
   client_name: ['client', 'client_name', 'clientname'],
   contact_no: ['contact_no', 'contactno', 'contact_number'],
   rider_name: ['rider_name', 'ridername'],
+  ev91_rider_id: ['ev91_rider_id', 'ev91riderid', 'ev91_id', 'public_rider_id', 'publicriderid'],
   rider_id: ['rider_id', 'riderid'],
   vehicle_number: ['vehicle_number', 'vehiclenumber', 'vehicle_no'],
   city: ['city'],
@@ -193,19 +195,33 @@ const RENTAL_PENDING_FIELD_ALIASES = {
   area_location: ['area_location', 'arealocation'],
   rent_per_week: ['rent_week', 'rent_per_week', 'rentperweek'],
   source_name: ['source_name', 'sourcename'],
-  deficit_amount_week_22: ['deficit_amount_week_22', 'deficitamountweek22'],
-  wk_23_ev_rent: ['wk_23_ev_rent', 'wk23evrent'],
+  // Week number in Excel header changes (Week 22 / 34 / …) — also matched dynamically below
+  deficit_amount_week_22: ['deficit_amount_week_22', 'deficitamountweek22', 'deficit_amount'],
+  wk_23_ev_rent: ['wk_23_ev_rent', 'wk23evrent', 'wk_ev_rent', 'ev_rent'],
   total_rent_amount: ['total_rent_amount', 'totalrentamount'],
-  payout_deduction_week_23: ['payout_deduction_week_23', 'payoutdeductionweek23'],
+  payout_deduction_week_23: [
+    'payout_deduction_week_23',
+    'payoutdeductionweek23',
+    'payout_deductions',
+    'payoutdeductions',
+    'payout_deduction',
+  ],
   total_sd_amount: ['total_sd_amount', 'totalsdamount'],
   pending_amount: ['pending_amount', 'pendingamount'],
-  manual_payment_collection: ['manual_payment_collection', 'manualpaymentcollection'],
+  manual_payment_collection: [
+    'manual_payment_collection',
+    'manualpaymentcollection',
+    'manual_collection',
+    'manualcollection',
+  ],
   actual_pending_for_week_after_sd: [
     'actual_pending_for_week_after_sd',
     'actual_pending_for_week_after_sd_1',
     'actual_pending_for_week_after_sd_2',
     'actual_pending_for_week_after_sd_3',
     'actualpendingforweekaftersd',
+    'actual_pending_for_week',
+    'actualpendingforweek',
   ],
   payment_collected_date: ['payment_collected_date', 'paymentcollecteddate'],
   inactive_days: ['in_active_days', 'inactive_days', 'inactivedays'],
@@ -230,18 +246,43 @@ const RENTAL_PENDING_NUMERIC = new Set([
   'current_week_orders',
 ])
 
-/** Match "Actual pending for Week After SD" including duplicate / multiline Excel headers. */
-function isActualPendingAfterSdHeader(header) {
-  const n = normalizeHeader(header)
-  if (!n) return false
-  if (n === 'pending_amount' || n === 'manual_payment_collection') return false
-  return n.includes('actual') && n.includes('pending') && n.includes('after') && n.includes('sd')
+/**
+ * Map Excel headers whose week number changes each file
+ * (Deficit Amount Week 34, WK 35 EV Rent, Payout Deduction Week 23, …).
+ */
+function resolveRentalFlexibleHeaderField(normalizedHeader) {
+  const n = (normalizedHeader || '').toString()
+  if (!n) return null
+  if (/^deficit_amount(_week)?(_\d+)?$/.test(n) || /^deficitamountweek\d+$/.test(n)) {
+    return 'deficit_amount_week_22'
+  }
+  if (/^wk_?\d+_?ev_?rent$/.test(n) || /^wk\d+evrent$/.test(n)) {
+    return 'wk_23_ev_rent'
+  }
+  if (/^payout_deduction(s)?(_week)?(_\d+)?$/.test(n) || /^payoutdeduction(s)?(week\d+)?$/.test(n)) {
+    return 'payout_deduction_week_23'
+  }
+  return null
 }
 
-function extractActualPendingAfterSd(rawRow) {
+/** Match "Actual pending for Week" / "Actual pending for Week After SD" (incl. multiline headers). */
+function isActualPendingWeekHeader(header) {
+  const n = normalizeHeader(header)
+  if (!n) return false
+  if (
+    n === 'pending_amount' ||
+    n === 'manual_payment_collection' ||
+    n === 'manual_collection'
+  ) {
+    return false
+  }
+  return n.includes('actual') && n.includes('pending') && n.includes('week')
+}
+
+function extractActualPendingWeek(rawRow) {
   let lastValue = null
   for (const [key, value] of Object.entries(rawRow || {})) {
-    if (!isActualPendingAfterSdHeader(key)) continue
+    if (!isActualPendingWeekHeader(key)) continue
     if (value === null || value === undefined || String(value).trim() === '') continue
     const n = toNumber(value)
     if (n !== null) lastValue = n
@@ -282,16 +323,16 @@ function parseRentalPendingSheet(sheet) {
   const columnFields = headers.map((header) => {
     const n = normalizeHeader(header)
     if (!n) return null
-    if (isActualPendingAfterSdHeader(header)) return null
+    if (isActualPendingWeekHeader(header)) return null
     for (const [field, aliases] of Object.entries(RENTAL_PENDING_FIELD_ALIASES)) {
       if (field === 'actual_pending_for_week_after_sd') continue
       if (aliases.includes(n)) return field
     }
-    return null
+    return resolveRentalFlexibleHeaderField(n)
   })
 
   const actualPendingColIndexes = headers
-    .map((header, idx) => (isActualPendingAfterSdHeader(header) ? idx : -1))
+    .map((header, idx) => (isActualPendingWeekHeader(header) ? idx : -1))
     .filter((idx) => idx >= 0)
 
   const rows = []
@@ -342,15 +383,27 @@ function parseRentalPendingSheet(sheet) {
 function mapRentalPendingRow(row) {
   const mapped = mapRow(row, RENTAL_PENDING_FIELD_ALIASES, RENTAL_PENDING_NUMERIC)
 
-  const pendingFromRaw = extractActualPendingAfterSd(row)
+  // Flexible week-number headers from sheet_to_json keys
+  const normalized = normalizeRowKeys(row)
+  for (const [key, value] of Object.entries(normalized)) {
+    const field = resolveRentalFlexibleHeaderField(key)
+    if (!field) continue
+    if (value === null || value === undefined || String(value).trim() === '') continue
+    if (mapped[field] != null && mapped[field] !== '') continue
+    assignRentalMappedField(mapped, field, value)
+  }
+
+  const pendingFromRaw = extractActualPendingWeek(row)
   if (pendingFromRaw !== null) {
     mapped.actual_pending_for_week_after_sd = pendingFromRaw
   } else {
-    const pendingRaw = pickField(normalizeRowKeys(row), [
+    const pendingRaw = pickField(normalized, [
       'actual_pending_for_week_after_sd',
       'actual_pending_for_week_after_sd_1',
       'actual_pending_for_week_after_sd_2',
       'actual_pending_for_week_after_sd_3',
+      'actual_pending_for_week',
+      'actualpendingforweek',
     ])
     if (pendingRaw !== '') mapped.actual_pending_for_week_after_sd = toNumber(pendingRaw)
   }
@@ -396,12 +449,34 @@ export const MANUAL_COLLATION_HEADER_LABELS = [
 ]
 
 export const RENTAL_PENDING_HEADER_LABELS = [
-  'Deployed Date', 'Vehicle Status', 'Current Status', 'Client', 'Contact No', 'Rider Name', 'Rider ID',
-  'Vehicle Number', 'City', 'Week Start Date', 'Week End Date', 'Number_of_days_with_rider', 'Area Location',
-  'Rent / week', 'Source Name', 'Deficit Amount Week 22', 'WK 23 EV Rent', 'Total Rent Amount',
-  'Payout Deduction Week 23', 'Total SD Amount', 'Pending Amount', 'Manual Payment Collection',
-  'Actual pending for Week After SD', 'Payment Collected Date', 'In-active Days', 'Eff/inff',
-  'Current week orders', 'Remarks', "Remarks BY FR 'S",
+  'Deployed Date',
+  'DB Current Status',
+  'Vehicle Status',
+  'Current Status',
+  'Client',
+  'Contact No',
+  'Rider Name',
+  'EV91 Rider ID',
+  'Rider ID',
+  'Vehicle Number',
+  'City',
+  'Week Start Date',
+  'Week End Date',
+  'Rent / week',
+  'Source Name',
+  'Deficit Amount Week 34',
+  'WK 35 EV Rent',
+  'Total Rent Amount',
+  'Payout Deductions',
+  'Total SD Amount',
+  'Pending Amount',
+  'Manual Collection',
+  'Actual pending for Week',
+  'Payment Collected Date',
+  'In-active Days',
+  'Eff/inff',
+  'Current week orders',
+  'Remarks',
 ]
 
 const EV91_SD_FIELD_ALIASES = {

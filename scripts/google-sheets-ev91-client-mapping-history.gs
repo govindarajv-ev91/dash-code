@@ -59,7 +59,9 @@ function importEv91ClientMappingHistory() {
     var row = mappingRows[i]
     var hit = lookupRiderDetail_(detailIndex, row)
     var riderName = hit ? cell_(hit.name || hit.riderName) : ''
-    var clientName = hit ? cell_(hit.clientName) : ''
+    // Prefer Client Name from mapping API; fall back to Rider Details
+    var clientName = cell_(row.clientName || row.ClientName)
+    if (!clientName && hit) clientName = cell_(hit.clientName)
     if (riderName) named++
     if (clientName) clientNamed++
 

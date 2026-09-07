@@ -51,6 +51,7 @@ export const EV91_MIS_ENDPOINTS = {
       { key: 'city', label: 'City' },
       { key: 'ev91RiderId', label: 'EV91 Rider ID' },
       { key: 'clientId', label: 'Client ID' },
+      { key: 'clientName', label: 'Client Name' },
       { key: 'phoneNumber', label: 'Phone' },
       { key: 'source', label: 'Source' },
       { key: 'lastUpdated', label: 'Last Updated' },

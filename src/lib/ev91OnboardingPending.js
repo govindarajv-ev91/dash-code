@@ -18,6 +18,7 @@ export function buildClientMappingIndex(mappingRows = []) {
       ev91RiderId: (row.ev91RiderId || '').toString().trim(),
       city: (row.city || '').toString().trim(),
       phoneNumber: (row.phoneNumber || '').toString().trim(),
+      clientName: (row.clientName || row.ClientName || '').toString().trim(),
       source: (row.source || '').toString().trim(),
       lastUpdated: row.lastUpdated || '',
     }

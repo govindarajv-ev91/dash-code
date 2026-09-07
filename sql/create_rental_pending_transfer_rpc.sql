@@ -1,13 +1,143 @@
--- Fast rental pending transfer RPC (index-friendly).
--- Run in Supabase SQL Editor (replaces previous function — safe to re-run).
+-- Aging rental pending transfer API (slim fields + days from week_end → today).
+-- Run in Supabase SQL Editor (safe to re-run).
 --
--- Browser GET (must include Supabase apikey — PostgREST always requires it):
---   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer?p_ev91_rider_id=CHE-26-R001580&p_api_key=ev91-rental-pending-2026&apikey=sb_publishable_o04xyDV5z09-dAfxP6awvA_FIdop2lH
+-- Aging rule (Asia/Kolkata):
+--   calendar_days = today_date - week_end_date
+--   before 12:00 → aging_days = calendar_days - 1
+--   at/after 12:00 → aging_days = calendar_days
+-- Example: week_end 30-08-2026, today 07-09-2026 → before noon = 7, after noon = 8
 --
--- Prefer POST (more reliable than GET for this RPC):
---   POST /rest/v1/rpc/rental_pending_transfer
---   Headers: apikey, Authorization: Bearer <anon>, Content-Type: application/json
---   Body: {"p_ev91_rider_id":"CHE-26-R001580","p_api_key":"ev91-rental-pending-2026","p_history":false}
+-- POST (recommended):
+--   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer
+--   Body: {"p_ev91_rider_id":"BLR-26-R000039","p_api_key":"ev91-rental-pending-2026","p_history":false}
+
+create or replace function public.parse_rental_week_date(raw text)
+returns date
+language plpgsql
+immutable
+as $$
+declare
+  t text := nullif(trim(coalesce(raw, '')), '');
+  d date;
+begin
+  if t is null then
+    return null;
+  end if;
+
+  begin
+    if t ~ '^\d{1,2}[-/]\d{1,2}[-/]\d{2}$' then
+      return to_date(replace(t, '/', '-'), 'DD-MM-YY');
+    end if;
+    if t ~ '^\d{1,2}[-/]\d{1,2}[-/]\d{4}$' then
+      return to_date(replace(t, '/', '-'), 'DD-MM-YYYY');
+    end if;
+    if t ~ '^\d{4}[-/]\d{1,2}[-/]\d{1,2}' then
+      return to_date(substring(replace(t, '/', '-'), 1, 10), 'YYYY-MM-DD');
+    end if;
+  exception
+    when others then
+      null;
+  end;
+
+  begin
+    return t::date;
+  exception
+    when others then
+      return null;
+  end;
+end;
+$$;
+
+create or replace function public.rental_pending_aging_days(week_end_raw text, as_of timestamptz default clock_timestamp())
+returns integer
+language plpgsql
+stable
+as $$
+declare
+  week_end date := public.parse_rental_week_date(week_end_raw);
+  ist_ts timestamp := (as_of at time zone 'Asia/Kolkata');
+  today_ist date := ist_ts::date;
+  hour_ist integer := extract(hour from ist_ts)::integer;
+  calendar_days integer;
+begin
+  if week_end is null then
+    return null;
+  end if;
+
+  calendar_days := (today_ist - week_end);
+  if calendar_days < 0 then
+    return 0;
+  end if;
+
+  if hour_ist < 12 then
+    return greatest(calendar_days - 1, 0);
+  end if;
+
+  return calendar_days;
+end;
+$$;
+
+create or replace function public.format_rental_date_ddmmyyyy(raw text)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  d date := public.parse_rental_week_date(raw);
+begin
+  if d is null then
+    return null;
+  end if;
+  return to_char(d, 'DD/MM/YYYY');
+end;
+$$;
+
+create or replace function public.map_rental_pending_aging_fields(
+  p_city text,
+  p_month text,
+  p_rider_id text,
+  p_contact_no text,
+  p_rider_name text,
+  p_client_name text,
+  p_ev91_rider_id text,
+  p_week_start_date text,
+  p_week_end_date text,
+  p_vehicle_number text,
+  p_actual_pending numeric
+)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  week_end_fmt text := public.format_rental_date_ddmmyyyy(p_week_end_date);
+  week_start_fmt text := public.format_rental_date_ddmmyyyy(p_week_start_date);
+  aging integer := public.rental_pending_aging_days(p_week_end_date);
+  v_city text := nullif(trim(p_city), '');
+  v_month text := nullif(trim(p_month), '');
+  v_rider_id text := nullif(trim(p_rider_id), '');
+  v_contact text := nullif(trim(p_contact_no), '');
+  v_name text := nullif(trim(p_rider_name), '');
+  v_client text := nullif(trim(p_client_name), '');
+  v_ev91 text := nullif(trim(p_ev91_rider_id), '');
+  v_vehicle text := nullif(trim(p_vehicle_number), '');
+begin
+  return jsonb_build_object(
+    'city', case when v_city is null then to_jsonb(0) else to_jsonb(v_city) end,
+    'month', case when v_month is null then to_jsonb(0) else to_jsonb(v_month) end,
+    'rider_id', case when v_rider_id is null then to_jsonb(0) else to_jsonb(v_rider_id) end,
+    'aging_days', to_jsonb(coalesce(aging, 0)),
+    'contact_no', case when v_contact is null then to_jsonb(0) else to_jsonb(v_contact) end,
+    'rider_name', case when v_name is null then to_jsonb(0) else to_jsonb(v_name) end,
+    'client_name', case when v_client is null then to_jsonb(0) else to_jsonb(v_client) end,
+    'ev91_rider_id', case when v_ev91 is null then to_jsonb(0) else to_jsonb(v_ev91) end,
+    'week_end_date', case when week_end_fmt is null then to_jsonb(0) else to_jsonb(week_end_fmt) end,
+    'vehicle_number', case when v_vehicle is null then to_jsonb(0) else to_jsonb(v_vehicle) end,
+    'week_start_date', case when week_start_fmt is null then to_jsonb(0) else to_jsonb(week_start_fmt) end,
+    'actual_pending_for_week', to_jsonb(coalesce(p_actual_pending, 0))
+  );
+end;
+$$;
 
 create or replace function public.rental_pending_transfer(
   p_ev91_rider_id text,
@@ -22,9 +152,6 @@ as $$
 declare
   expected_key text := 'ev91-rental-pending-2026';
   ev91 text := nullif(trim(coalesce(p_ev91_rider_id, '')), '');
-  damage_amt numeric := null;
-  traffic_amt numeric := null;
-  latest_rider_id text := null;
   mapped jsonb;
   history_arr jsonb := '[]'::jsonb;
   row_rec record;
@@ -43,7 +170,6 @@ begin
     );
   end if;
 
-  -- Exact match so ev91_rider_id index is used (avoid trim() on column)
   select r.*
   into row_rec
   from public.rental_pending_data r
@@ -51,7 +177,7 @@ begin
   order by r.id desc
   limit 1;
 
-  if row_rec.id is null then
+  if not found then
     return jsonb_build_object(
       'success', false,
       'ev91_rider_id', ev91,
@@ -59,57 +185,29 @@ begin
     );
   end if;
 
-  latest_rider_id := nullif(trim(row_rec.rider_id), '');
-
-  if latest_rider_id is not null
-     and to_regclass('public.rider_payment_data') is not null then
-    select p.damage, p.traffic
-    into damage_amt, traffic_amt
-    from public.rider_payment_data p
-    where p.rider_id = latest_rider_id
-      and (p.damage is not null or p.traffic is not null)
-    order by p.id desc
-    limit 1;
-  end if;
-
   if coalesce(p_history, false) then
-    select coalesce(jsonb_agg(x.obj order by x.id desc), '[]'::jsonb)
+    select coalesce(
+      jsonb_agg(
+        public.map_rental_pending_aging_fields(
+          r.city,
+          r.month,
+          r.rider_id,
+          r.contact_no,
+          r.rider_name,
+          r.client_name,
+          r.ev91_rider_id,
+          r.week_start_date,
+          r.week_end_date,
+          r.vehicle_number,
+          r.actual_pending_for_week_after_sd
+        )
+        order by r.id desc
+      ),
+      '[]'::jsonb
+    )
     into history_arr
-    from (
-      select
-        r.id,
-        jsonb_build_object(
-          'ev91_rider_id', nullif(trim(r.ev91_rider_id), ''),
-          'rider_id', nullif(trim(r.rider_id), ''),
-          'rider_name', nullif(trim(r.rider_name), ''),
-          'city', nullif(trim(r.city), ''),
-          'client_name', nullif(trim(r.client_name), ''),
-          'month', nullif(trim(r.month), ''),
-          'week_start_date', nullif(trim(r.week_start_date), ''),
-          'week_end_date', nullif(trim(r.week_end_date), ''),
-          'actual_pending_for_week', r.actual_pending_for_week_after_sd,
-          'total_rent_amount', r.total_rent_amount,
-          'total_sd_amount', r.total_sd_amount,
-          'pending_amount', r.pending_amount,
-          'manual_collection', r.manual_payment_collection,
-          'payout_deductions', r.payout_deduction_week_23,
-          'rent_per_week', r.rent_per_week,
-          'current_status', nullif(trim(r.current_status), ''),
-          'db_current_status', nullif(trim(r.db_current_status), ''),
-          'vehicle_status', nullif(trim(r.vehicle_status), ''),
-          'vehicle_number', nullif(trim(r.vehicle_number), ''),
-          'contact_no', nullif(trim(r.contact_no), ''),
-          'source_name', nullif(trim(r.source_name), ''),
-          'inactive_days', r.inactive_days,
-          'current_week_orders', r.current_week_orders,
-          'damage_amount', damage_amt,
-          'traffic_challan_amount', traffic_amt
-        ) as obj
-      from public.rental_pending_data r
-      where r.ev91_rider_id = ev91
-      order by r.id desc
-      limit 500
-    ) x;
+    from public.rental_pending_data r
+    where r.ev91_rider_id = ev91;
 
     return jsonb_build_object(
       'success', true,
@@ -119,32 +217,18 @@ begin
     );
   end if;
 
-  mapped := jsonb_build_object(
-    'ev91_rider_id', nullif(trim(row_rec.ev91_rider_id), ''),
-    'rider_id', nullif(trim(row_rec.rider_id), ''),
-    'rider_name', nullif(trim(row_rec.rider_name), ''),
-    'city', nullif(trim(row_rec.city), ''),
-    'client_name', nullif(trim(row_rec.client_name), ''),
-    'month', nullif(trim(row_rec.month), ''),
-    'week_start_date', nullif(trim(row_rec.week_start_date), ''),
-    'week_end_date', nullif(trim(row_rec.week_end_date), ''),
-    'actual_pending_for_week', row_rec.actual_pending_for_week_after_sd,
-    'total_rent_amount', row_rec.total_rent_amount,
-    'total_sd_amount', row_rec.total_sd_amount,
-    'pending_amount', row_rec.pending_amount,
-    'manual_collection', row_rec.manual_payment_collection,
-    'payout_deductions', row_rec.payout_deduction_week_23,
-    'rent_per_week', row_rec.rent_per_week,
-    'current_status', nullif(trim(row_rec.current_status), ''),
-    'db_current_status', nullif(trim(row_rec.db_current_status), ''),
-    'vehicle_status', nullif(trim(row_rec.vehicle_status), ''),
-    'vehicle_number', nullif(trim(row_rec.vehicle_number), ''),
-    'contact_no', nullif(trim(row_rec.contact_no), ''),
-    'source_name', nullif(trim(row_rec.source_name), ''),
-    'inactive_days', row_rec.inactive_days,
-    'current_week_orders', row_rec.current_week_orders,
-    'damage_amount', damage_amt,
-    'traffic_challan_amount', traffic_amt
+  mapped := public.map_rental_pending_aging_fields(
+    row_rec.city,
+    row_rec.month,
+    row_rec.rider_id,
+    row_rec.contact_no,
+    row_rec.rider_name,
+    row_rec.client_name,
+    row_rec.ev91_rider_id,
+    row_rec.week_start_date,
+    row_rec.week_end_date,
+    row_rec.vehicle_number,
+    row_rec.actual_pending_for_week_after_sd
   );
 
   return jsonb_build_object(
@@ -155,6 +239,10 @@ begin
 end;
 $$;
 
+grant execute on function public.parse_rental_week_date(text) to anon, authenticated;
+grant execute on function public.rental_pending_aging_days(text, timestamptz) to anon, authenticated;
+grant execute on function public.format_rental_date_ddmmyyyy(text) to anon, authenticated;
+grant execute on function public.map_rental_pending_aging_fields(text, text, text, text, text, text, text, text, text, text, numeric) to anon, authenticated;
 grant execute on function public.rental_pending_transfer(text, text, boolean) to anon, authenticated;
 
 create or replace function public.rental_pending(

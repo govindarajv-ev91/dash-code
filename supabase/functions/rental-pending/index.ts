@@ -1,16 +1,15 @@
 /**
- * Supabase Edge Function — production GET API matching localhost:
- *   /api/rental-pending?ev91_rider_id=...&api_key=ev91-rental-pending-2026
+ * Supabase Edge Function — aging rental pending API (+ Overall Status Deployed fallback).
  *
  * Deploy:
  *   npx supabase functions deploy rental-pending --no-verify-jwt
- *
- * Amplify rewrite (amplify-redirects.json) proxies:
- *   /api/rental-pending → this function
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
 
 const DEFAULT_API_KEY = 'ev91-rental-pending-2026'
+const EV91_KEY = Deno.env.get('EV91_MIS_API_KEY') || 'ev91-mis-public-2026'
+const EV91_OVERALL =
+  'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/overall-status'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -34,16 +33,134 @@ function extractApiKey(req, url) {
   return (
     url.searchParams.get('api_key') ||
     url.searchParams.get('apiKey') ||
+    url.searchParams.get('p_api_key') ||
     url.searchParams.get('x-api-key') ||
     url.searchParams.get('key') ||
     ''
   ).trim()
 }
 
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: cors })
+function parseWeekEndDate(raw) {
+  const t = (raw ?? '').toString().trim()
+  if (!t) return null
+  let m = t.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2}|\d{4})$/)
+  if (m) {
+    let year = Number(m[3])
+    if (m[3].length === 2) year += year >= 70 ? 1900 : 2000
+    return new Date(Date.UTC(year, Number(m[2]) - 1, Number(m[1])))
   }
+  m = t.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (m) return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  const parsed = Date.parse(t)
+  return Number.isFinite(parsed) ? new Date(parsed) : null
+}
+
+function getIstParts(now = new Date()) {
+  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000)
+  return {
+    year: ist.getUTCFullYear(),
+    month: ist.getUTCMonth(),
+    day: ist.getUTCDate(),
+    hour: ist.getUTCHours(),
+  }
+}
+
+function rentalPendingAgingDays(weekEndRaw, now = new Date()) {
+  const weekEnd = parseWeekEndDate(weekEndRaw)
+  if (!weekEnd) return null
+  const ist = getIstParts(now)
+  const todayUtc = Date.UTC(ist.year, ist.month, ist.day)
+  const weekUtc = Date.UTC(weekEnd.getUTCFullYear(), weekEnd.getUTCMonth(), weekEnd.getUTCDate())
+  let calendarDays = Math.round((todayUtc - weekUtc) / 86400000)
+  if (calendarDays < 0) return 0
+  if (ist.hour < 12) return Math.max(calendarDays - 1, 0)
+  return calendarDays
+}
+
+function formatDdMmYy(date) {
+  if (!date || Number.isNaN(date.getTime())) return null
+  const dd = String(date.getUTCDate()).padStart(2, '0')
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const yy = String(date.getUTCFullYear()).slice(-2)
+  return `${dd}-${mm}-${yy}`
+}
+
+function formatMonthLabel(date) {
+  if (!date || Number.isNaN(date.getTime())) return null
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return `${months[date.getUTCMonth()]}-${date.getUTCFullYear()}`
+}
+
+function mapOverallDeployedPublic(row, ev91RiderId) {
+  const statusDate = parseWeekEndDate(row?.statusDate)
+  const deployDate = statusDate
+    ? new Date(Date.UTC(statusDate.getUTCFullYear(), statusDate.getUTCMonth(), statusDate.getUTCDate()))
+    : null
+  const weekEnd = formatDdMmYy(deployDate)
+  return {
+    city: (row.cityName || '').toString().trim() || null,
+    month: formatMonthLabel(deployDate),
+    rider_id: (row.clientId || '').toString().trim() || null,
+    contact_no: (row.riderContact || '').toString().trim() || null,
+    rider_name: (row.riderName || '').toString().trim() || null,
+    client_name: (row.clientName || '').toString().trim() || null,
+    ev91_rider_id: (row.ev91RiderId || ev91RiderId || '').toString().trim() || null,
+    week_start_date: null,
+    week_end_date: weekEnd,
+    vehicle_number: (row.vehicleNumber || '').toString().trim() || null,
+    actual_pending_for_week: null,
+    aging_days: rentalPendingAgingDays(weekEnd || row?.statusDate),
+    source: 'overall_status_deployed',
+    vehicle_status: 'Deployed',
+    deployed_date: weekEnd,
+  }
+}
+
+async function lookupOverallDeployedFallback(ev91RiderId) {
+  const params = new URLSearchParams({ limit: '50', offset: '0', search: ev91RiderId })
+  const upstream = await fetch(`${EV91_OVERALL}?${params}`, {
+    headers: { 'x-api-key': EV91_KEY, Accept: 'application/json' },
+  })
+  const body = await upstream.json().catch(() => null)
+  if (!upstream.ok || !body || body.success === false) {
+    return {
+      status: 502,
+      body: { success: false, message: body?.message || 'Failed to reach EV91 Overall Status' },
+    }
+  }
+
+  const id = ev91RiderId.toLowerCase()
+  const deployed = (body.data || []).filter(
+    (r) =>
+      /^deployed$/i.test(String(r.vehicleStatus || '').trim()) &&
+      String(r.ev91RiderId || '').trim().toLowerCase() === id
+  )
+  deployed.sort((a, b) => (Date.parse(b.statusDate) || 0) - (Date.parse(a.statusDate) || 0))
+  const latest = deployed[0]
+  if (!latest) {
+    return {
+      status: 404,
+      body: {
+        success: false,
+        ev91_rider_id: ev91RiderId,
+        message:
+          'No rental pending data, and no Deployed status found in EV91 Overall Vehicle Status for this EV91 Rider ID',
+      },
+    }
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      ev91_rider_id: ev91RiderId,
+      data: mapOverallDeployedPublic(latest, ev91RiderId),
+    },
+  }
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
   if (req.method !== 'GET') {
     return json(405, { success: false, message: 'Method not allowed' })
   }
@@ -51,10 +168,7 @@ Deno.serve(async (req) => {
   const url = new URL(req.url)
   const expected = (Deno.env.get('RENTAL_PENDING_API_KEY') || DEFAULT_API_KEY).trim()
   const provided = extractApiKey(req, url)
-  // Also accept Supabase-style p_api_key (same as RPC query)
-  const providedOrP =
-    provided || (url.searchParams.get('p_api_key') || '').trim()
-  if (!providedOrP || providedOrP !== expected) {
+  if (!provided || provided !== expected) {
     return json(401, {
       success: false,
       message: 'Unauthorized. Provide a valid x-api-key.',
@@ -69,10 +183,7 @@ Deno.serve(async (req) => {
     ''
   ).trim()
   if (!ev91) {
-    return json(400, {
-      success: false,
-      message: 'Missing required query parameter: ev91_rider_id',
-    })
+    return json(400, { success: false, message: 'Missing required query parameter: ev91_rider_id' })
   }
 
   const historyRaw = (url.searchParams.get('history') || url.searchParams.get('p_history') || '')
@@ -98,14 +209,24 @@ Deno.serve(async (req) => {
   })
 
   if (error) {
-    return json(500, { success: false, message: error.message || 'RPC failed' })
+    // If RPC missing, still try overall fallback
+    if (!/could not find|does not exist|schema cache/i.test(error.message || '')) {
+      return json(500, { success: false, message: error.message || 'RPC failed' })
+    }
+  } else if (data && typeof data === 'object') {
+    if (data.success === false) {
+      const msg = String(data.message || '')
+      if (/unauthoriz/i.test(msg)) return json(401, data)
+      if (/missing required/i.test(msg)) return json(400, data)
+      const fallback = await lookupOverallDeployedFallback(ev91)
+      return json(fallback.status, fallback.body)
+    }
+    if (data?.data && !Array.isArray(data.data) && !data.data.source) {
+      data.data.source = 'rental_pending'
+    }
+    return json(200, data)
   }
 
-  const body = data && typeof data === 'object' ? data : { success: false, message: 'Empty response' }
-  if (body.success === false) {
-    const msg = String(body.message || '')
-    const status = /unauthoriz/i.test(msg) ? 401 : /missing required/i.test(msg) ? 400 : 404
-    return json(status, body)
-  }
-  return json(200, body)
+  const fallback = await lookupOverallDeployedFallback(ev91)
+  return json(fallback.status, fallback.body)
 })

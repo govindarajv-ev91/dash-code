@@ -140,6 +140,10 @@ function rentalPendingApiPlugin() {
           process.env.RENTAL_PENDING_API_KEY ||
           'ev91-rental-pending-2026'
         ).trim()
+        process.env.EV91_MIS_API_KEY =
+          env.EV91_MIS_API_KEY || env.VITE_EV91_MIS_API_KEY || process.env.EV91_MIS_API_KEY
+        process.env.VITE_EV91_MIS_API_KEY =
+          env.VITE_EV91_MIS_API_KEY || process.env.VITE_EV91_MIS_API_KEY
 
         // Mount strips path; keep full URL so ?api_key= / ?ev91_rider_id= parse correctly
         const rawUrl = req.originalUrl || req.url || '/'

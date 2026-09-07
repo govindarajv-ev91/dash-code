@@ -1,11 +1,5 @@
--- Localhost-style params for production GET (same as /api/rental-pending).
--- Run in Supabase SQL Editor after create_rental_pending_transfer_rpc.sql (safe to re-run).
---
--- Production (Amplify — after amplify-redirects deploy):
---   https://main.d2y6lleakorn3s.amplifyapp.com/api/rental-pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
---
--- Direct Supabase (same query shape; needs apikey header or ?apikey=):
---   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending?ev91_rider_id=12345&api_key=ev91-rental-pending-2026
+-- Keep localhost-style alias in sync (optional if full RPC file already applied).
+-- Run after create_rental_pending_transfer_rpc.sql
 
 create or replace function public.rental_pending(
   ev91_rider_id text,

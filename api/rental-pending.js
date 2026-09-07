@@ -308,8 +308,7 @@ async function lookupOverallDeployedFallback(ev91RiderId) {
       body: {
         success: false,
         ev91_rider_id: ev91RiderId,
-        message:
-          'No rental pending data, and no Deployed status found in EV91 Overall Vehicle Status for this EV91 Rider ID',
+        message: 'No_Data',
       },
     }
   }

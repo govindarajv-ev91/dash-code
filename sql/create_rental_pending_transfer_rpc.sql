@@ -181,7 +181,7 @@ begin
     return jsonb_build_object(
       'success', false,
       'ev91_rider_id', ev91,
-      'message', 'No rental pending data found for this EV91 Rider ID'
+      'message', 'No_Data'
     );
   end if;
 

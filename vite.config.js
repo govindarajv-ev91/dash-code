@@ -190,7 +190,12 @@ function rentalPendingApiPlugin() {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), riderPerformanceApiPlugin(), ev91MisApiPlugin(), rentalPendingApiPlugin()],
+  plugins: [
+    react(),
+    riderPerformanceApiPlugin(),
+    ev91MisApiPlugin(),
+    rentalPendingApiPlugin(),
+  ],
   server: {
     // Always use 5173. If an old npm run dev is still running, fail instead of
     // silently opening 5174 (different origin = empty cache / "no data").

@@ -6,15 +6,57 @@
  *
  * Response fields:
  *   city, month, rider_id, contact_no, rider_name, client_name, ev91_rider_id,
- *   week_start_date, week_end_date, vehicle_number, actual_pending_for_week, aging_days, source
+ *   week_start_date, week_end_date, vehicle_number, actual_pending_for_week, aging_days,
+ *   per_order_amount, "order DD/MM/YYYY"…, total_order, earning
  *
- * aging_days (IST): before 12:00 → calendar-1, at/after 12:00 → calendar
- *   ex deploy/week_end 02-09-2026, today 07-09-2026 → 4 before noon, 5 after noon
+ * Post-week orders: (week_end + 1) → yesterday IST from order_upload_data (worker_code = rider_id).
+ * earning = total_order × per_order_amount (Full Data commercial rates).
  *
  * Local:
  *   http://localhost:5173/api/rental-pending?ev91_rider_id=CHE-26-R001711&api_key=ev91-rental-pending-2026
  */
 import { getSupabase } from './lib/supabaseServer.js'
+
+/** Client per-order ₹ — keep in sync with src/lib/fullDataCommercialRates.js */
+const PER_ORDER_RATE_BY_KEY = {
+  amazon: 40,
+  'bb now': 47,
+  bb: 47,
+  bigbasket: 47,
+  'big basket': 47,
+  blinkit: 53,
+  docpharma: 140,
+  'doc pharma': 140,
+  'flipkart minutes': 49,
+  'flipkart-minutes': 49,
+  fkm: 49,
+  'flipkart-lma': 18,
+  'fkm-lma': 18,
+  inamo: 65,
+  instamart: 49,
+  swiggy: 49,
+  'swiggy instamart': 49,
+  kpn: 63,
+  'kwik myntra': 82,
+  'kwik nykaa': 80,
+  'kwik purple': 47,
+  licious: 56,
+  'rapido ownly': 90,
+  rsm: 64,
+  zepto: 43,
+}
+
+function getClientPerOrderRate(clientName) {
+  const key = String(clientName || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+  if (!key) return 0
+  if (PER_ORDER_RATE_BY_KEY[key] != null) return PER_ORDER_RATE_BY_KEY[key]
+  if (key.startsWith('kwik')) return PER_ORDER_RATE_BY_KEY[key] ?? 47
+  return 0
+}
 
 const DEFAULT_API_KEY = 'ev91-rental-pending-2026'
 
@@ -186,6 +228,7 @@ function formatDdMmYyyy(raw) {
 
 /**
  * Fixed public payload — always these keys; missing values → 0
+ * Order enrichment fields are merged later via enrichAgingPayloadWithOrders.
  */
 function normalizeAgingPayload(partial = {}, ev91RiderId = '') {
   const weekEndRaw = partial.week_end_date === 0 ? 0 : partial.week_end_date ?? partial.deployed_date ?? ''
@@ -209,6 +252,108 @@ function normalizeAgingPayload(partial = {}, ev91RiderId = '') {
     week_start_date: formatDdMmYyyy(weekStartRaw),
     actual_pending_for_week: numOrZero(partial.actual_pending_for_week),
   }
+}
+
+function ymdUtc(date) {
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const yyyy = date.getUTCFullYear()
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(date.getUTCDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function addUtcDays(date, days) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days))
+}
+
+function formatOrderKey(date) {
+  const dd = String(date.getUTCDate()).padStart(2, '0')
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const yyyy = String(date.getUTCFullYear())
+  return `order ${dd}/${mm}/${yyyy}`
+}
+
+async function fetchOrdersByDayForRider(riderId, rangeStart, rangeEnd) {
+  const rider = String(riderId || '').trim()
+  if (!rider || !rangeStart || !rangeEnd) return new Map()
+
+  const supabase = getSupabase()
+  const from = ymdUtc(rangeStart)
+  const to = ymdUtc(rangeEnd)
+  const { data, error } = await supabase
+    .from('order_upload_data')
+    .select('date_record,delivered,worker_code')
+    .eq('worker_code', rider)
+    .gte('date_record', from)
+    .lte('date_record', to)
+    .limit(5000)
+
+  if (error) throw error
+
+  const byDay = new Map()
+  for (const row of data || []) {
+    const d = parseWeekEndDate(row.date_record)
+    if (!d) continue
+    const key = ymdUtc(d)
+    byDay.set(key, (byDay.get(key) || 0) + numOrZero(row.delivered))
+  }
+  return byDay
+}
+
+/**
+ * Attach per_order_amount, day-wise "order DD/MM/YYYY", total_order, earning.
+ * Range: day after week_end → yesterday (IST).
+ */
+async function enrichAgingPayloadWithOrders(payload) {
+  const base = { ...(payload || {}) }
+  const clientName = base.client_name === 0 ? '' : base.client_name
+  const riderId = base.rider_id === 0 ? '' : base.rider_id
+  const rate = getClientPerOrderRate(clientName) ?? 0
+  base.per_order_amount = numOrZero(rate)
+
+  const weekEnd = parseWeekEndDate(base.week_end_date)
+  if (!weekEnd || !riderId) {
+    base.total_order = 0
+    base.earning = 0
+    return base
+  }
+
+  const ist = getIstParts()
+  const yesterday = new Date(Date.UTC(ist.year, ist.month, ist.day - 1))
+  const rangeStart = addUtcDays(weekEnd, 1)
+  if (rangeStart.getTime() > yesterday.getTime()) {
+    base.total_order = 0
+    base.earning = 0
+    return base
+  }
+
+  let byDay = new Map()
+  try {
+    byDay = await fetchOrdersByDayForRider(riderId, rangeStart, yesterday)
+  } catch (err) {
+    console.warn('[api/rental-pending] order enrich failed:', err?.message || err)
+  }
+
+  let total = 0
+  for (let d = new Date(rangeStart.getTime()); d.getTime() <= yesterday.getTime(); d = addUtcDays(d, 1)) {
+    const qty = numOrZero(byDay.get(ymdUtc(d)))
+    total += qty
+    base[formatOrderKey(d)] = qty
+  }
+  base.total_order = total
+  base.earning = total * numOrZero(rate)
+  return base
+}
+
+async function enrichLookupBody(body) {
+  if (!body || body.success === false || !body.data) return body
+  if (Array.isArray(body.data)) {
+    body.data = await Promise.all(body.data.map((row) => enrichAgingPayloadWithOrders(row)))
+    body.count = body.data.length
+  } else {
+    body.data = await enrichAgingPayloadWithOrders(body.data)
+  }
+  return body
 }
 
 function mapRentalPublic(row) {
@@ -315,11 +460,11 @@ async function lookupOverallDeployedFallback(ev91RiderId) {
 
   return {
     status: 200,
-    body: {
+    body: await enrichLookupBody({
       success: true,
       ev91_rider_id: ev91RiderId,
       data: mapOverallDeployedPublic(latestDeployed, ev91RiderId),
-    },
+    }),
   }
 }
 
@@ -384,14 +529,14 @@ async function handleLookup(query) {
         // Not found in rental pending → try Overall Status Deployed fallback
         return lookupOverallDeployedFallback(ev91RiderId)
       }
-      // Normalize to fixed contract (DD/MM/YYYY dates, missing → 0)
+      // Normalize to fixed contract (DD/MM/YYYY dates, missing → 0), then attach orders
       if (Array.isArray(body.data)) {
         body.data = body.data.map((row) => normalizeAgingPayload(row, ev91RiderId))
         body.count = body.data.length
       } else if (body.data) {
         body.data = normalizeAgingPayload(body.data, ev91RiderId)
       }
-      return { status: 200, body }
+      return { status: 200, body: await enrichLookupBody(body) }
     }
     if (error && !/could not find|does not exist|schema cache/i.test(error.message || '')) {
       throw error
@@ -410,22 +555,22 @@ async function handleLookup(query) {
   if (history) {
     return {
       status: 200,
-      body: {
+      body: await enrichLookupBody({
         success: true,
         ev91_rider_id: ev91RiderId,
         count: rows.length,
         data: rows.map((row) => mapRentalPublic(row)),
-      },
+      }),
     }
   }
 
   return {
     status: 200,
-    body: {
+    body: await enrichLookupBody({
       success: true,
       ev91_rider_id: ev91RiderId,
       data: mapRentalPublic(rows[0]),
-    },
+    }),
   }
 }
 

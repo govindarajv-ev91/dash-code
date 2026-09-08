@@ -1,11 +1,16 @@
--- Aging rental pending transfer API (slim fields + days from week_end → today).
+-- Aging rental pending transfer API
+-- + post-week day-wise orders, per_order_amount, total_order, earning
 -- Run in Supabase SQL Editor (safe to re-run).
 --
 -- Aging rule (Asia/Kolkata):
 --   calendar_days = today_date - week_end_date
 --   before 12:00 → aging_days = calendar_days - 1
 --   at/after 12:00 → aging_days = calendar_days
--- Example: week_end 30-08-2026, today 07-09-2026 → before noon = 7, after noon = 8
+--
+-- Post-week orders:
+--   from (week_end + 1 day) through yesterday (IST), keyed as "order DD/MM/YYYY"
+--   per_order_amount from Full Data commercial rates (Blinkit=53, etc.)
+--   earning = total_order * per_order_amount
 --
 -- POST (recommended):
 --   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer
@@ -18,7 +23,6 @@ immutable
 as $$
 declare
   t text := nullif(trim(coalesce(raw, '')), '');
-  d date;
 begin
   if t is null then
     return null;
@@ -92,6 +96,41 @@ begin
 end;
 $$;
 
+-- Client per-order ₹ (matches Full Data commercial rates).
+create or replace function public.rental_pending_client_per_order_rate(p_client text)
+returns numeric
+language plpgsql
+immutable
+as $$
+declare
+  k text := lower(trim(regexp_replace(coalesce(p_client, ''), '[_\s]+', ' ', 'g')));
+begin
+  if k = '' then
+    return 0;
+  end if;
+
+  if k in ('amazon') then return 40; end if;
+  if k in ('bb now', 'bb', 'bigbasket', 'big basket') then return 47; end if;
+  if k in ('blinkit') then return 53; end if;
+  if k in ('docpharma', 'doc pharma') then return 140; end if;
+  if k in ('flipkart minutes', 'flipkart-minutes', 'fkm') then return 49; end if;
+  if k in ('flipkart-lma', 'fkm-lma') then return 18; end if;
+  if k in ('inamo') then return 65; end if;
+  if k in ('instamart', 'swiggy', 'swiggy instamart') then return 49; end if;
+  if k in ('kpn') then return 63; end if;
+  if k in ('kwik myntra') then return 82; end if;
+  if k in ('kwik nykaa') then return 80; end if;
+  if k in ('kwik purple') then return 47; end if;
+  if k like 'kwik%' then return 47; end if;
+  if k in ('licious') then return 56; end if;
+  if k in ('rapido ownly') then return 90; end if;
+  if k in ('rsm') then return 64; end if;
+  if k in ('zepto') then return 43; end if;
+
+  return 0;
+end;
+$$;
+
 create or replace function public.map_rental_pending_aging_fields(
   p_city text,
   p_month text,
@@ -139,6 +178,113 @@ begin
 end;
 $$;
 
+-- Add day-wise orders (week_end+1 → yesterday IST) + rate / totals.
+-- Index-friendly: equality on worker_code + YYYY-MM-DD text range on date_record.
+create or replace function public.enrich_rental_pending_with_post_week_orders(
+  p_mapped jsonb,
+  p_rider_id text,
+  p_client_name text,
+  p_week_end_raw text,
+  p_as_of timestamptz default clock_timestamp()
+)
+returns jsonb
+language plpgsql
+stable
+set statement_timeout = '12s'
+as $$
+declare
+  out_json jsonb := coalesce(p_mapped, '{}'::jsonb);
+  week_end date := public.parse_rental_week_date(p_week_end_raw);
+  ist_today date := (p_as_of at time zone 'Asia/Kolkata')::date;
+  range_start date;
+  range_end date;
+  d date;
+  rider text := nullif(trim(coalesce(p_rider_id, '')), '');
+  rate numeric := public.rental_pending_client_per_order_rate(p_client_name);
+  day_orders numeric;
+  total_orders numeric := 0;
+  orders_by_day jsonb := '{}'::jsonb;
+  from_ymd text;
+  to_ymd text;
+begin
+  out_json := out_json || jsonb_build_object('per_order_amount', coalesce(rate, 0));
+
+  if week_end is null or rider is null then
+    return out_json
+      || jsonb_build_object(
+        'total_order', 0,
+        'earning', 0
+      );
+  end if;
+
+  range_start := week_end + 1;
+  range_end := ist_today - 1;
+
+  -- Cap lookback so a bad week_end cannot scan months of days
+  if range_end - range_start > 45 then
+    range_start := range_end - 45;
+  end if;
+
+  if range_start > range_end then
+    return out_json
+      || jsonb_build_object(
+        'total_order', 0,
+        'earning', 0
+      );
+  end if;
+
+  from_ymd := to_char(range_start, 'YYYY-MM-DD');
+  to_ymd := to_char(range_end, 'YYYY-MM-DD');
+
+  -- Use worker_code + date_record indexes (no upper/trim/parse on columns).
+  select coalesce(
+    jsonb_object_agg(o.date_record, o.qty),
+    '{}'::jsonb
+  )
+  into orders_by_day
+  from (
+    select
+      o.date_record,
+      sum(coalesce(o.delivered, 0)::numeric) as qty
+    from public.order_upload_data o
+    where o.worker_code = rider
+      and o.date_record >= from_ymd
+      and o.date_record <= to_ymd
+    group by o.date_record
+  ) o;
+
+  d := range_start;
+  while d <= range_end loop
+    day_orders := coalesce((orders_by_day ->> to_char(d, 'YYYY-MM-DD'))::numeric, 0);
+    total_orders := total_orders + day_orders;
+    out_json := out_json || jsonb_build_object(
+      'order ' || to_char(d, 'DD/MM/YYYY'),
+      day_orders
+    );
+    d := d + 1;
+  end loop;
+
+  out_json := out_json || jsonb_build_object(
+    'total_order', total_orders,
+    'earning', total_orders * coalesce(rate, 0)
+  );
+
+  return out_json;
+exception
+  when others then
+    -- Never fail the whole aging API if order lookup is slow/unavailable
+    return out_json
+      || jsonb_build_object(
+        'total_order', 0,
+        'earning', 0
+      );
+end;
+$$;
+
+-- Speeds worker + date lookups used by enrich
+create index if not exists order_upload_data_worker_date_idx
+  on public.order_upload_data (worker_code, date_record);
+
 create or replace function public.rental_pending_transfer(
   p_ev91_rider_id text,
   p_api_key text,
@@ -148,6 +294,7 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = public
+set statement_timeout = '15s'
 as $$
 declare
   expected_key text := 'ev91-rental-pending-2026';
@@ -186,6 +333,7 @@ begin
   end if;
 
   if coalesce(p_history, false) then
+    -- History: base aging fields only (skip day-wise order scan per row)
     select coalesce(
       jsonb_agg(
         public.map_rental_pending_aging_fields(
@@ -217,18 +365,23 @@ begin
     );
   end if;
 
-  mapped := public.map_rental_pending_aging_fields(
-    row_rec.city,
-    row_rec.month,
+  mapped := public.enrich_rental_pending_with_post_week_orders(
+    public.map_rental_pending_aging_fields(
+      row_rec.city,
+      row_rec.month,
+      row_rec.rider_id,
+      row_rec.contact_no,
+      row_rec.rider_name,
+      row_rec.client_name,
+      row_rec.ev91_rider_id,
+      row_rec.week_start_date,
+      row_rec.week_end_date,
+      row_rec.vehicle_number,
+      row_rec.actual_pending_for_week_after_sd
+    ),
     row_rec.rider_id,
-    row_rec.contact_no,
-    row_rec.rider_name,
     row_rec.client_name,
-    row_rec.ev91_rider_id,
-    row_rec.week_start_date,
-    row_rec.week_end_date,
-    row_rec.vehicle_number,
-    row_rec.actual_pending_for_week_after_sd
+    row_rec.week_end_date
   );
 
   return jsonb_build_object(
@@ -242,7 +395,9 @@ $$;
 grant execute on function public.parse_rental_week_date(text) to anon, authenticated;
 grant execute on function public.rental_pending_aging_days(text, timestamptz) to anon, authenticated;
 grant execute on function public.format_rental_date_ddmmyyyy(text) to anon, authenticated;
+grant execute on function public.rental_pending_client_per_order_rate(text) to anon, authenticated;
 grant execute on function public.map_rental_pending_aging_fields(text, text, text, text, text, text, text, text, text, text, numeric) to anon, authenticated;
+grant execute on function public.enrich_rental_pending_with_post_week_orders(jsonb, text, text, text, timestamptz) to anon, authenticated;
 grant execute on function public.rental_pending_transfer(text, text, boolean) to anon, authenticated;
 
 create or replace function public.rental_pending(

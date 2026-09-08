@@ -120,8 +120,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const [showRawData, setShowRawData] = useState(false)
   const [rawKind, setRawKind] = useState('EV') // EV | IC | Return
   const [rawClientFilter, setRawClientFilter] = useState('All')
-  /** Ev Deployed source: overall = EV91 Overall Status; order = first EV order day (like IC). */
-  const [evDeployedSource, setEvDeployedSource] = useState('overall')
+  /** Ev Deployed source: api = Reason NEW_RIDER / Exiting+Shifting; overall = all; order = first EV day. */
+  const [evDeployedSource, setEvDeployedSource] = useState('api')
 
   const load = useCallback((force = false) => {
     setLoading(true)
@@ -414,13 +414,13 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
       }
     } else {
       lines.push(
-        ['Kind', 'Status', 'Date', 'City', 'Client', 'Client Raw', 'Vehicle', 'Rider ID', 'EV91 Rider ID', 'Rider Name', 'Contact']
+        ['Kind', 'Status', 'Reason', 'Date', 'City', 'Client', 'Client Raw', 'Vehicle', 'Rider ID', 'EV91 Rider ID', 'Rider Name', 'Contact']
           .map(escapeCsv)
           .join(',')
       )
       for (const r of filteredRawRows) {
         lines.push(
-          [r.kind, r.status, r.date, r.city, r.client, r.clientRaw, r.vehicle, r.riderId, r.ev91RiderId, r.riderName, r.contact]
+          [r.kind, r.status, r.reason, r.date, r.city, r.client, r.clientRaw, r.vehicle, r.riderId, r.ev91RiderId, r.riderName, r.contact]
             .map(escapeCsv)
             .join(',')
         )
@@ -487,7 +487,13 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
               EV91 Overall Status · Ev Deployed ={' '}
               {evDeployedSource === 'order'
                 ? 'first order-upload day (EV Type1, same as IC)'
-                : 'Overall Status Deployed rows'}{' '}
+                : evDeployedSource === 'api'
+                  ? 'Reason NEW_RIDER'
+                  : 'Overall Status Deployed rows'}{' '}
+              · Return ={' '}
+              {evDeployedSource === 'api'
+                ? 'Exiting + Shifting to Own Vehicle'
+                : 'Overall Status Returned'}{' '}
               · IC Deployed = first order-upload day (NON-EV) · week Sun–Sat · Net = Total − Return
             </p>
           </div>
@@ -594,7 +600,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
           </label>
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </div>
-        <div className="fdv-summary-filter" style={{ minWidth: 220 }}>
+        <div className="fdv-summary-filter" style={{ minWidth: 240 }}>
           <label>Ev Deployed source</label>
           <div
             style={{
@@ -605,6 +611,16 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
               fontSize: '0.82rem',
             }}
           >
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="evDeployedSource"
+                value="api"
+                checked={evDeployedSource === 'api'}
+                onChange={() => startTransition(() => setEvDeployedSource('api'))}
+              />
+              EV91 API Data
+            </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
               <input
                 type="radio"
@@ -785,10 +801,17 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
               <select value={rawKind} onChange={(e) => setRawKind(e.target.value)}>
                 <option value="EV">
                   EV Deployed ({rawDetails.evRows?.length || 0})
-                  {evDeployedSource === 'order' ? ' · order' : ' · overall'}
+                  {evDeployedSource === 'order'
+                    ? ' · order'
+                    : evDeployedSource === 'api'
+                      ? ' · NEW_RIDER'
+                      : ' · overall'}
                 </option>
                 <option value="IC">IC Deployed / New NON-EV ({rawDetails.icRows?.length || 0})</option>
-                <option value="Return">Return ({rawDetails.returnRows?.length || 0})</option>
+                <option value="Return">
+                  Return ({rawDetails.returnRows?.length || 0})
+                  {evDeployedSource === 'api' ? ' · Exiting/Shifting' : ''}
+                </option>
               </select>
             </div>
             <div className="fdv-summary-filter">
@@ -864,6 +887,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                   <tr>
                     <th>#</th>
                     <th>Status</th>
+                    <th>Reason</th>
                     <th>Date</th>
                     <th>City</th>
                     <th>Client</th>
@@ -878,7 +902,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                 <tbody>
                   {visibleRawRows.length === 0 ? (
                     <tr>
-                      <td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
+                      <td colSpan={12} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
                         No {rawKind} rows for this filter
                       </td>
                     </tr>
@@ -887,6 +911,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                       <tr key={`${r.vehicle}-${r.date}-${r.client}-${idx}`}>
                         <td>{idx + 1}</td>
                         <td>{r.status}</td>
+                        <td>{r.reason || '—'}</td>
                         <td>{r.date}</td>
                         <td>{r.city}</td>
                         <td>{r.client}</td>

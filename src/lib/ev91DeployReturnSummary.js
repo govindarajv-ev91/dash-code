@@ -314,7 +314,7 @@ export function buildEvDeployedByClient(
 export function buildEv91SummaryRawDetails(
   overallRows = [],
   riderDataOrIndex = [],
-  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'overall' } = {}
+  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'api' } = {}
 ) {
   const summary = buildEv91ClientWiseSummary(overallRows, riderDataOrIndex, {
     city,
@@ -326,17 +326,40 @@ export function buildEv91SummaryRawDetails(
   return summary.details || { evRows: [], returnRows: [], icRows: [] }
 }
 
+/** Normalize EV91 Overall Status `reason` for matching. */
+export function normalizeEv91ReasonKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
+/** Ev Deployed (EV91 API Data): Reason = NEW_RIDER */
+export function isEv91ApiEvDeployReason(reason) {
+  return normalizeEv91ReasonKey(reason) === 'new rider'
+}
+
+/** Return (EV91 API Data): Exiting + Shifting to Own Vehicle */
+export function isEv91ApiReturnReason(reason) {
+  const key = normalizeEv91ReasonKey(reason)
+  return key === 'exiting' || key === 'shifting to own vehicle'
+}
+
 /**
  * Client-wise summary from EV91 Overall Status + new NON-EV IC from orders.
  *
  * Ev Deployed  =
- *   - overall (default): every Overall Status Deployed row in range
+ *   - api (default): Overall Status Deployed where reason = NEW_RIDER
+ *   - overall: every Overall Status Deployed row in range
  *   - order: brand-new EV riders (first order-done ever in range), same as IC logic
  * IC Deployed  = brand-new NON-EV riders (first order-done ever in range)
- * Return       = every Overall Status Returned row in range
+ * Return       =
+ *   - api (default): Returned where reason is Exiting or Shifting to Own Vehicle
+ *   - overall / order: every Overall Status Returned row in range
  * Net add on   = Total Deployed − Return
  *
- * @param {'overall'|'order'} options.evDeployedSource
+ * @param {'api'|'overall'|'order'} options.evDeployedSource
  */
 export function buildEv91ClientWiseSummary(
   overallRows = [],
@@ -346,7 +369,7 @@ export function buildEv91ClientWiseSummary(
     startDate = '',
     endDate = '',
     includeDetails = false,
-    evDeployedSource = 'overall',
+    evDeployedSource = 'api',
   } = {}
 ) {
   if (!startDate || !endDate) {
@@ -359,6 +382,7 @@ export function buildEv91ClientWiseSummary(
   }
 
   const useOrderEv = evDeployedSource === 'order'
+  const filterByReason = evDeployedSource === 'api'
   const filterCity = city && city !== 'All' ? city : null
   const filterCityKey = filterCity ? normalizeCityKey(filterCity) : null
 
@@ -393,15 +417,17 @@ export function buildEv91ClientWiseSummary(
       normalizePhone(row.riderContact) ||
       ''
     const client = normalizeEv91SummaryClient(row.clientName)
-    const uniqueKey = `${vehicle}|${row.statusDate || dKey}|${status}|${riderId}|${client}`
+    const reason = (row.reason || '').toString().trim()
+    const uniqueKey = `${vehicle}|${row.statusDate || dKey}|${status}|${riderId}|${client}|${reason}`
     if (seenEvents.has(uniqueKey)) continue
     seenEvents.add(uniqueKey)
     eventCount++
 
-    const stats = ensure(client)
     if (status === 'deployed') {
       // Overall Status Deployed only when not using order-data Ev Deployed
       if (!useOrderEv) {
+        if (filterByReason && !isEv91ApiEvDeployReason(reason)) continue
+        const stats = ensure(client)
         stats.evDeployed++
         if (evRows) {
           evRows.push({
@@ -416,11 +442,14 @@ export function buildEv91ClientWiseSummary(
             ev91RiderId: (row.ev91RiderId || '').toString().trim(),
             riderName: (row.riderName || '').toString().trim(),
             contact: (row.riderContact || '').toString().trim(),
+            reason,
             statusDate: row.statusDate || dKey,
           })
         }
       }
     } else {
+      if (filterByReason && !isEv91ApiReturnReason(reason)) continue
+      const stats = ensure(client)
       stats.returnCount++
       if (returnRows) {
         returnRows.push({
@@ -435,6 +464,7 @@ export function buildEv91ClientWiseSummary(
           ev91RiderId: (row.ev91RiderId || '').toString().trim(),
           riderName: (row.riderName || '').toString().trim(),
           contact: (row.riderContact || '').toString().trim(),
+          reason,
           statusDate: row.statusDate || dKey,
         })
       }
@@ -488,7 +518,8 @@ export function buildEv91ClientWiseSummary(
     { totalDeployed: 0, evDeployed: 0, icDeployed: 0, returnCount: 0, netAddon: 0 }
   )
 
-  const result = { clients: rows, totals, eventCount, evDeployedSource: useOrderEv ? 'order' : 'overall' }
+  const sourceLabel = useOrderEv ? 'order' : filterByReason ? 'api' : 'overall'
+  const result = { clients: rows, totals, eventCount, evDeployedSource: sourceLabel }
   if (includeDetails) {
     const sortEv = (a, b) => {
       const d = String(a.date).localeCompare(String(b.date))

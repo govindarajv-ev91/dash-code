@@ -1,4 +1,4 @@
-import { format, startOfDay } from 'date-fns'
+import { format, startOfDay, differenceInCalendarDays } from 'date-fns'
 import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
 import { riderIdLookupKeys } from './riderPerformanceReport'
 import {
@@ -571,6 +571,442 @@ export function ev91EvLookupTypesOnly(results) {
 
 export function ev91VehicleRiderLookupIdsOnly(results) {
   return results.map((row) => row.clientId || row.ev91RiderId || row.workerCode || '').join('\n')
+}
+
+/**
+ * Latest Overall Status event per rider identity (EV91 ID / client ID / phone).
+ * Used so a later Return clears "currently Deployed" even if Current/fleet still look open.
+ */
+export function buildEv91LatestOverallStatusByIdentity(overallRows = []) {
+  const events = []
+  for (const row of overallRows || []) {
+    const status = normalizeEv91OverallStatus(row.vehicleStatus)
+    if (!status) continue
+    const at = parseEventInstant(row.statusDate)
+    if (!at || Number.isNaN(at.getTime())) continue
+    const keys = identityKeysForOverallRow(row)
+    if (!keys.size) continue
+    events.push({
+      status,
+      at,
+      vehicleNumber: (row.vehicleNumber || '').toString().trim(),
+      riderName: (row.riderName || '').toString().trim(),
+      mobile: (row.riderContact || '').toString().trim(),
+      client: (row.clientName || '').toString().trim(),
+      city: (row.cityName || row.city || '').toString().trim(),
+      source: (row.sourceName || row.source || '').toString().trim(),
+      ev91RiderId: (row.ev91RiderId || '').toString().trim(),
+      clientId: (row.clientId || row.clientRiderId || '').toString().trim(),
+      keys: [...keys],
+    })
+  }
+
+  events.sort(sortEv91Events)
+
+  const byKey = new Map()
+  for (const event of events) {
+    for (const key of event.keys) {
+      byKey.set(key, event)
+    }
+  }
+  return byKey
+}
+
+/** Resolve latest Overall Status for a rider using worker / EV91 / phone identities. */
+export function lookupEv91LatestOverallStatus(byKey, { workerCode = '', ev91PublicId = '', mobile = '' } = {}) {
+  if (!byKey?.size) return null
+
+  const keys = new Set()
+  const probe = {
+    clientId: (workerCode || '').toString().trim(),
+    clientRiderId: (workerCode || '').toString().trim(),
+    ev91RiderId: (ev91PublicId || workerCode || '').toString().trim(),
+    riderContact: mobile,
+  }
+  for (const key of identityKeysForOverallRow(probe)) keys.add(key)
+  if (ev91PublicId && ev91PublicId !== workerCode) {
+    for (const key of identityKeysForOverallRow({
+      ev91RiderId: ev91PublicId,
+      riderContact: mobile,
+    })) {
+      keys.add(key)
+    }
+  }
+
+  let best = null
+  for (const key of keys) {
+    const hit = byKey.get(key)
+    if (!hit) continue
+    if (!best || hit.at > best.at || (hit.at.getTime() === best.at.getTime() && hit.status === 'Returned')) {
+      best = hit
+    }
+  }
+  return best
+}
+
+/**
+ * Latest Current Status label per identity (Deployed / Returned / Not yet to deploy).
+ */
+export function buildEv91CurrentStatusByIdentity(currentRows = []) {
+  const byKey = new Map()
+  for (const row of currentRows || []) {
+    const status = normalizeCurrentStatus(row.currentStatus)
+    if (!status) continue
+    const at = parseEventInstant(row.lastStatusDate) || new Date(0)
+    const mapped = {
+      clientId: row.clientRiderId || row.clientId || '',
+      clientRiderId: row.clientRiderId || '',
+      ev91RiderId: row.ev91RiderId || '',
+      riderContact: row.riderContact || '',
+      vehicleNumber: (row.vehicleNumber || '').toString().trim(),
+    }
+    const event = {
+      status,
+      at,
+      vehicleNumber: mapped.vehicleNumber,
+      riderName: (row.riderName || '').toString().trim(),
+      mobile: (row.riderContact || '').toString().trim(),
+      client: (row.clientName || '').toString().trim(),
+      city: (row.city || '').toString().trim(),
+      source: (row.source || row.sourceName || '').toString().trim(),
+      allotmentDays: Number(row.aging),
+      deployDate: at && !Number.isNaN(at.getTime()) ? startOfDay(at) : null,
+    }
+    for (const key of identityKeysForOverallRow(mapped)) {
+      const prev = byKey.get(key)
+      if (!prev || at >= prev.at) byKey.set(key, event)
+    }
+  }
+  return byKey
+}
+
+export function lookupEv91CurrentStatusLabel(byKey, identity) {
+  return lookupEv91LatestOverallStatus(byKey, identity)
+}
+
+function canonicalEv91RiderGroupKey(row) {
+  const ev91 = (row.ev91RiderId || '').toString().trim()
+  if (ev91) return `ev91:${ev91.toUpperCase().replace(/[_\s-]+/g, '-')}`
+  const client = (row.clientId || row.clientRiderId || '').toString().trim()
+  if (client) return `client:${client.toUpperCase().replace(/[_\s-]+/g, '-')}`
+  const phone = normalizePhone(row.riderContact)
+  if (phone.length === 10) return `phone:${phone}`
+  return ''
+}
+
+function readAgingDays(row) {
+  const raw = Number(row?.aging ?? row?.Aging)
+  return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : null
+}
+
+/**
+ * Build vehicle cycles for one rider from their Overall Status events.
+ * Client-Swap keeps the same allotment open (updates client); only Return closes it.
+ * A Client-Swap with no prior Deploy starts the allotment (common in EV91 data).
+ */
+function buildEv91CyclesForRiderEvents(events, asOfDate) {
+  const asOf = startOfDay(asOfDate)
+  const byVehicle = new Map()
+
+  for (const event of events || []) {
+    const vehicleNumber = (event.row.vehicleNumber || '').toString().trim()
+    const vehicleKey = vehiclePartitionKey(vehicleNumber)
+    if (!vehicleKey) continue
+    if (!byVehicle.has(vehicleKey)) byVehicle.set(vehicleKey, [])
+    byVehicle.get(vehicleKey).push(event)
+  }
+
+  const cycles = []
+
+  for (const vehicleEvents of byVehicle.values()) {
+    vehicleEvents.sort(sortEv91Events)
+    let open = null
+
+    const closeOpen = (endEvent) => {
+      if (!open) return
+      const returnDate = endEvent ? endEvent.date : null
+      const endForDays = returnDate || asOf
+      const endStatus = endEvent
+        ? normalizeEv91OverallStatus(endEvent.row?.vehicleStatus)
+        : ''
+      const aging =
+        endStatus === 'Returned'
+          ? readAgingDays(endEvent.row)
+          : !returnDate
+            ? readAgingDays(open.last.row)
+            : null
+      const daysOnRoad =
+        aging != null ? aging : Math.max(0, differenceInCalendarDays(endForDays, open.from))
+
+      const startClient = (open.start.row.clientName || '').toString().trim()
+      const endClient = (open.last.row.clientName || '').toString().trim()
+      const swapBits = open.swaps
+        .map((s) => {
+          const name = (s.row.clientName || '').toString().trim()
+          return name ? `${format(s.date, 'dd/MM/yyyy')} ${name}` : ''
+        })
+        .filter(Boolean)
+      const uniqueSwaps = [...new Set(swapBits)]
+      let clientSwapSummary = ''
+      if (uniqueSwaps.length || (startClient && endClient && startClient !== endClient)) {
+        clientSwapSummary =
+          uniqueSwaps.length > 0
+            ? `Client-Swap: ${uniqueSwaps.join(' · ')}`
+            : `Client-Swap: ${startClient} → ${endClient}`
+      }
+
+      cycles.push({
+        vehicleNumber: open.vehicleNumber,
+        deployeeDate: open.from,
+        returnDate,
+        daysOnRoad,
+        status: returnDate ? 'Returned' : 'Deployed',
+        cityName: (open.last.row.cityName || open.last.row.city || '').toString().trim(),
+        clientName: endClient || startClient,
+        startClientName: startClient,
+        sourceName: (open.last.row.sourceName || open.last.row.source || '').toString().trim(),
+        clientSwapSummary,
+        periodOrders: 0,
+        fromEv91Overall: true,
+      })
+      open = null
+    }
+
+    for (const event of vehicleEvents) {
+      const vehicleNumber = (event.row.vehicleNumber || '').toString().trim()
+      if (event.status === 'Deployed') {
+        if (open) closeOpen({ date: event.date, row: event.row })
+        open = {
+          from: event.date,
+          vehicleNumber,
+          start: event,
+          last: event,
+          swaps: [],
+        }
+      } else if (event.status === 'Client-Swap') {
+        if (!open) {
+          open = {
+            from: event.date,
+            vehicleNumber,
+            start: event,
+            last: event,
+            swaps: [event],
+          }
+        } else {
+          open.swaps.push(event)
+          open.last = event
+        }
+      } else if (event.status === 'Returned') {
+        if (open) closeOpen(event)
+      }
+    }
+    if (open) closeOpen(null)
+  }
+
+  return cycles.sort((a, b) => (b.deployeeDate?.getTime() || 0) - (a.deployeeDate?.getTime() || 0))
+}
+
+/**
+ * Index Rider & Vehicle Insight assignment history from EV91 Overall Status.
+ * Keys: EV91 ID / client ID / phone (same as overall identity keys).
+ */
+export function buildEv91InsightAssignmentIndex(overallRows = [], asOfDate = new Date()) {
+  const groups = new Map()
+
+  for (const row of overallRows || []) {
+    const status = normalizeEv91OverallStatus(row.vehicleStatus)
+    if (!status) continue
+    const at = parseEventInstant(row.statusDate)
+    if (!at || Number.isNaN(at.getTime())) continue
+    const groupKey = canonicalEv91RiderGroupKey(row)
+    if (!groupKey) continue
+    if (!groups.has(groupKey)) groups.set(groupKey, [])
+    groups.get(groupKey).push({
+      status,
+      at,
+      date: startOfDay(at),
+      row,
+    })
+  }
+
+  const byKey = new Map()
+
+  for (const events of groups.values()) {
+    const assignments = buildEv91CyclesForRiderEvents(events, asOfDate)
+    if (!assignments.length) continue
+
+    const keys = new Set()
+    for (const event of events) {
+      for (const key of identityKeysForOverallRow(event.row)) keys.add(key)
+    }
+    for (const key of keys) {
+      const prev = byKey.get(key)
+      if (!prev || assignments.length >= prev.length) byKey.set(key, assignments)
+    }
+  }
+
+  return byKey
+}
+
+/** Lookup Overall-based assignment history for a rider identity. */
+export function lookupEv91InsightAssignments(index, { workerCode = '', ev91PublicId = '', mobile = '' } = {}) {
+  if (!index?.size) return []
+
+  const keys = new Set()
+  for (const key of identityKeysForOverallRow({
+    clientId: (workerCode || '').toString().trim(),
+    clientRiderId: (workerCode || '').toString().trim(),
+    ev91RiderId: (ev91PublicId || workerCode || '').toString().trim(),
+    riderContact: mobile,
+  })) {
+    keys.add(key)
+  }
+  if (ev91PublicId && ev91PublicId !== workerCode) {
+    for (const key of identityKeysForOverallRow({
+      ev91RiderId: ev91PublicId,
+      riderContact: mobile,
+    })) {
+      keys.add(key)
+    }
+  }
+
+  let best = []
+  for (const key of keys) {
+    const hit = index.get(key)
+    if (hit?.length && hit.length > best.length) best = hit
+  }
+  return best
+}
+
+function assignmentRangeMs(asgn) {
+  const from = asgn?.deployeeDate instanceof Date ? asgn.deployeeDate.getTime() : 0
+  const to =
+    asgn?.returnDate instanceof Date
+      ? asgn.returnDate.getTime()
+      : asgn?.status === 'Deployed'
+        ? Date.now()
+        : from
+  return { from, to: Math.max(to, from) }
+}
+
+function assignmentOverlapDays(a, b) {
+  const ra = assignmentRangeMs(a)
+  const rb = assignmentRangeMs(b)
+  const start = Math.max(ra.from, rb.from)
+  const end = Math.min(ra.to, rb.to)
+  if (end < start) return 0
+  return Math.max(1, Math.round((end - start) / 86400000))
+}
+
+function minDate(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  return a.getTime() <= b.getTime() ? a : b
+}
+
+function maxDate(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  return a.getTime() >= b.getTime() ? a : b
+}
+
+/**
+ * Merge Fleet assignment history with EV91 Overall cycles.
+ * - Keeps Fleet periods/days (so on-road totals are not undercounted)
+ * - Adds EV91-only cycles (e.g. Client-Swap → Return missing in Fleet)
+ * - On same vehicle + overlapping dates: enrich client/swap from EV91, keep stronger day count
+ */
+export function mergeFleetAndEv91InsightAssignments(fleetAssignments = [], ev91Assignments = []) {
+  const fleet = (fleetAssignments || []).filter(Boolean)
+  const ev91 = (ev91Assignments || []).filter(Boolean)
+  if (!ev91.length) {
+    return fleet.map((a) => ({ ...a, dataSource: a.dataSource || 'Fleet' }))
+  }
+  if (!fleet.length) {
+    return ev91.map((a) => ({ ...a, dataSource: a.dataSource || 'EV91' }))
+  }
+
+  const usedFleet = new Set()
+  const merged = []
+
+  for (const ev of ev91) {
+    const evKey = vehiclePartitionKey(ev.vehicleNumber)
+    let bestFi = -1
+    let bestOverlap = 0
+    for (let fi = 0; fi < fleet.length; fi++) {
+      if (usedFleet.has(fi)) continue
+      const fl = fleet[fi]
+      if (vehiclePartitionKey(fl.vehicleNumber) !== evKey) continue
+      const overlap = assignmentOverlapDays(fl, ev)
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap
+        bestFi = fi
+      }
+    }
+
+    if (bestFi >= 0 && bestOverlap > 0) {
+      usedFleet.add(bestFi)
+      const fl = fleet[bestFi]
+      const deployeeDate = minDate(fl.deployeeDate, ev.deployeeDate)
+      const returnDate =
+        fl.returnDate && ev.returnDate
+          ? maxDate(fl.returnDate, ev.returnDate)
+          : fl.returnDate || ev.returnDate || null
+      const status = returnDate ? 'Returned' : 'Deployed'
+      const fleetDays = Number(fl.daysOnRoad)
+      const evDays = Number(ev.daysOnRoad)
+      const recalc =
+        deployeeDate != null
+          ? Math.max(
+              0,
+              differenceInCalendarDays(returnDate || startOfDay(new Date()), deployeeDate)
+            )
+          : 0
+      // Prefer the larger of Fleet / EV91 / recalculated span so neither source undercounts.
+      const daysOnRoad = Math.max(
+        Number.isFinite(fleetDays) && fleetDays > 0 ? fleetDays : 0,
+        Number.isFinite(evDays) && evDays > 0 ? evDays : 0,
+        recalc
+      )
+      merged.push({
+        ...fl,
+        ...ev,
+        vehicleNumber: fl.vehicleNumber || ev.vehicleNumber,
+        deployeeDate,
+        returnDate,
+        status,
+        daysOnRoad,
+        cityName: fl.cityName || ev.cityName || '',
+        clientName: ev.clientName || fl.clientName || '',
+        startClientName: ev.startClientName || fl.clientName || '',
+        sourceName: fl.sourceName || ev.sourceName || '',
+        clientSwapSummary: ev.clientSwapSummary || fl.clientSwapSummary || '',
+        periodOrders: Number(fl.periodOrders) || Number(ev.periodOrders) || 0,
+        fromEv91Overall: true,
+        fromFleet: true,
+        dataSource: 'Fleet+EV91',
+      })
+    } else {
+      merged.push({
+        ...ev,
+        dataSource: 'EV91',
+        fromEv91Overall: true,
+      })
+    }
+  }
+
+  for (let fi = 0; fi < fleet.length; fi++) {
+    if (usedFleet.has(fi)) continue
+    merged.push({
+      ...fleet[fi],
+      dataSource: fleet[fi].dataSource || 'Fleet',
+      fromFleet: true,
+    })
+  }
+
+  return merged.sort(
+    (a, b) => (b.deployeeDate?.getTime?.() || 0) - (a.deployeeDate?.getTime?.() || 0)
+  )
 }
 
 export { selectOverviewOrderRows }

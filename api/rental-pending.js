@@ -8,12 +8,15 @@
  *   city, month, rider_id, contact_no, rider_name, client_name, ev91_rider_id,
  *   week_start_date, week_end_date, vehicle_number, actual_pending_for_week, aging_days,
  *   per_order_amount, "order DD/MM/YYYY"…, total_order, earning
+ * Multi-client riders also get `by_client` (latest row per client) + `count`.
+ * Optional filters: client_name / rider_id (or p_client_name / p_rider_id).
  *
  * Post-week orders: (week_end + 1) → yesterday IST from order_upload_data (worker_code = rider_id).
  * earning = total_order × per_order_amount (Full Data commercial rates).
  *
  * Local:
  *   http://localhost:5173/api/rental-pending?ev91_rider_id=CHE-26-R001711&api_key=ev91-rental-pending-2026
+ *   …&client_name=BB   or   …&rider_id=1019322
  */
 import { getSupabase } from './lib/supabaseServer.js'
 
@@ -482,6 +485,88 @@ function sortRentalRowsNewestFirst(rows) {
   return [...(rows || [])].sort((a, b) => (preferRentalRow(a, b) === a ? -1 : 1))
 }
 
+/** Latest upload (id desc) per client_name. */
+function latestRentalRowPerClient(rows) {
+  const byClient = new Map()
+  for (const row of sortRentalRowsByIdDesc(rows)) {
+    const key = String(row?.client_name || '')
+      .trim()
+      .toLowerCase() || '_unknown'
+    if (!byClient.has(key)) byClient.set(key, row)
+  }
+  return [...byClient.values()]
+}
+
+/** Keep RPC money/order fields after normalize (do not recompute from one client). */
+function mergeRpcAgingPayload(row, ev91RiderId) {
+  const base = normalizeAgingPayload(row, ev91RiderId)
+  if (!row || typeof row !== 'object') return base
+  base.actual_pending_for_week = numOrZero(
+    row.actual_pending_for_week ?? base.actual_pending_for_week
+  )
+  if (row.earning != null && row.earning !== '') base.earning = numOrZero(row.earning)
+  if (row.total_order != null && row.total_order !== '') base.total_order = numOrZero(row.total_order)
+  if (row.per_order_amount != null && row.per_order_amount !== '') {
+    base.per_order_amount = numOrZero(row.per_order_amount)
+  }
+  for (const [key, value] of Object.entries(row)) {
+    if (key.startsWith('order ')) base[key] = numOrZero(value)
+  }
+  return base
+}
+
+/**
+ * Multi-client rollup for `data`.
+ * Keeps primary actual_pending_for_week (does NOT sum clients).
+ * Sums earning + total_order + day-wise orders only.
+ */
+function aggregateMultiClientPayload(primary, byClientRows = []) {
+  const rows = byClientRows.length ? byClientRows : primary ? [primary] : []
+  if (!rows.length) return primary || normalizeAgingPayload({})
+  if (rows.length === 1) return { ...(primary || rows[0]) }
+
+  const base = { ...(primary || rows[0] || {}) }
+  let sumEarning = 0
+  let sumOrders = 0
+  const orderTotals = new Map()
+
+  for (const row of rows) {
+    sumEarning += numOrZero(row.earning)
+    sumOrders += numOrZero(row.total_order)
+
+    for (const [key, value] of Object.entries(row || {})) {
+      if (!key.startsWith('order ')) continue
+      orderTotals.set(key, (orderTotals.get(key) || 0) + numOrZero(value))
+    }
+  }
+
+  for (const key of Object.keys(base)) {
+    if (key.startsWith('order ')) delete base[key]
+  }
+  for (const [key, qty] of orderTotals) {
+    base[key] = qty
+  }
+
+  base.earning = sumEarning
+  base.total_order = sumOrders
+  return base
+}
+
+/** Latest upload id first (matches original production primary pick). */
+function sortRentalRowsByIdDesc(rows) {
+  return [...(rows || [])].sort((a, b) => (b?.id ?? 0) - (a?.id ?? 0))
+}
+
+function filterRentalRowsByClient(rows, clientName, riderId) {
+  const client = String(clientName || '').trim().toLowerCase()
+  const rider = String(riderId || '').trim()
+  return (rows || []).filter((row) => {
+    if (client && String(row.client_name || '').trim().toLowerCase() !== client) return false
+    if (rider && String(row.rider_id || '').trim() !== rider) return false
+    return true
+  })
+}
+
 async function fetchRentalRowsByEv91(ev91RiderId) {
   const supabase = getSupabase()
   const { data, error } = await supabase
@@ -512,14 +597,22 @@ async function handleLookup(query) {
     query.history === 'true' ||
     String(query.history || '').toLowerCase() === 'yes'
 
+  const clientFilter = String(
+    query.client_name || query.clientName || query.p_client_name || ''
+  ).trim()
+  const riderFilter = String(
+    query.rider_id || query.riderId || query.p_rider_id || ''
+  ).trim()
+
   // Prefer production RPC when available
   try {
     const supabase = getSupabase()
-    const { data, error } = await supabase.rpc('rental_pending_transfer', {
+    const rpcArgs = {
       p_ev91_rider_id: ev91RiderId,
       p_api_key: getExpectedApiKey(),
       p_history: history,
-    })
+    }
+    const { data, error } = await supabase.rpc('rental_pending_transfer', rpcArgs)
     if (!error && data && typeof data === 'object') {
       const body = data
       if (body.success === false) {
@@ -530,24 +623,81 @@ async function handleLookup(query) {
         return lookupOverallDeployedFallback(ev91RiderId)
       }
       // Normalize to fixed contract (DD/MM/YYYY dates, missing → 0), then attach orders
-      if (Array.isArray(body.data)) {
+      if (history && Array.isArray(body.data)) {
         body.data = body.data.map((row) => normalizeAgingPayload(row, ev91RiderId))
         body.count = body.data.length
-      } else if (body.data) {
-        body.data = normalizeAgingPayload(body.data, ev91RiderId)
+        return { status: 200, body: await enrichLookupBody(body) }
       }
-      return { status: 200, body: await enrichLookupBody(body) }
+
+      if (Array.isArray(body.by_client) && body.by_client.length) {
+        const clients = await Promise.all(
+          body.by_client
+            .map((row) => normalizeAgingPayload(row, ev91RiderId))
+            .map((row) => enrichAgingPayloadWithOrders(row))
+        )
+        // Prefer SQL `data` (primary by id + pending not summed); else build from clients
+        let data
+        if (body.data && !Array.isArray(body.data)) {
+          data = mergeRpcAgingPayload(body.data, ev91RiderId)
+          // Re-apply earning/order sum from clients; keep pending from SQL primary
+          if (clients.length > 1 && !clientFilter && !riderFilter) {
+            const pending = data.actual_pending_for_week
+            data = aggregateMultiClientPayload(data, clients)
+            data.actual_pending_for_week = pending
+          }
+        } else {
+          const primaryRow = sortRentalRowsByIdDesc(
+            await fetchRentalRowsByEv91(ev91RiderId)
+          )[0]
+          const primaryPayload =
+            clients.find(
+              (c) =>
+                String(c.client_name || '').toLowerCase() ===
+                String(primaryRow?.client_name || '').toLowerCase()
+            ) || clients[0]
+          data =
+            clients.length > 1 && !clientFilter && !riderFilter
+              ? aggregateMultiClientPayload(primaryPayload, clients)
+              : primaryPayload
+        }
+        return {
+          status: 200,
+          body: {
+            success: true,
+            ev91_rider_id: ev91RiderId,
+            data,
+            by_client: clients,
+          },
+        }
+      }
+
+      if (body.data && !Array.isArray(body.data)) {
+        // Simple production shape: normalize + attach orders/earning
+        const data = await enrichAgingPayloadWithOrders(
+          mergeRpcAgingPayload(body.data, ev91RiderId)
+        )
+        return {
+          status: 200,
+          body: {
+            success: true,
+            ev91_rider_id: ev91RiderId,
+            data,
+          },
+        }
+      }
+      return { status: 200, body }
     }
-    if (error && !/could not find|does not exist|schema cache/i.test(error.message || '')) {
+    if (error && !/could not find|does not exist|schema cache|function.*rental_pending_transfer/i.test(error.message || '')) {
       throw error
     }
   } catch (rpcErr) {
-    if (!/could not find|does not exist|schema cache/i.test(rpcErr?.message || '')) {
+    if (!/could not find|does not exist|schema cache|function.*rental_pending_transfer/i.test(rpcErr?.message || '')) {
       console.warn('[api/rental-pending] RPC fallback:', rpcErr?.message || rpcErr)
     }
   }
 
-  const rows = sortRentalRowsNewestFirst(await fetchRentalRowsByEv91(ev91RiderId))
+  let rows = sortRentalRowsNewestFirst(await fetchRentalRowsByEv91(ev91RiderId))
+  rows = filterRentalRowsByClient(rows, clientFilter, riderFilter)
   if (!rows.length) {
     return lookupOverallDeployedFallback(ev91RiderId)
   }
@@ -564,13 +714,28 @@ async function handleLookup(query) {
     }
   }
 
+  const perClient = latestRentalRowPerClient(rows)
+  const enrichedClients = await Promise.all(
+    perClient.map((row) => enrichAgingPayloadWithOrders(mapRentalPublic(row)))
+  )
+  const primaryRow = sortRentalRowsByIdDesc(rows)[0]
+  const primaryPayload =
+    enrichedClients.find(
+      (c) =>
+        String(c.client_name || '').toLowerCase() ===
+        String(primaryRow?.client_name || '').toLowerCase()
+    ) || enrichedClients[0]
+  const multi = enrichedClients.length > 1 && !clientFilter && !riderFilter
   return {
     status: 200,
-    body: await enrichLookupBody({
+    body: {
       success: true,
       ev91_rider_id: ev91RiderId,
-      data: mapRentalPublic(rows[0]),
-    }),
+      data: multi
+        ? aggregateMultiClientPayload(primaryPayload, enrichedClients)
+        : primaryPayload,
+      by_client: enrichedClients,
+    },
   }
 }
 

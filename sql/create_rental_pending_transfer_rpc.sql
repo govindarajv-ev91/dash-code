@@ -1,5 +1,5 @@
 -- Aging rental pending transfer API
--- + post-week day-wise orders, per_order_amount, total_order, earning
+-- + post-week orders, per_order_amount, total_order, earning
 -- Run in Supabase SQL Editor (safe to re-run).
 --
 -- Aging rule (Asia/Kolkata):
@@ -7,14 +7,16 @@
 --   before 12:00 → aging_days = calendar_days - 1
 --   at/after 12:00 → aging_days = calendar_days
 --
--- Post-week orders:
---   from (week_end + 1 day) through yesterday (IST), keyed as "order DD/MM/YYYY"
---   per_order_amount from Full Data commercial rates (Blinkit=53, etc.)
---   earning = total_order * per_order_amount
+-- Orders: (week_end + 1) → yesterday IST from order_upload_data
+-- earning = total_order × per_order_amount
 --
--- POST (recommended):
---   https://arnxvnkednpzyzyfculx.supabase.co/rest/v1/rpc/rental_pending_transfer
+-- POST:
 --   Body: {"p_ev91_rider_id":"BLR-26-R000039","p_api_key":"ev91-rental-pending-2026","p_history":false}
+
+-- Remove conflicting overloads first
+drop function if exists public.rental_pending(text, text, text);
+drop function if exists public.rental_pending_transfer(text, text, boolean);
+drop function if exists public.rental_pending_transfer(text, text, boolean, text, text);
 
 create or replace function public.parse_rental_week_date(raw text)
 returns date
@@ -96,14 +98,14 @@ begin
 end;
 $$;
 
--- Client per-order ₹ (matches Full Data commercial rates).
+-- Client per-order ₹ (Full Data rates; includes FK-LMA / FKM-LMA → Flipkart-LMA)
 create or replace function public.rental_pending_client_per_order_rate(p_client text)
 returns numeric
 language plpgsql
 immutable
 as $$
 declare
-  k text := lower(trim(regexp_replace(coalesce(p_client, ''), '[_\s]+', ' ', 'g')));
+  k text := lower(trim(regexp_replace(coalesce(p_client, ''), '[-_\s]+', ' ', 'g')));
 begin
   if k = '' then
     return 0;
@@ -113,8 +115,9 @@ begin
   if k in ('bb now', 'bb', 'bigbasket', 'big basket') then return 47; end if;
   if k in ('blinkit') then return 53; end if;
   if k in ('docpharma', 'doc pharma') then return 140; end if;
-  if k in ('flipkart minutes', 'flipkart-minutes', 'fkm') then return 49; end if;
-  if k in ('flipkart-lma', 'fkm-lma') then return 18; end if;
+  if k in ('flipkart minutes', 'fkm') then return 49; end if;
+  if k in ('flipkart lma', 'fkm lma', 'fk lma') then return 18; end if;
+  if k ~ '(fk|fkm|flipkart).*lma' then return 18; end if;
   if k in ('inamo') then return 65; end if;
   if k in ('instamart', 'swiggy', 'swiggy instamart') then return 49; end if;
   if k in ('kpn') then return 63; end if;
@@ -178,8 +181,7 @@ begin
 end;
 $$;
 
--- Add day-wise orders (week_end+1 → yesterday IST) + rate / totals.
--- Index-friendly: equality on worker_code + YYYY-MM-DD text range on date_record.
+-- Day-wise orders after week_end → yesterday + per_order_amount + earning
 create or replace function public.enrich_rental_pending_with_post_week_orders(
   p_mapped jsonb,
   p_rider_id text,
@@ -210,37 +212,24 @@ begin
   out_json := out_json || jsonb_build_object('per_order_amount', coalesce(rate, 0));
 
   if week_end is null or rider is null then
-    return out_json
-      || jsonb_build_object(
-        'total_order', 0,
-        'earning', 0
-      );
+    return out_json || jsonb_build_object('total_order', 0, 'earning', 0);
   end if;
 
   range_start := week_end + 1;
   range_end := ist_today - 1;
 
-  -- Cap lookback so a bad week_end cannot scan months of days
   if range_end - range_start > 45 then
     range_start := range_end - 45;
   end if;
 
   if range_start > range_end then
-    return out_json
-      || jsonb_build_object(
-        'total_order', 0,
-        'earning', 0
-      );
+    return out_json || jsonb_build_object('total_order', 0, 'earning', 0);
   end if;
 
   from_ymd := to_char(range_start, 'YYYY-MM-DD');
   to_ymd := to_char(range_end, 'YYYY-MM-DD');
 
-  -- Use worker_code + date_record indexes (no upper/trim/parse on columns).
-  select coalesce(
-    jsonb_object_agg(o.date_record, o.qty),
-    '{}'::jsonb
-  )
+  select coalesce(jsonb_object_agg(o.date_record, o.qty), '{}'::jsonb)
   into orders_by_day
   from (
     select
@@ -272,16 +261,10 @@ begin
   return out_json;
 exception
   when others then
-    -- Never fail the whole aging API if order lookup is slow/unavailable
-    return out_json
-      || jsonb_build_object(
-        'total_order', 0,
-        'earning', 0
-      );
+    return out_json || jsonb_build_object('total_order', 0, 'earning', 0);
 end;
 $$;
 
--- Speeds worker + date lookups used by enrich
 create index if not exists order_upload_data_worker_date_idx
   on public.order_upload_data (worker_code, date_record);
 
@@ -333,7 +316,6 @@ begin
   end if;
 
   if coalesce(p_history, false) then
-    -- History: base aging fields only (skip day-wise order scan per row)
     select coalesce(
       jsonb_agg(
         public.map_rental_pending_aging_fields(

@@ -311,14 +311,14 @@ function buildFleetContactEnrichment(fleetRows, asOfDate) {
 function enrichAssignmentMobile(assignment, contactLookup) {
   if (normalizePhone(assignment.mobile)) return assignment
 
+  // Only fill from the same rider ID. Never use vehicle-level phone history —
+  // that attaches a prior rider's number to a later deploy on the same bike
+  // (e.g. returned rider still looks "currently deployed" by phone search).
   const idKey = normalizeRiderIdKey(assignment.riderId)
-  const vKey = vehiclePartitionKey(assignment.vehicleNumber)
   const fromRider = idKey ? contactLookup.byRiderId.get(idKey) : null
-  const fromVehicle = vKey ? contactLookup.byVehicle.get(vKey) : null
-  const phone = fromRider?.phone || fromVehicle?.phone
-  if (!phone) return assignment
+  if (!fromRider?.phone) return assignment
 
-  return { ...assignment, mobile: phone }
+  return { ...assignment, mobile: fromRider.phone }
 }
 
 export function getCurrentlyDeployedAssignments(fleetRows, asOfDate) {

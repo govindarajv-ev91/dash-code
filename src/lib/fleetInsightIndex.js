@@ -312,8 +312,10 @@ export function buildCurrentDeployLookup(assignments) {
     const vehicleKey = vehiclePartitionKey(assignment.vehicleNumber)
     if (vehicleKey) byVehicle.set(vehicleKey, assignment)
 
-    for (const alias of extractRiderIdAliases(assignment.riderId)) {
-      if (!byId.has(alias)) byId.set(alias, assignment)
+    for (const idField of [assignment.riderId, assignment.clientRiderId, assignment.ev91RiderId]) {
+      for (const alias of extractRiderIdAliases(idField)) {
+        if (!byId.has(alias)) byId.set(alias, assignment)
+      }
     }
 
     const phone = normalizePhone(assignment.mobile)

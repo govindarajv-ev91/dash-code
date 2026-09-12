@@ -4,7 +4,7 @@ import {
   getRiderPerformanceHeaders,
   getZeroOrderRiderPerformanceHeaders,
 } from './riderPerformanceReport'
-import { fetchAllEv91MisData } from './ev91MisApi'
+import { fetchAllEv91MisData, normalizeCurrentVehicleStatus } from './ev91MisApi'
 import { lookupRentalPendingAmount } from './rentalPendingDb'
 import {
   fillAssignmentSourceFromOnboarding,
@@ -91,15 +91,15 @@ function parseEv91Date(value, fallback) {
 
 /**
  * Convert EV91 Current Vehicle Status rows → Rider Performance assignments.
- * Only Deployed riders.
+ * Only truly Deployed riders (excludes "Yet not deployed" / "Not deployed").
  */
 export function ev91CurrentStatusToAssignments(rows, asOfDate = new Date()) {
   const asOf = startOfDay(asOfDate)
   const assignments = []
 
   for (const row of rows || []) {
-    const status = String(row.currentStatus || '').toLowerCase()
-    if (!status.includes('deploy')) continue
+    const status = normalizeCurrentVehicleStatus(row.currentStatus)
+    if (status !== 'Deployed') continue
 
     const clientRiderId = (row.clientRiderId || '').toString().trim()
     const ev91RiderId = (row.ev91RiderId || '').toString().trim()
@@ -150,6 +150,14 @@ export async function fetchEv91DeployedRiders({ city = '', search = '' } = {}) {
     summary: result.summary || {},
     pagination: result.pagination || {},
   }
+}
+
+/**
+ * Build current-deploy assignments from EV91 Current Status (Deployed rows only).
+ * Used by Rider & Vehicle Insight so live vehicle follows EV91, not stale fleet phone links.
+ */
+export function ev91CurrentRowsToDeployAssignments(rows, asOfDate = new Date()) {
+  return ev91CurrentStatusToAssignments(rows, asOfDate)
 }
 
 export function buildEv91RiderPerformanceReport(

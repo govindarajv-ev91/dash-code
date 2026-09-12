@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format, differenceInDays } from 'date-fns';
+import { format, differenceInDays, startOfDay } from 'date-fns';
 import { Search, MapPin, User, Bike, Calendar, ChevronDown, ChevronUp, Activity, Package, Clock, Phone } from 'lucide-react';
 import {
     buildFleetHistoryIndex,
@@ -15,7 +15,20 @@ import {
 } from './lib/fleetInsightIndex';
 import { parseFleetDate, vehiclePartitionKey } from './lib/fleetDeployReturnExport';
 import { extractFleetSource, getCurrentlyDeployedAssignments, normalizeRiderIdKey } from './lib/riderPerformanceReport';
-import { fetchEv91RiderDetails } from './lib/ev91RiderPerformance';
+import {
+    fetchEv91RiderDetails,
+    ev91CurrentRowsToDeployAssignments,
+} from './lib/ev91RiderPerformance';
+import {
+    fetchEv91CurrentStatusAll,
+    fetchEv91OverallStatusAll,
+    buildEv91LatestOverallStatusByIdentity,
+    buildEv91CurrentStatusByIdentity,
+    buildEv91InsightAssignmentIndex,
+    lookupEv91LatestOverallStatus,
+    lookupEv91InsightAssignments,
+    mergeFleetAndEv91InsightAssignments,
+} from './lib/ev91EvLookup';
 import { riderInsightIdentityKeys } from './lib/ev91RiderVehicleInsight';
 
 function pickCanonicalRiderKey(workerCode) {
@@ -55,12 +68,20 @@ const VehicleTracking = ({
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(25);
     const [ev91DetailsById, setEv91DetailsById] = useState(new Map());
+    const [ev91CurrentDeployLookup, setEv91CurrentDeployLookup] = useState(null);
+    const [ev91LatestOverallById, setEv91LatestOverallById] = useState(null);
+    const [ev91CurrentStatusById, setEv91CurrentStatusById] = useState(null);
+    const [ev91AssignmentIndex, setEv91AssignmentIndex] = useState(null);
     const [ev91ApiLoading, setEv91ApiLoading] = useState(includeEv91Api);
     const [ev91ApiError, setEv91ApiError] = useState('');
 
     useEffect(() => {
         if (!includeEv91Api) {
             setEv91DetailsById(new Map());
+            setEv91CurrentDeployLookup(null);
+            setEv91LatestOverallById(null);
+            setEv91CurrentStatusById(null);
+            setEv91AssignmentIndex(null);
             setEv91ApiLoading(false);
             setEv91ApiError('');
             return;
@@ -68,14 +89,48 @@ const VehicleTracking = ({
         let cancelled = false;
         setEv91ApiLoading(true);
         setEv91ApiError('');
-        fetchEv91RiderDetails()
-            .then((map) => {
-                if (!cancelled) setEv91DetailsById(map || new Map());
+        Promise.all([
+            fetchEv91RiderDetails(),
+            fetchEv91CurrentStatusAll()
+                .then((res) => res?.data || [])
+                .catch((err) => {
+                    console.warn('EV91 current-status for insight failed:', err);
+                    return null;
+                }),
+            fetchEv91OverallStatusAll()
+                .then((res) => res?.data || [])
+                .catch((err) => {
+                    console.warn('EV91 overall-status for insight failed:', err);
+                    return null;
+                }),
+        ])
+            .then(([map, currentRows, overallRows]) => {
+                if (cancelled) return;
+                setEv91DetailsById(map || new Map());
+                if (currentRows) {
+                    const assignments = ev91CurrentRowsToDeployAssignments(currentRows, new Date());
+                    setEv91CurrentDeployLookup(buildCurrentDeployLookup(assignments));
+                    setEv91CurrentStatusById(buildEv91CurrentStatusByIdentity(currentRows));
+                } else {
+                    setEv91CurrentDeployLookup(null);
+                    setEv91CurrentStatusById(null);
+                }
+                if (overallRows) {
+                    setEv91LatestOverallById(buildEv91LatestOverallStatusByIdentity(overallRows));
+                    setEv91AssignmentIndex(buildEv91InsightAssignmentIndex(overallRows, new Date()));
+                } else {
+                    setEv91LatestOverallById(null);
+                    setEv91AssignmentIndex(null);
+                }
             })
             .catch((err) => {
-                console.warn('EV91 rider-details for monitor failed:', err);
+                console.warn('EV91 APIs for insight failed:', err);
                 if (!cancelled) {
                     setEv91DetailsById(new Map());
+                    setEv91CurrentDeployLookup(null);
+                    setEv91LatestOverallById(null);
+                    setEv91CurrentStatusById(null);
+                    setEv91AssignmentIndex(null);
                     setEv91ApiError(err?.message || 'EV91 rider details unavailable');
                 }
             })
@@ -370,7 +425,235 @@ const VehicleTracking = ({
     }, [fleetData, riderData, currentlyDeployedAssignments, currentDeployLookup]);
 
     const processedRiderData = useMemo(() => {
-        if (!includeEv91Api || !ev91DetailsById?.size) return baseProcessedRiderData;
+        if (!includeEv91Api) return baseProcessedRiderData;
+
+        const hasEv91LiveSignals = Boolean(
+            ev91CurrentDeployLookup ||
+                ev91LatestOverallById ||
+                ev91CurrentStatusById ||
+                ev91AssignmentIndex
+        );
+
+        const resolveIdentity = (row) => ({
+            workerCode: row.riderId,
+            ev91PublicId: row.ev91PublicId,
+            mobile: row.mobile,
+        });
+
+        const withDerivedFleetFlags = (row, { currentVehicle, currentStatus, assignments }) => {
+            const history = assignments || [];
+            const totalOnRoadDays = history.reduce((sum, h) => sum + (Number(h.daysOnRoad) || 0), 0);
+            const deployedAssignmentsCount = currentStatus === 'Deployed' ? 1 : 0;
+            const returnedAssignmentsCount = history.filter((h) => h.status === 'Returned').length;
+            const averageAssignmentDays =
+                history.length > 0 ? Math.round(totalOnRoadDays / history.length) : 0;
+            const daysSinceLastOrder = row.lastOrderDate
+                ? differenceInDays(new Date(), row.lastOrderDate)
+                : 999;
+            const riderActiveStatus =
+                currentStatus === 'Deployed' || daysSinceLastOrder <= 30 ? 'Active' : 'Inactive';
+            let fleetRemark = row.fleetCategory || 'Unknown';
+            let fleetStatusClass = 'unknown';
+            let fleetType = 'UNKNOWN';
+            if (currentStatus === 'Deployed') {
+                fleetRemark = 'EV';
+                fleetStatusClass = 'ev';
+                fleetType = 'EV';
+            } else if (row.fleetCategory === 'EV') {
+                fleetRemark = riderActiveStatus === 'Active' ? 'Non-EV (Own Bike)' : 'Non-EV (Returned)';
+                fleetStatusClass = 'non-ev';
+                fleetType = 'NON-EV';
+            } else if (row.fleetCategory === 'NON-EV') {
+                fleetRemark = 'Non-EV';
+                fleetStatusClass = 'non-ev';
+                fleetType = 'NON-EV';
+            }
+            return {
+                ...row,
+                currentVehicle,
+                currentStatus,
+                assignments: history,
+                totalOnRoadDays,
+                deployedAssignmentsCount,
+                returnedAssignmentsCount,
+                averageAssignmentDays,
+                riderActiveStatus,
+                statusDetail:
+                    riderActiveStatus === 'Inactive' && row.lastOrderDate
+                        ? `${daysSinceLastOrder}d`
+                        : '',
+                fleetRemark,
+                fleetStatusClass,
+                fleetType,
+            };
+        };
+
+        const applyEv91OverallHistory = (row) => {
+            const fleetHistory = row.assignments || [];
+            const ev91History = ev91AssignmentIndex
+                ? lookupEv91InsightAssignments(ev91AssignmentIndex, resolveIdentity(row))
+                : [];
+
+            if (!ev91History.length && !fleetHistory.length) return row;
+
+            // Keep Fleet periods/days and add/enrich with EV91 Overall (Client-Swap, etc.).
+            const merged = mergeFleetAndEv91InsightAssignments(fleetHistory, ev91History);
+
+            const withOrders = merged.map((asgn) => {
+                if (asgn.periodOrders) return asgn;
+                const fromDate = asgn.deployeeDate;
+                const toDate = asgn.returnDate || new Date();
+                if (!fromDate) return asgn;
+                const periodOrders = (row.orderRecords || []).reduce((sum, rec) => {
+                    if (rec.date >= fromDate && rec.date <= toDate) return sum + (rec.delivered || 0);
+                    return sum;
+                }, 0);
+                return { ...asgn, periodOrders };
+            });
+
+            const identity = resolveIdentity(row);
+            const latestOverall = ev91LatestOverallById
+                ? lookupEv91LatestOverallStatus(ev91LatestOverallById, identity)
+                : null;
+            const currentLabel = ev91CurrentStatusById
+                ? lookupEv91LatestOverallStatus(ev91CurrentStatusById, identity)
+                : null;
+
+            const open = withOrders.find((a) => a.status === 'Deployed');
+            const forcedReturned =
+                latestOverall?.status === 'Returned' ||
+                currentLabel?.status === 'Returned' ||
+                currentLabel?.status === 'Not yet to deploy';
+
+            if (forcedReturned) {
+                const closed = withOrders.map((a) =>
+                    a.status === 'Deployed'
+                        ? {
+                              ...a,
+                              status: 'Returned',
+                              returnDate:
+                                  a.returnDate ||
+                                  (latestOverall?.at ? startOfDay(latestOverall.at) : new Date()),
+                          }
+                        : a
+                );
+                return withDerivedFleetFlags(row, {
+                    currentVehicle: 'None',
+                    currentStatus: 'No Active Vehicle',
+                    assignments: closed,
+                });
+            }
+
+            return withDerivedFleetFlags(row, {
+                currentVehicle: open ? open.vehicleNumber : 'None',
+                currentStatus: open ? 'Deployed' : 'No Active Vehicle',
+                assignments: withOrders,
+            });
+        };
+
+        const applyEv91LiveDeploy = (row) => {
+            if (!hasEv91LiveSignals && !ev91AssignmentIndex) return row;
+
+            // Merge Fleet + EV91 Overall history (keeps Fleet day counts, adds EV91 cycles).
+            const next = applyEv91OverallHistory(row);
+            if ((next.assignments || []).length > 0) return next;
+
+            const identity = resolveIdentity(next);
+            const latestOverall = ev91LatestOverallById
+                ? lookupEv91LatestOverallStatus(ev91LatestOverallById, identity)
+                : null;
+            const currentLabel = ev91CurrentStatusById
+                ? lookupEv91LatestOverallStatus(ev91CurrentStatusById, identity)
+                : null;
+
+            if (latestOverall?.status === 'Returned') {
+                return withDerivedFleetFlags(next, {
+                    currentVehicle: 'None',
+                    currentStatus: 'No Active Vehicle',
+                    assignments: [],
+                });
+            }
+
+            if (
+                currentLabel?.status === 'Returned' ||
+                currentLabel?.status === 'Not yet to deploy'
+            ) {
+                return withDerivedFleetFlags(next, {
+                    currentVehicle: 'None',
+                    currentStatus: 'No Active Vehicle',
+                    assignments: [],
+                });
+            }
+
+            const live =
+                (ev91CurrentDeployLookup &&
+                    (lookupCurrentDeploy(ev91CurrentDeployLookup, {
+                        workerCode: next.riderId,
+                        mobile: next.mobile,
+                    }) ||
+                        lookupCurrentDeploy(ev91CurrentDeployLookup, {
+                            workerCode: next.ev91PublicId,
+                            mobile: next.mobile,
+                        }))) ||
+                null;
+
+            if (
+                live?.vehicleNumber &&
+                (latestOverall?.status === 'Deployed' ||
+                    latestOverall?.status === 'Client-Swap' ||
+                    currentLabel?.status === 'Deployed' ||
+                    !latestOverall)
+            ) {
+                const openAssignment = {
+                    vehicleNumber: live.vehicleNumber,
+                    deployeeDate: live.deployDate || new Date(),
+                    cityName: live.city || next.city,
+                    clientName: live.client || next.client,
+                    sourceName: live.source || next.sourceName,
+                    returnDate: null,
+                    daysOnRoad:
+                        live.allotmentDays ??
+                        differenceInDays(new Date(), live.deployDate || new Date()),
+                    status: 'Deployed',
+                    periodOrders: 0,
+                    dataSource: 'EV91',
+                };
+                return withDerivedFleetFlags(next, {
+                    currentVehicle: live.vehicleNumber,
+                    currentStatus: 'Deployed',
+                    assignments: [openAssignment],
+                });
+            }
+
+            if (
+                (latestOverall?.status === 'Deployed' || latestOverall?.status === 'Client-Swap') &&
+                latestOverall.vehicleNumber
+            ) {
+                const openAssignment = {
+                    vehicleNumber: latestOverall.vehicleNumber,
+                    deployeeDate: startOfDay(latestOverall.at),
+                    cityName: latestOverall.city || next.city,
+                    clientName: latestOverall.client || next.client,
+                    sourceName: latestOverall.source || next.sourceName,
+                    returnDate: null,
+                    daysOnRoad: differenceInDays(new Date(), startOfDay(latestOverall.at)),
+                    status: 'Deployed',
+                    periodOrders: 0,
+                    dataSource: 'EV91',
+                };
+                return withDerivedFleetFlags(next, {
+                    currentVehicle: latestOverall.vehicleNumber,
+                    currentStatus: 'Deployed',
+                    assignments: [openAssignment],
+                });
+            }
+
+            return next;
+        };
+
+        if (!ev91DetailsById?.size) {
+            return baseProcessedRiderData.map(applyEv91LiveDeploy);
+        }
 
         const lookup = new Map();
         for (const row of baseProcessedRiderData) {
@@ -389,11 +672,11 @@ const VehicleTracking = ({
                 ev91DetailsById.get(row.ev91PublicId) ||
                 (row.mobile ? ev91DetailsById.get(row.mobile) : null) ||
                 (row.mobile ? ev91DetailsById.get(normalizeInsightPhone(row.mobile)) : null);
-            if (!detail) return row;
+            if (!detail) return applyEv91LiveDeploy(row);
 
             const assigned = (detail.assignedVehicleId || '').toString().trim();
             const hasAssignedVehicle = assigned && !/not\s*assign/i.test(assigned);
-            const next = {
+            let next = {
                 ...row,
                 ev91PublicId: detail.publicRiderID || row.ev91PublicId || '',
                 riderName: row.riderName && row.riderName !== 'N/A' ? row.riderName : detail.name || row.riderName,
@@ -402,13 +685,16 @@ const VehicleTracking = ({
                 city: row.city && row.city !== 'N/A' ? row.city : detail.city || row.city,
                 sourceName: row.sourceName && row.sourceName !== 'N/A' ? row.sourceName : detail.source || row.sourceName,
             };
-            if (next.currentVehicle === 'None' && hasAssignedVehicle) {
+            // Prefer EV91 Overall/Current for live vehicle. Only fall back to assignedVehicleId
+            // when those APIs were not loaded.
+            if (!hasEv91LiveSignals && next.currentVehicle === 'None' && hasAssignedVehicle) {
                 next.currentVehicle = assigned;
                 next.currentStatus = 'Deployed';
                 next.fleetRemark = 'EV';
                 next.fleetStatusClass = 'ev';
                 next.fleetType = 'EV';
             }
+            next = applyEv91LiveDeploy(next);
             if (detail.isActive === false && next.riderActiveStatus === 'Active' && next.currentVehicle === 'None') {
                 next.riderActiveStatus = 'Inactive';
             }
@@ -433,41 +719,52 @@ const VehicleTracking = ({
             seenPublic.add(publicId);
             const assigned = (detail.assignedVehicleId || '').toString().trim();
             const hasVehicle = assigned && !/not\s*assign/i.test(assigned);
+            const useAssigned = !hasEv91LiveSignals && hasVehicle;
             const groupKey = publicId;
-            merged.push({
-                riderId: detail.clientRiderId || publicId,
-                ev91PublicId: publicId,
-                riderName: detail.name || 'N/A',
-                mobile: detail.phone || '',
-                client: detail.clientName || 'N/A',
-                sourceName: detail.source || 'N/A',
-                city: detail.city || 'N/A',
-                totalOrders: 0,
-                lastOrderDate: null,
-                fleetCategory: detail.needEvRental ? 'EV' : 'Unknown',
-                orderRecords: [],
-                history: [],
-                fleetDataSource: 'EV91 API',
-                fromMetrics: false,
-                fromEv91Api: true,
-                groupKey,
-                currentVehicle: hasVehicle ? assigned : 'None',
-                currentStatus: hasVehicle ? 'Deployed' : 'No Active Vehicle',
-                totalOnRoadDays: 0,
-                riderActiveStatus: detail.isActive === false ? 'Inactive' : 'Active',
-                statusDetail: '',
-                fleetRemark: hasVehicle || detail.needEvRental ? 'EV' : 'Unknown',
-                fleetStatusClass: hasVehicle || detail.needEvRental ? 'ev' : 'unknown',
-                fleetType: detail.needEvRental ? 'EV' : 'UNKNOWN',
-                deployedAssignmentsCount: hasVehicle ? 1 : 0,
-                returnedAssignmentsCount: 0,
-                averageAssignmentDays: 0,
-                assignments: [],
-            });
+            merged.push(
+                applyEv91LiveDeploy({
+                    riderId: detail.clientRiderId || publicId,
+                    ev91PublicId: publicId,
+                    riderName: detail.name || 'N/A',
+                    mobile: detail.phone || '',
+                    client: detail.clientName || 'N/A',
+                    sourceName: detail.source || 'N/A',
+                    city: detail.city || 'N/A',
+                    totalOrders: 0,
+                    lastOrderDate: null,
+                    fleetCategory: detail.needEvRental ? 'EV' : 'Unknown',
+                    orderRecords: [],
+                    history: [],
+                    fleetDataSource: 'EV91 API',
+                    fromMetrics: false,
+                    fromEv91Api: true,
+                    groupKey,
+                    currentVehicle: useAssigned ? assigned : 'None',
+                    currentStatus: useAssigned ? 'Deployed' : 'No Active Vehicle',
+                    totalOnRoadDays: 0,
+                    riderActiveStatus: detail.isActive === false ? 'Inactive' : 'Active',
+                    statusDetail: '',
+                    fleetRemark: useAssigned || detail.needEvRental ? 'EV' : 'Unknown',
+                    fleetStatusClass: useAssigned || detail.needEvRental ? 'ev' : 'unknown',
+                    fleetType: detail.needEvRental ? 'EV' : 'UNKNOWN',
+                    deployedAssignmentsCount: useAssigned ? 1 : 0,
+                    returnedAssignmentsCount: 0,
+                    averageAssignmentDays: 0,
+                    assignments: [],
+                })
+            );
         }
 
         return merged.sort((a, b) => b.totalOrders - a.totalOrders);
-    }, [baseProcessedRiderData, includeEv91Api, ev91DetailsById]);
+    }, [
+        baseProcessedRiderData,
+        includeEv91Api,
+        ev91DetailsById,
+        ev91CurrentDeployLookup,
+        ev91LatestOverallById,
+        ev91CurrentStatusById,
+        ev91AssignmentIndex,
+    ]);
 
     const clients = useMemo(() => {
         const set = new Set(processedRiderData.map((d) => d.client).filter((c) => c && c !== 'N/A'));
@@ -484,10 +781,12 @@ const VehicleTracking = ({
         }
 
         return processedRiderData.filter((item) => {
+            const ev91Id = (item.ev91PublicId || '').toString().toLowerCase();
             const matchesSearch =
                 s === '' ||
                 (item.riderName || '').toLowerCase().includes(s) ||
                 (item.riderId || '').toString().toLowerCase().includes(s) ||
+                ev91Id.includes(s) ||
                 (item.currentVehicle || '').toString().toLowerCase().includes(s) ||
                 (item.mobile || '').toLowerCase().includes(s) ||
                 phonesMatchSearch(item.mobile, searchTerm);
@@ -710,7 +1009,7 @@ const VehicleTracking = ({
 
     const resolvedSubtitle =
         pageSubtitle ??
-        `Deploy/return dates from merged Fleet Data (${fleetSourceCounts.total.toLocaleString()} rows: ${fleetSourceCounts.legacy.toLocaleString()} database + ${fleetSourceCounts.form.toLocaleString()} new fleet)${includeEv91Api ? ' · EV91 Rider Details API merged' : ''}`;
+        `Deploy/return dates from Fleet Data + EV91 Overall Status (${fleetSourceCounts.total.toLocaleString()} fleet rows: ${fleetSourceCounts.legacy.toLocaleString()} database + ${fleetSourceCounts.form.toLocaleString()} new fleet)${includeEv91Api ? ' · merged for day counts + Client-Swap' : ''}`;
 
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="dashboard-container">
@@ -837,7 +1136,7 @@ const VehicleTracking = ({
                             <Search size={18} className="text-dim" />
                             <input
                                 type="text"
-                                placeholder="Search rider name, ID, phone, or vehicle..."
+                                placeholder="Search name, rider ID, EV91 ID, phone, or vehicle..."
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
                                 style={{
@@ -981,6 +1280,16 @@ const VehicleTracking = ({
                                                     <User size={12} />
                                                     {item.riderId}
                                                 </div>
+                                                {item.ev91PublicId ? (
+                                                    <div
+                                                        style={{
+                                                            fontSize: '0.75rem',
+                                                            color: 'var(--text-dim)',
+                                                        }}
+                                                    >
+                                                        EV91: {item.ev91PublicId}
+                                                    </div>
+                                                ) : null}
                                                 {item.mobile ? (
                                                     <div
                                                         style={{
@@ -1217,54 +1526,78 @@ const VehicleTracking = ({
                                                                             {asgn.status}
                                                                         </span>
                                                                     </div>
-                                                                    <div
-                                                                        style={{
-                                                                            fontSize: '0.8rem',
-                                                                            color: 'var(--text-dim)',
-                                                                            display: 'flex',
-                                                                            flexDirection: 'column',
-                                                                            gap: '4px',
-                                                                        }}
-                                                                    >
                                                                         <div
                                                                             style={{
+                                                                                fontSize: '0.8rem',
+                                                                                color: 'var(--text-dim)',
                                                                                 display: 'flex',
-                                                                                justifyContent: 'space-between',
+                                                                                flexDirection: 'column',
+                                                                                gap: '4px',
                                                                             }}
                                                                         >
-                                                                            <span>Duration:</span>
-                                                                            <span style={{ color: '#fff' }}>
-                                                                                {asgn.daysOnRoad} Days
-                                                                            </span>
+                                                                            {asgn.clientName ? (
+                                                                                <div
+                                                                                    style={{
+                                                                                        display: 'flex',
+                                                                                        justifyContent: 'space-between',
+                                                                                        gap: '8px',
+                                                                                    }}
+                                                                                >
+                                                                                    <span>Client:</span>
+                                                                                    <span style={{ color: '#fff', textAlign: 'right' }}>
+                                                                                        {asgn.clientName}
+                                                                                    </span>
+                                                                                </div>
+                                                                            ) : null}
+                                                                            {asgn.clientSwapSummary ? (
+                                                                                <div
+                                                                                    style={{
+                                                                                        fontSize: '0.72rem',
+                                                                                        color: 'var(--accent-blue)',
+                                                                                    }}
+                                                                                >
+                                                                                    {asgn.clientSwapSummary}
+                                                                                </div>
+                                                                            ) : null}
+                                                                            <div
+                                                                                style={{
+                                                                                    display: 'flex',
+                                                                                    justifyContent: 'space-between',
+                                                                                }}
+                                                                            >
+                                                                                <span>Duration:</span>
+                                                                                <span style={{ color: '#fff' }}>
+                                                                                    {asgn.daysOnRoad} Days
+                                                                                </span>
+                                                                            </div>
+                                                                            <div
+                                                                                style={{
+                                                                                    display: 'flex',
+                                                                                    justifyContent: 'space-between',
+                                                                                }}
+                                                                            >
+                                                                                <span>From:</span>
+                                                                                <span style={{ color: '#fff' }}>
+                                                                                    {format(asgn.deployeeDate, 'dd MMM yyyy')}
+                                                                                </span>
+                                                                            </div>
+                                                                            <div
+                                                                                style={{
+                                                                                    display: 'flex',
+                                                                                    justifyContent: 'space-between',
+                                                                                }}
+                                                                            >
+                                                                                <span>To:</span>
+                                                                                <span style={{ color: '#fff' }}>
+                                                                                    {asgn.returnDate
+                                                                                        ? format(
+                                                                                              asgn.returnDate,
+                                                                                              'dd MMM yyyy'
+                                                                                          )
+                                                                                        : 'Now'}
+                                                                                </span>
+                                                                            </div>
                                                                         </div>
-                                                                        <div
-                                                                            style={{
-                                                                                display: 'flex',
-                                                                                justifyContent: 'space-between',
-                                                                            }}
-                                                                        >
-                                                                            <span>From:</span>
-                                                                            <span style={{ color: '#fff' }}>
-                                                                                {format(asgn.deployeeDate, 'dd MMM yyyy')}
-                                                                            </span>
-                                                                        </div>
-                                                                        <div
-                                                                            style={{
-                                                                                display: 'flex',
-                                                                                justifyContent: 'space-between',
-                                                                            }}
-                                                                        >
-                                                                            <span>To:</span>
-                                                                            <span style={{ color: '#fff' }}>
-                                                                                {asgn.returnDate
-                                                                                    ? format(
-                                                                                          asgn.returnDate,
-                                                                                          'dd MMM yyyy'
-                                                                                      )
-                                                                                    : 'Now'}
-                                                                            </span>
-                                                                        </div>
-                                                                    </div>
                                                                 </div>
                                                             ))}
                                                         </div>

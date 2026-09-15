@@ -207,12 +207,12 @@ const VehicleTracking = ({
             if (r.city && r.city !== 'N/A') existing.city = r.city;
             if (r.mob_number) existing.mobile = r.mob_number;
             if (r.rider_name || r.worker_name) existing.riderName = r.rider_name || r.worker_name;
-
+            
             const rawType = (r.type1 || '').toString().trim().toUpperCase();
             if (rawType === 'EV' || rawType === 'NON-EV' || rawType === 'NON EV') {
                 existing.fleetCategory = rawType.replace('NON EV', 'NON-EV');
             }
-
+            
             const nextId = pickCanonicalRiderKey(r.worker_code);
             if (nextId && nextId.length >= String(existing.riderId || '').length) {
                 existing.riderId = nextId;
@@ -330,9 +330,9 @@ const VehicleTracking = ({
                     liveDeploy && vehiclePartitionKey(liveDeploy.vehicleNumber) === vKey;
                 if (!stillLive) continue;
                 ongoingAssignments.push({
-                    ...dep,
-                    returnDate: null,
-                    daysOnRoad: differenceInDays(today, dep.deployeeDate),
+                ...dep,
+                returnDate: null,
+                daysOnRoad: differenceInDays(today, dep.deployeeDate),
                     status: 'Deployed',
                 });
             }
@@ -367,7 +367,7 @@ const VehicleTracking = ({
                     };
                 })
                 .sort((a, b) => b.deployeeDate - a.deployeeDate);
-
+            
             const currentAssignment = liveDeploy
                 ? {
                       vehicleNumber: liveDeploy.vehicleNumber,
@@ -389,14 +389,14 @@ const VehicleTracking = ({
             let fleetStatusClass = 'unknown';
             let fleetType = 'UNKNOWN';
 
-            if (currentAssignment) {
-                fleetRemark = 'EV';
-                fleetStatusClass = 'ev';
-                fleetType = 'EV';
+                if (currentAssignment) {
+                    fleetRemark = 'EV';
+                    fleetStatusClass = 'ev';
+                    fleetType = 'EV';
             } else if (rider.fleetCategory === 'EV') {
                 fleetRemark = riderActiveStatus === 'Active' ? 'Non-EV (Own Bike)' : 'Non-EV (Returned)';
-                fleetStatusClass = 'non-ev';
-                fleetType = 'NON-EV';
+                    fleetStatusClass = 'non-ev';
+                    fleetType = 'NON-EV';
             } else if (rider.fleetCategory === 'NON-EV') {
                 fleetRemark = 'Non-EV';
                 fleetStatusClass = 'non-ev';
@@ -799,12 +799,12 @@ const VehicleTracking = ({
             const matchesDateRange =
                 (!fromDate && !toDate) ||
                 item.assignments.some((asgn) => {
-                    const d = asgn.deployeeDate;
-                    if (!d) return false;
-                    if (fromDate && d < fromDate) return false;
-                    if (toDate && d > toDate) return false;
-                    return true;
-                });
+                const d = asgn.deployeeDate;
+                if (!d) return false;
+                if (fromDate && d < fromDate) return false;
+                if (toDate && d > toDate) return false;
+                return true;
+            });
 
             return (
                 matchesSearch &&
@@ -1069,7 +1069,7 @@ const VehicleTracking = ({
                 >
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>
                         Currently Deployed
-                    </div>
+                </div>
                     <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--accent-blue)' }}>
                         {summaryStats.deployedNow}
                     </div>
@@ -1100,8 +1100,8 @@ const VehicleTracking = ({
                             style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}
                         >
                             <Activity size={18} className="text-primary" />
-                            <select
-                                value={filterRiderStatus}
+                            <select 
+                                value={filterRiderStatus} 
                                 onChange={(e) => setFilterRiderStatus(e.target.value)}
                                 style={{
                                     background: 'transparent',
@@ -1134,8 +1134,8 @@ const VehicleTracking = ({
                             }}
                         >
                             <Search size={18} className="text-dim" />
-                            <input
-                                type="text"
+                            <input 
+                                type="text" 
                                 placeholder="Search name, rider ID, EV91 ID, phone, or vehicle..."
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -1444,7 +1444,7 @@ const VehicleTracking = ({
                                             </div>
                                         </td>
                                         <td>
-                                            <button
+                                            <button 
                                                 onClick={() =>
                                                     setExpandedRider(
                                                         expandedRider === (item.groupKey || item.riderId)
@@ -1479,7 +1479,7 @@ const VehicleTracking = ({
                                                     colSpan="10"
                                                     style={{ padding: '0', background: 'rgba(255,255,255,0.02)' }}
                                                 >
-                                                    <motion.div
+                                                    <motion.div 
                                                         initial={{ height: 0, opacity: 0 }}
                                                         animate={{ height: 'auto', opacity: 1 }}
                                                         exit={{ height: 0, opacity: 0 }}
@@ -1565,29 +1565,29 @@ const VehicleTracking = ({
                                                                                     justifyContent: 'space-between',
                                                                                 }}
                                                                             >
-                                                                                <span>Duration:</span>
+                                                                            <span>Duration:</span>
                                                                                 <span style={{ color: '#fff' }}>
                                                                                     {asgn.daysOnRoad} Days
                                                                                 </span>
-                                                                            </div>
+                                                                        </div>
                                                                             <div
                                                                                 style={{
                                                                                     display: 'flex',
                                                                                     justifyContent: 'space-between',
                                                                                 }}
                                                                             >
-                                                                                <span>From:</span>
+                                                                            <span>From:</span>
                                                                                 <span style={{ color: '#fff' }}>
                                                                                     {format(asgn.deployeeDate, 'dd MMM yyyy')}
                                                                                 </span>
-                                                                            </div>
+                                                                        </div>
                                                                             <div
                                                                                 style={{
                                                                                     display: 'flex',
                                                                                     justifyContent: 'space-between',
                                                                                 }}
                                                                             >
-                                                                                <span>To:</span>
+                                                                            <span>To:</span>
                                                                                 <span style={{ color: '#fff' }}>
                                                                                     {asgn.returnDate
                                                                                         ? format(
@@ -1596,8 +1596,8 @@ const VehicleTracking = ({
                                                                                           )
                                                                                         : 'Now'}
                                                                                 </span>
-                                                                            </div>
                                                                         </div>
+                                                                    </div>
                                                                 </div>
                                                             ))}
                                                         </div>

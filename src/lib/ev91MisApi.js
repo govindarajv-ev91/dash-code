@@ -1,3 +1,5 @@
+import { vehiclePartitionKey } from './fleetDeployReturnExport'
+
 export const EV91_MIS_ENDPOINTS = {
   'current-status': {
     id: 'current-status',
@@ -605,6 +607,64 @@ export function statusBadgeClass(status) {
   if (s.includes('swap')) return 'ev91-badge-swap'
   if (s.includes('yet') || s.includes('not') || s.includes('pending')) return 'ev91-badge-pending'
   return 'ev91-badge-default'
+}
+
+/** Index EV91 Current Status by normalized vehicle number. */
+export function buildEv91CurrentStatusByVehicle(rows = []) {
+  const byVehicle = new Map()
+  for (const row of rows || []) {
+    const key = vehiclePartitionKey(row.vehicleNumber)
+    if (!key) continue
+    byVehicle.set(key, {
+      operationalStatus: pickOperationalStatusValue(row),
+      deploymentStatus:
+        normalizeCurrentVehicleStatus(pickCurrentStatusValue(row)) ||
+        (row.currentStatus || '').toString().trim(),
+      riderName: (row.riderName || '').toString().trim(),
+      riderId: (row.clientRiderId || row.ev91RiderId || '').toString().trim(),
+      ev91RiderId: (row.ev91RiderId || '').toString().trim(),
+      riderContact: (row.riderContact || '').toString().trim(),
+      clientName: (row.clientName || '').toString().trim(),
+      aging: row.aging,
+      reason: (row.reason || '').toString().trim(),
+      lastStatusDate: row.lastStatusDate,
+      city: (row.city || '').toString().trim(),
+    })
+  }
+  return byVehicle
+}
+
+/** Merge EV91 Operational Status (+ live rider) onto vehicle_inventory rows. */
+export function enrichInventoryWithEv91CurrentStatus(inventoryRows, currentStatusRows) {
+  const byVehicle = buildEv91CurrentStatusByVehicle(currentStatusRows)
+  return (inventoryRows || []).map((item) => {
+    const key = vehiclePartitionKey(item.vehregno || item.vehicle_number)
+    const ev91 = key ? byVehicle.get(key) : null
+    if (!ev91) return item
+    return {
+      ...item,
+      operational_status: ev91.operationalStatus || item.operational_status || '',
+      ev91_deployment_status: ev91.deploymentStatus,
+      ev91_rider_name: ev91.riderName,
+      ev91_rider_id: ev91.riderId,
+      ev91_rider_contact: ev91.riderContact,
+      ev91_client: ev91.clientName,
+      ev91_aging: ev91.aging,
+      ev91_reason: ev91.reason,
+      ev91_last_status: ev91.lastStatusDate,
+    }
+  })
+}
+
+export function operationalStatusBadgeClass(status) {
+  const s = String(status || '').toLowerCase()
+  if (!s) return 'unknown'
+  if (s.includes('assigned') && !s.includes('team')) return 'active'
+  if (s.includes('team use')) return 'pending'
+  if (s.includes('available')) return 'ev'
+  if (s.includes('maintenance') || s.includes('repair') || s.includes('warranty')) return 'inactive'
+  if (s.includes('return')) return 'returned'
+  return 'unknown'
 }
 
 export function rowsToExportSheet(rows, columns) {

@@ -17,8 +17,13 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import * as XLSX from 'xlsx'
-import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
+import { fetchEv91OverallStatusAll, fetchEv91CurrentStatusAll } from './lib/ev91EvLookup'
 import { EV91_CITIES } from './lib/ev91MisApi'
+import {
+  buildCityOperationalStatusCounts,
+  cityOperationalCountsToSortedRows,
+  getCityRtdAvailableCount,
+} from './lib/ev91OperationalSummary'
 import {
   buildEv91ClientWiseSummary,
   buildEv91SummaryRawDetails,
@@ -110,6 +115,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const [selectedCity, setSelectedCity] = useState('All')
   const [selectedWeek, setSelectedWeek] = useState(initialWeek)
   const [rows, setRows] = useState([])
+  const [currentStatusRows, setCurrentStatusRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [allTargets, setAllTargets] = useState({})
@@ -126,11 +132,21 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const load = useCallback((force = false) => {
     setLoading(true)
     setError('')
-    return fetchEv91OverallStatusAll({ force })
-      .then((result) => setRows(result.data || []))
+    return Promise.all([
+      fetchEv91OverallStatusAll({ force }),
+      fetchEv91CurrentStatusAll({ force }).catch((err) => {
+        console.warn('EV91 current-status for RTD failed:', err)
+        return { data: [] }
+      }),
+    ])
+      .then(([overall, current]) => {
+        setRows(overall.data || [])
+        setCurrentStatusRows(current.data || [])
+      })
       .catch((err) => {
         console.warn('EV91 summary load failed:', err)
         setRows([])
+        setCurrentStatusRows([])
         setError(err?.message || 'Failed to load Overall Vehicle Status')
       })
       .finally(() => setLoading(false))
@@ -247,6 +263,21 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
     const list = showHiddenClients ? [...visible, ...hidden] : [...visible]
     return list.sort(compareEv91SummaryClients)
   }, [visibleClients, hiddenClients, showHiddenClients])
+
+  const cityOperationalCounts = useMemo(
+    () => buildCityOperationalStatusCounts(currentStatusRows),
+    [currentStatusRows]
+  )
+
+  const cityRtdRows = useMemo(
+    () => cityOperationalCountsToSortedRows(cityOperationalCounts),
+    [cityOperationalCounts]
+  )
+
+  const rtdAvailableTotal = useMemo(
+    () => getCityRtdAvailableCount(cityOperationalCounts, selectedCity),
+    [cityOperationalCounts, selectedCity]
+  )
 
   const tableTotals = useMemo(() => {
     // Total column always includes hidden clients so Ev Deployed matches Overall Status.
@@ -664,6 +695,10 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         <span>
           <strong>{rows.length.toLocaleString()}</strong> overall rows loaded
         </span>
+        <span>
+          RTD (Available): <strong>{rtdAvailableTotal.toLocaleString()}</strong>
+          {selectedCity !== 'All' ? ` · ${selectedCity}` : ' · all cities'}
+        </span>
       </div>
 
       {selectedCity !== 'All' ? (
@@ -684,21 +719,48 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
       ) : null}
 
       <div className="fdv-summary-pivot-wrap glass">
-        {hiddenClients.length > 0 && (
+        {(hiddenClients.length > 0 || cityRtdRows.length > 0) && (
           <div className="fdv-summary-hidden-bar">
-            <button
-              type="button"
-              className="fdv-summary-hidden-toggle-btn"
-              onClick={() => setShowHiddenClients((v) => !v)}
-              title={showHiddenClients ? 'Hide extra clients' : `Show ${hiddenClients.length} hidden client(s)`}
-            >
-              {showHiddenClients ? <Eye size={16} /> : <EyeOff size={16} />}
-              <span>
-                {showHiddenClients ? 'Hide' : 'Show'} {hiddenClients.length} hidden client(s)
-              </span>
-              {showHiddenClients ? <Minus size={14} /> : <Plus size={14} />}
-            </button>
-            <span className="fdv-summary-hidden-hint">{hiddenClients.map((c) => c.client).join(', ')}</span>
+            {hiddenClients.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="fdv-summary-hidden-toggle-btn"
+                  onClick={() => setShowHiddenClients((v) => !v)}
+                  title={showHiddenClients ? 'Hide extra clients' : `Show ${hiddenClients.length} hidden client(s)`}
+                >
+                  {showHiddenClients ? <Eye size={16} /> : <EyeOff size={16} />}
+                  <span>
+                    {showHiddenClients ? 'Hide' : 'Show'} {hiddenClients.length} hidden client(s)
+                  </span>
+                  {showHiddenClients ? <Minus size={14} /> : <Plus size={14} />}
+                </button>
+                <span className="fdv-summary-hidden-hint">{hiddenClients.map((c) => c.client).join(', ')}</span>
+              </>
+            )}
+            {cityRtdRows.length > 0 && (
+              <div
+                className="fdv-summary-rtd-cities"
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem 1rem',
+                  alignItems: 'center',
+                  marginLeft: hiddenClients.length > 0 ? '1rem' : 0,
+                  paddingLeft: hiddenClients.length > 0 ? '1rem' : 0,
+                  borderLeft: hiddenClients.length > 0 ? '1px solid var(--border-color)' : 'none',
+                }}
+              >
+                <strong style={{ fontSize: '0.8rem', color: 'var(--accent-green)' }}>RTD (Available)</strong>
+                {(selectedCity === 'All' ? cityRtdRows : cityRtdRows.filter((r) => r.city === selectedCity)).map(
+                  (r) => (
+                    <span key={r.city} style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
+                      {r.city}: <strong style={{ color: '#fff' }}>{r.available}</strong>
+                    </span>
+                  )
+                )}
+              </div>
+            )}
           </div>
         )}
         <div className="fdv-summary-pivot-scroll">
@@ -772,6 +834,12 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                       (c) => c[metric.key],
                       tableTotals[metric.key]
                     )
+                  )}
+                  {renderMetricRow(
+                    'RTD (Available)',
+                    'fsr-metric-rtd',
+                    () => '—',
+                    rtdAvailableTotal || 0
                   )}
                 </>
               )}

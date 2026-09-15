@@ -32,6 +32,7 @@ const Ev91RiderPerformance = lazy(() => import('./Ev91RiderPerformance'))
 const Ev91OnboardingPending = lazy(() => import('./Ev91OnboardingPending'))
 const Ev91EvLookup = lazy(() => import('./Ev91EvLookup'))
 const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
+const Ev91OperationalStatus = lazy(() => import('./Ev91OperationalStatus'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
 const FullData = lazy(() => import('./FullData'))
@@ -64,6 +65,7 @@ const EV91_PAGES = new Set([
   'ev91-onboarding',
   'ev91-evlookup',
   'ev91-summary',
+  'ev91-operational',
 ])
 const EV91_ENDPOINT_BY_PAGE = {
   'ev91-current': 'current-status',
@@ -741,6 +743,14 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-operational' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-operational')}
+                >
+                  <Wrench size={18} />
+                  Operational Status
+                </button>
+                <button
+                  type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-current' ? 'active' : ''}`}
                   onClick={() => openEv91Page('ev91-current')}
                 >
@@ -950,6 +960,8 @@ function App() {
           />
         ) : activePage === 'ev91-summary' ? (
           <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
+        ) : activePage === 'ev91-operational' ? (
+          <Ev91OperationalStatus />
         ) : activePage === 'ev91-insight' ? (
           <VehicleTracking
             fleetData={displayFleetData}

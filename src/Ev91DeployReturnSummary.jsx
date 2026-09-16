@@ -835,12 +835,6 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                       tableTotals[metric.key]
                     )
                   )}
-                  {renderMetricRow(
-                    'RTD (Available)',
-                    'fsr-metric-rtd',
-                    () => '—',
-                    rtdAvailableTotal || 0
-                  )}
                 </>
               )}
             </tbody>

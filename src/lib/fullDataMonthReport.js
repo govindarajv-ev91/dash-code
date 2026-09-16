@@ -69,7 +69,7 @@ export const FULL_DATA_METRICS = [
   { key: 'nonEarning', label: 'Non Earing', section: 'Supply' },
   { key: 'mfAmount', label: 'MF Amount', section: 'Supply' },
   { key: 'rent', label: 'Rent', section: 'Supply' },
-  { key: 'totalRevenue', label: 'Total Revnue', section: 'Supply' },
+  { key: 'totalRevenue', label: 'Total Revenue', section: 'Supply' },
   { key: 'totalKm', label: 'Total KM', section: 'Ev' },
   { key: 'deployKm', label: 'Deployee KM', section: 'Ev' },
   { key: 'returnKm', label: 'Return KM', section: 'Ev' },
@@ -819,7 +819,7 @@ export async function buildFullDataMonthBaseAsync(
       m.nonEarning = Math.round(m.nonEarning * 100) / 100
       m.mfAmount = Math.round(m.mfAmount * 100) / 100
       m.rent = Math.round(m.rent * 100) / 100
-      m.totalRevenue = Math.round((m.totalEarning + m.mfAmount + m.rent) * 100) / 100
+      m.totalRevenue = Math.round((m.totalEarning + m.mfAmount) * 100) / 100
     }
   }
 

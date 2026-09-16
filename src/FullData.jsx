@@ -820,7 +820,7 @@ export default function FullData({ onboardingData = [] }) {
             <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '820px' }}>
               Month-wise Supply + Ev matrix through yesterday. Earnings = orders × client rate;
               MF = earning × client margin (BB 6% in BLR/CHN/HYD/MUM); Rent = on-road vehicles × ₹230;
-              Revenue = Earning + MF + Rent.
+              Total Revenue = Earning + MF (excluding Rent).
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
@@ -1061,7 +1061,7 @@ export default function FullData({ onboardingData = [] }) {
 
             <p style={{ margin: '0 0 0.85rem', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
               Earning = Orders × Per-order rate · MF = Earning × MF% · Rent = On-road vehicles × ₹{EV_DAILY_RENT}/day ·
-              Revenue = Earning + MF + Rent
+              Total Revenue = Earning + MF (excluding Rent)
             </p>
 
             <div

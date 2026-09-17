@@ -511,6 +511,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [paymentError, setPaymentError] = useState('')
   const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
   const [paymentClient, setPaymentClient] = useState('All')
+  const [uploadMonthClient, setUploadMonthClient] = useState('All')
   const [clientMonthMetric, setClientMonthMetric] = useState('riders')
   const [kmPreset, setKmPreset] = useState('yesterday')
   const [kmCustomFrom, setKmCustomFrom] = useState('')
@@ -815,6 +816,17 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
 
   const clientMonthLine = useMemo(
     () =>
+      buildClientMonthLineSeries(paymentRows, {
+        financialYear: revenueFy,
+        dateFrom: filterFrom,
+        dateTo: filterTo,
+        client: paymentClient,
+      }),
+    [paymentRows, revenueFy, filterFrom, filterTo, paymentClient]
+  )
+
+  const uploadClientMonthLine = useMemo(
+    () =>
       buildClientMonthLineSeries(
         overviewOrderRows
           .filter((row) => row?._data_source === 'order_upload')
@@ -826,14 +838,14 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
             gross_payout: 0,
           })),
         {
-        financialYear: revenueFy,
-        dateFrom: filterFrom,
-        dateTo: filterTo,
-        client: paymentClient,
-        monthLimit: 9,
+          financialYear: '',
+          dateFrom: filterFrom,
+          dateTo: filterTo,
+          client: uploadMonthClient,
+          monthLimit: 9,
         }
       ),
-    [overviewOrderRows, revenueFy, filterFrom, filterTo, paymentClient]
+    [overviewOrderRows, filterFrom, filterTo, uploadMonthClient]
   )
 
   useEffect(() => {
@@ -842,6 +854,13 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
       setPaymentClient('All')
     }
   }, [clientMonthLine.clients, paymentClient])
+
+  useEffect(() => {
+    const names = uploadClientMonthLine.clients?.map((c) => c.name) || []
+    if (uploadMonthClient !== 'All' && names.length && !names.includes(uploadMonthClient)) {
+      setUploadMonthClient('All')
+    }
+  }, [uploadClientMonthLine.clients, uploadMonthClient])
 
   const kmDeployedTable = useMemo(
     () =>
@@ -1383,16 +1402,18 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
         >
           <div>
             <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>
-              Client-wise · Last 9 months
+              Client-wise · Month trend
             </h4>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              {clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'} · {revenueFy}
+              Line chart · {revenueFy} · Apr → Mar
               {!paymentLoading && !paymentError && (
                 <>
                   {' · '}
-                  Total {clientMonthMetric === 'riders'
-                    ? clientMonthLine.totals.riders.toLocaleString('en-IN')
-                    : clientMonthLine.totals.orders.toLocaleString('en-IN')}
+                  Revenue {formatInr(clientMonthLine.totals.gross)}
+                  {' · '}
+                  Orders {clientMonthLine.totals.orders.toLocaleString('en-IN')}
+                  {' · '}
+                  Riders {clientMonthLine.totals.riders.toLocaleString('en-IN')}
                 </>
               )}
             </p>
@@ -1428,32 +1449,6 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               ))}
             </select>
           </label>
-          <div
-            role="radiogroup"
-            aria-label="Monthly chart metric"
-            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}
-          >
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
-              <input
-                type="radio"
-                name="client-month-metric"
-                value="riders"
-                checked={clientMonthMetric === 'riders'}
-                onChange={(e) => setClientMonthMetric(e.target.value)}
-              />
-              Rider count
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
-              <input
-                type="radio"
-                name="client-month-metric"
-                value="orders"
-                checked={clientMonthMetric === 'orders'}
-                onChange={(e) => setClientMonthMetric(e.target.value)}
-              />
-              Order count
-            </label>
-          </div>
         </div>
         <div style={{ height: '320px', width: '100%' }}>
           {paymentLoading && !(clientMonthLine.clients || []).length ? (
@@ -1470,8 +1465,17 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis
+                  yAxisId="revenue"
+                  stroke={CLIENT_LINE_COLORS.revenue}
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => v >= 10000000 ? `${(v / 10000000).toFixed(1)}Cr` : v >= 100000 ? `${(v / 100000).toFixed(1)}L` : v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)}
+                />
+                <YAxis
                   yAxisId="count"
-                  stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders}
+                  orientation="right"
+                  stroke={CLIENT_LINE_COLORS.orders}
                   fontSize={11}
                   tickLine={false}
                   axisLine={false}
@@ -1479,6 +1483,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 />
                 <Tooltip
                   formatter={(value, name) => {
+                    if (name === 'Revenue') return [formatInr(value), name]
                     return [Number(value).toLocaleString('en-IN'), name]
                   }}
                   contentStyle={{
@@ -1489,15 +1494,89 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 />
                 <Legend verticalAlign="top" height={36} />
                 <Line
-                  yAxisId="count"
+                  yAxisId="revenue"
                   type="monotone"
-                  dataKey={clientMonthMetric}
-                  name={clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'}
-                  stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders}
+                  dataKey="gross"
+                  name="Revenue"
+                  stroke={CLIENT_LINE_COLORS.revenue}
                   strokeWidth={2.5}
-                  dot={{ r: 3, fill: clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders }}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.revenue }}
                   activeDot={{ r: 5 }}
                 />
+                <Line
+                  yAxisId="count"
+                  type="monotone"
+                  dataKey="orders"
+                  name="Orders"
+                  stroke={CLIENT_LINE_COLORS.orders}
+                  strokeWidth={2.5}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.orders }}
+                  activeDot={{ r: 5 }}
+                />
+                <Line
+                  yAxisId="count"
+                  type="monotone"
+                  dataKey="riders"
+                  name="Rider count"
+                  stroke={CLIENT_LINE_COLORS.riders}
+                  strokeWidth={2.5}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.riders }}
+                  activeDot={{ r: 5 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+
+      <div className="glass" style={{ marginTop: '1.25rem', padding: '1.5rem', minWidth: 0, width: '100%' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Client-wise · Last 9 months</h4>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              Order Upload data · {clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'} · Total{' '}
+              {(clientMonthMetric === 'riders' ? uploadClientMonthLine.totals.riders : uploadClientMonthLine.totals.orders).toLocaleString('en-IN')}
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+              Client
+              <select
+                value={uploadMonthClient}
+                onChange={(e) => setUploadMonthClient(e.target.value)}
+                className="fsr-select"
+                style={{ padding: '0.35rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '160px' }}
+              >
+                <option value="All">All clients</option>
+                {(uploadClientMonthLine.clients || []).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+              </select>
+            </label>
+            <div role="radiogroup" aria-label="Order upload monthly chart metric" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+                <input type="radio" name="upload-month-metric" value="riders" checked={clientMonthMetric === 'riders'} onChange={(e) => setClientMonthMetric(e.target.value)} />
+                Rider count
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+                <input type="radio" name="upload-month-metric" value="orders" checked={clientMonthMetric === 'orders'} onChange={(e) => setClientMonthMetric(e.target.value)} />
+                Order count
+              </label>
+            </div>
+          </div>
+        </div>
+        <div style={{ height: '320px', width: '100%' }}>
+          {!(uploadClientMonthLine.clients || []).length ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              No Order Upload data available.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={uploadClientMonthLine.series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
+                <Tooltip formatter={(value, name) => [Number(value).toLocaleString('en-IN'), name]} contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
+                <Legend verticalAlign="top" height={36} />
+                <Line yAxisId="count" type="monotone" dataKey={clientMonthMetric} name={clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'} stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           )}

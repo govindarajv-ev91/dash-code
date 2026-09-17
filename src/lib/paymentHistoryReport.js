@@ -1267,6 +1267,7 @@ export function buildClientMonthLineSeries(
       byMonth.set(key, {
         month: parsed.display,
         monthKey: key,
+        sortKey: parsed.sortKey,
         fyMonthOrder: parsed.fyMonthOrder,
         gross: 0,
         orders: 0,
@@ -1284,10 +1285,11 @@ export function buildClientMonthLineSeries(
   }
 
   const series = [...byMonth.values()]
-    .sort((a, b) => a.fyMonthOrder - b.fyMonthOrder)
+    .sort((a, b) => (financialYear ? a.fyMonthOrder - b.fyMonthOrder : a.sortKey - b.sortKey))
     .map((row) => ({
       month: row.month,
       monthKey: row.monthKey,
+      sortKey: row.sortKey,
       fyMonthOrder: row.fyMonthOrder,
       gross: row.gross,
       orders: row.orders,

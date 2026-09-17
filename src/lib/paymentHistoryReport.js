@@ -1235,7 +1235,7 @@ export function buildClientWisePaymentMetrics(
  */
 export function buildClientMonthLineSeries(
   paymentRows = [],
-  { dateFrom = '', dateTo = '', financialYear = '', client = '' } = {}
+  { dateFrom = '', dateTo = '', financialYear = '', client = '', monthLimit = 0 } = {}
 ) {
   const clientFilter = (client || '').toString().trim()
   const byMonth = new Map()
@@ -1318,7 +1318,17 @@ export function buildClientMonthLineSeries(
     .map(([name, gross]) => ({ name, gross }))
     .sort((a, b) => b.gross - a.gross || a.name.localeCompare(b.name))
 
-  const useSeries = financialYear ? filled : series
+  const lastSeriesOrder = series.length ? series[series.length - 1].fyMonthOrder : -1
+  const useSeries = financialYear && monthLimit > 0
+    ? filled.slice(
+        Math.max(0, lastSeriesOrder - monthLimit + 1),
+        lastSeriesOrder >= 0 ? lastSeriesOrder + 1 : undefined
+      )
+    : financialYear
+      ? filled
+    : monthLimit > 0
+      ? series.slice(-monthLimit)
+      : series
   const totals = useSeries.reduce(
     (acc, row) => {
       acc.gross += row.gross

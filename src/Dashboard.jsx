@@ -511,6 +511,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [paymentError, setPaymentError] = useState('')
   const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
   const [paymentClient, setPaymentClient] = useState('All')
+  const [clientMonthMetric, setClientMonthMetric] = useState('riders')
   const [kmPreset, setKmPreset] = useState('yesterday')
   const [kmCustomFrom, setKmCustomFrom] = useState('')
   const [kmCustomTo, setKmCustomTo] = useState('')
@@ -814,13 +815,25 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
 
   const clientMonthLine = useMemo(
     () =>
-      buildClientMonthLineSeries(paymentRows, {
+      buildClientMonthLineSeries(
+        overviewOrderRows
+          .filter((row) => row?._data_source === 'order_upload')
+          .map((row) => ({
+            month: row.month,
+            client_name: row.client,
+            rider_id: row.worker_code,
+            orders: row.delivered,
+            gross_payout: 0,
+          })),
+        {
         financialYear: revenueFy,
         dateFrom: filterFrom,
         dateTo: filterTo,
         client: paymentClient,
-      }),
-    [paymentRows, revenueFy, filterFrom, filterTo, paymentClient]
+        monthLimit: 9,
+        }
+      ),
+    [overviewOrderRows, revenueFy, filterFrom, filterTo, paymentClient]
   )
 
   useEffect(() => {
@@ -1370,18 +1383,16 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
         >
           <div>
             <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>
-              Client-wise · Month trend
+              Client-wise · Last 9 months
             </h4>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              Line chart · {revenueFy} · Apr → Mar
+              {clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'} · {revenueFy}
               {!paymentLoading && !paymentError && (
                 <>
                   {' · '}
-                  Revenue {formatInr(clientMonthLine.totals.gross)}
-                  {' · '}
-                  Orders {clientMonthLine.totals.orders.toLocaleString('en-IN')}
-                  {' · '}
-                  Riders {clientMonthLine.totals.riders.toLocaleString('en-IN')}
+                  Total {clientMonthMetric === 'riders'
+                    ? clientMonthLine.totals.riders.toLocaleString('en-IN')
+                    : clientMonthLine.totals.orders.toLocaleString('en-IN')}
                 </>
               )}
             </p>
@@ -1417,29 +1428,32 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               ))}
             </select>
           </label>
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            gap: '1rem',
-            flexWrap: 'wrap',
-            marginBottom: '0.65rem',
-            fontSize: '0.72rem',
-            color: 'var(--text-dim)',
-          }}
-        >
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 14, height: 3, background: CLIENT_LINE_COLORS.revenue, borderRadius: 2 }} />
-            Revenue (₹)
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 14, height: 3, background: CLIENT_LINE_COLORS.orders, borderRadius: 2 }} />
-            Orders
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 14, height: 3, background: CLIENT_LINE_COLORS.riders, borderRadius: 2 }} />
-            Rider count
-          </span>
+          <div
+            role="radiogroup"
+            aria-label="Monthly chart metric"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}
+          >
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+              <input
+                type="radio"
+                name="client-month-metric"
+                value="riders"
+                checked={clientMonthMetric === 'riders'}
+                onChange={(e) => setClientMonthMetric(e.target.value)}
+              />
+              Rider count
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+              <input
+                type="radio"
+                name="client-month-metric"
+                value="orders"
+                checked={clientMonthMetric === 'orders'}
+                onChange={(e) => setClientMonthMetric(e.target.value)}
+              />
+              Order count
+            </label>
+          </div>
         </div>
         <div style={{ height: '320px', width: '100%' }}>
           {paymentLoading && !(clientMonthLine.clients || []).length ? (
@@ -1456,25 +1470,8 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis
-                  yAxisId="revenue"
-                  stroke={CLIENT_LINE_COLORS.revenue}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(v) =>
-                    v >= 10000000
-                      ? `${(v / 10000000).toFixed(1)}Cr`
-                      : v >= 100000
-                        ? `${(v / 100000).toFixed(1)}L`
-                        : v >= 1000
-                          ? `${(v / 1000).toFixed(0)}k`
-                          : String(v)
-                  }
-                />
-                <YAxis
                   yAxisId="count"
-                  orientation="right"
-                  stroke={CLIENT_LINE_COLORS.orders}
+                  stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders}
                   fontSize={11}
                   tickLine={false}
                   axisLine={false}
@@ -1482,7 +1479,6 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 />
                 <Tooltip
                   formatter={(value, name) => {
-                    if (name === 'Revenue') return [formatInr(value), name]
                     return [Number(value).toLocaleString('en-IN'), name]
                   }}
                   contentStyle={{
@@ -1493,33 +1489,13 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 />
                 <Legend verticalAlign="top" height={36} />
                 <Line
-                  yAxisId="revenue"
-                  type="monotone"
-                  dataKey="gross"
-                  name="Revenue"
-                  stroke={CLIENT_LINE_COLORS.revenue}
-                  strokeWidth={2.5}
-                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.revenue }}
-                  activeDot={{ r: 5 }}
-                />
-                <Line
                   yAxisId="count"
                   type="monotone"
-                  dataKey="orders"
-                  name="Orders"
-                  stroke={CLIENT_LINE_COLORS.orders}
+                  dataKey={clientMonthMetric}
+                  name={clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'}
+                  stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders}
                   strokeWidth={2.5}
-                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.orders }}
-                  activeDot={{ r: 5 }}
-                />
-                <Line
-                  yAxisId="count"
-                  type="monotone"
-                  dataKey="riders"
-                  name="Rider count"
-                  stroke={CLIENT_LINE_COLORS.riders}
-                  strokeWidth={2.5}
-                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.riders }}
+                  dot={{ r: 3, fill: clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders }}
                   activeDot={{ r: 5 }}
                 />
               </LineChart>

@@ -2,6 +2,7 @@ import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
 import { normalizeSummaryCity } from './citySummaryAliases'
 import { normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
+import { format, getISOWeek, parseISO, startOfWeek, subDays, subMonths } from 'date-fns'
 
 function normalizePhone(value) {
   const digits = (value ?? '').toString().replace(/\D/g, '')
@@ -1341,4 +1342,88 @@ export function buildClientMonthLineSeries(
   )
 
   return { series: useSeries, totals, clients }
+}
+
+/** Date-based Order Upload series with client/city filters and rolling active riders. */
+export function buildClientPeriodLineSeries(
+  rows = [],
+  { dateFrom = '', dateTo = '', client = 'All', city = 'All', period = 'monthly' } = {}
+) {
+  const clientFilter = (client || 'All').toString().trim()
+  const cityFilter = (city || 'All').toString().trim()
+  const contextFrom = dateFrom ? format(subDays(parseISO(dateFrom), 3), 'yyyy-MM-dd') : ''
+  const prepared = []
+  const clients = new Set()
+  const cities = new Set()
+
+  for (const row of rows || []) {
+    const rawDate = (row.date_record ?? '').toString().trim()
+    const parsedDate = parseISO(rawDate)
+    if (!rawDate || Number.isNaN(parsedDate.getTime())) continue
+    const date = format(parsedDate, 'yyyy-MM-dd')
+    if (contextFrom && date < contextFrom) continue
+    if (dateTo && date > dateTo) continue
+
+    const clientName = normalizeSummaryClient(pickText(row.client)) || pickText(row.client) || 'Unknown'
+    const cityName = normalizeSummaryCity(pickText(row.city)) || pickText(row.city) || 'Unknown'
+    clients.add(clientName)
+    cities.add(cityName)
+    if (clientFilter !== 'All' && clientName !== clientFilter) continue
+    if (cityFilter !== 'All' && cityName !== cityFilter) continue
+    prepared.push({ date, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders) })
+  }
+
+  if (!prepared.length) return { series: [], totals: { orders: 0, riders: 0 }, clients: [], cities: [] }
+
+  const latestDate = prepared.reduce((latest, row) => (row.date > latest ? row.date : latest), prepared[0].date)
+  const minDate = dateFrom || format(subMonths(parseISO(latestDate), 9), 'yyyy-MM-dd')
+  const byPeriod = new Map()
+  const ridersByDate = new Map()
+  for (const row of prepared) {
+    if (row.date < minDate) continue
+    if (!ridersByDate.has(row.date)) ridersByDate.set(row.date, new Set())
+    if (row.rider) ridersByDate.get(row.date).add(row.rider)
+    const parsed = parseISO(row.date)
+    const key = period === 'daily'
+      ? row.date
+      : period === 'weekly'
+        ? format(startOfWeek(parsed, { weekStartsOn: 1 }), 'yyyy-MM-dd')
+        : format(parsed, 'yyyy-MM')
+    if (!byPeriod.has(key)) byPeriod.set(key, { key, orders: 0, riders: new Set() })
+    const bucket = byPeriod.get(key)
+    bucket.orders += row.orders
+    if (row.rider) bucket.riders.add(row.rider)
+  }
+
+  const series = [...byPeriod.values()].sort((a, b) => a.key.localeCompare(b.key)).map((bucket) => {
+    const pointDate = parseISO(bucket.key.length === 7 ? `${bucket.key}-01` : bucket.key)
+    let riders = bucket.riders.size
+    if (period === 'daily') {
+      const active = new Set()
+      for (let offset = 0; offset < 4; offset += 1) {
+        const date = format(subDays(pointDate, offset), 'yyyy-MM-dd')
+        for (const rider of ridersByDate.get(date) || []) active.add(rider)
+      }
+      riders = active.size
+    }
+    return {
+      period: period === 'daily'
+        ? format(pointDate, 'dd MMM')
+        : period === 'weekly'
+          ? `Week ${getISOWeek(pointDate)} · ${format(pointDate, 'dd MMM')}`
+          : format(pointDate, 'MMM yyyy'),
+      orders: bucket.orders,
+      riders,
+    }
+  })
+
+  return {
+    series,
+    totals: {
+      orders: series.reduce((sum, row) => sum + row.orders, 0),
+      riders: period === 'daily' ? (series.at(-1)?.riders || 0) : new Set(prepared.filter((row) => row.date >= minDate).map((row) => row.rider).filter(Boolean)).size,
+    },
+    clients: [...clients].sort().map((name) => ({ name })),
+    cities: [...cities].sort().map((name) => ({ name })),
+  }
 }

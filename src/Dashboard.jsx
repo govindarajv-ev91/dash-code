@@ -44,6 +44,7 @@ import {
   buildMonthlyRevenueSeries,
   buildFyCompareMetric,
   buildClientMonthLineSeries,
+  buildClientPeriodLineSeries,
   formatInr,
   formatCompactCount,
   currentIndianFinancialYearLabel,
@@ -512,7 +513,9 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
   const [paymentClient, setPaymentClient] = useState('All')
   const [uploadMonthClient, setUploadMonthClient] = useState('All')
-  const [clientMonthMetric, setClientMonthMetric] = useState('riders')
+  const [uploadPeriod, setUploadPeriod] = useState('monthly')
+  const [uploadMetric, setUploadMetric] = useState('riders')
+  const [uploadMonthCity, setUploadMonthCity] = useState('All')
   const [kmPreset, setKmPreset] = useState('yesterday')
   const [kmCustomFrom, setKmCustomFrom] = useState('')
   const [kmCustomTo, setKmCustomTo] = useState('')
@@ -827,25 +830,19 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
 
   const uploadClientMonthLine = useMemo(
     () =>
-      buildClientMonthLineSeries(
+      buildClientPeriodLineSeries(
         overviewOrderRows
           .filter((row) => row?._data_source === 'order_upload')
-          .map((row) => ({
-            month: row.month,
-            client_name: row.client,
-            rider_id: row.worker_code,
-            orders: row.delivered,
-            gross_payout: 0,
-          })),
+          .map((row) => ({ ...row })),
         {
-          financialYear: '',
           dateFrom: filterFrom,
           dateTo: filterTo,
           client: uploadMonthClient,
-          monthLimit: 9,
+          city: uploadMonthCity,
+          period: uploadPeriod,
         }
       ),
-    [overviewOrderRows, filterFrom, filterTo, uploadMonthClient]
+    [overviewOrderRows, filterFrom, filterTo, uploadMonthClient, uploadMonthCity, uploadPeriod]
   )
 
   useEffect(() => {
@@ -861,6 +858,13 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
       setUploadMonthClient('All')
     }
   }, [uploadClientMonthLine.clients, uploadMonthClient])
+
+  useEffect(() => {
+    const names = uploadClientMonthLine.cities?.map((c) => c.name) || []
+    if (uploadMonthCity !== 'All' && names.length && !names.includes(uploadMonthCity)) {
+      setUploadMonthCity('All')
+    }
+  }, [uploadClientMonthLine.cities, uploadMonthCity])
 
   const kmDeployedTable = useMemo(
     () =>
@@ -1534,8 +1538,8 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
           <div>
             <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Client-wise · Last 9 months</h4>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              Order Upload data · {clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'} · Total{' '}
-              {(clientMonthMetric === 'riders' ? uploadClientMonthLine.totals.riders : uploadClientMonthLine.totals.orders).toLocaleString('en-IN')}
+              Order Upload data · {uploadPeriod === 'daily' ? 'Active riders (last 4 days)' : uploadPeriod === 'weekly' ? 'Unique riders across the full week' : 'Unique riders'} · {uploadMetric === 'riders' ? 'Total' : 'Orders'}{' '}
+              {(uploadMetric === 'riders' ? uploadClientMonthLine.totals.riders : uploadClientMonthLine.totals.orders).toLocaleString('en-IN')}
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
@@ -1551,13 +1555,39 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 {(uploadClientMonthLine.clients || []).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
               </select>
             </label>
-            <div role="radiogroup" aria-label="Order upload monthly chart metric" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+              City
+              <select
+                value={uploadMonthCity}
+                onChange={(e) => setUploadMonthCity(e.target.value)}
+                className="fsr-select"
+                style={{ padding: '0.35rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '140px' }}
+              >
+                <option value="All">All cities</option>
+                {(uploadClientMonthLine.cities || []).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+              </select>
+            </label>
+            <div role="radiogroup" aria-label="Order upload chart period" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
-                <input type="radio" name="upload-month-metric" value="riders" checked={clientMonthMetric === 'riders'} onChange={(e) => setClientMonthMetric(e.target.value)} />
+                <input type="radio" name="upload-chart-period" value="monthly" checked={uploadPeriod === 'monthly'} onChange={(e) => setUploadPeriod(e.target.value)} />
+                Monthly
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+                <input type="radio" name="upload-chart-period" value="weekly" checked={uploadPeriod === 'weekly'} onChange={(e) => setUploadPeriod(e.target.value)} />
+                Weekly
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+                <input type="radio" name="upload-chart-period" value="daily" checked={uploadPeriod === 'daily'} onChange={(e) => setUploadPeriod(e.target.value)} />
+                Daily
+              </label>
+            </div>
+            <div role="radiogroup" aria-label="Order upload chart metric" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+                <input type="radio" name="upload-chart-metric" value="riders" checked={uploadMetric === 'riders'} onChange={(e) => setUploadMetric(e.target.value)} />
                 Rider count
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
-                <input type="radio" name="upload-month-metric" value="orders" checked={clientMonthMetric === 'orders'} onChange={(e) => setClientMonthMetric(e.target.value)} />
+                <input type="radio" name="upload-chart-metric" value="orders" checked={uploadMetric === 'orders'} onChange={(e) => setUploadMetric(e.target.value)} />
                 Order count
               </label>
             </div>
@@ -1572,11 +1602,11 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={uploadClientMonthLine.series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
+                <XAxis dataKey="period" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip formatter={(value, name) => [Number(value).toLocaleString('en-IN'), name]} contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
                 <Legend verticalAlign="top" height={36} />
-                <Line yAxisId="count" type="monotone" dataKey={clientMonthMetric} name={clientMonthMetric === 'riders' ? 'Rider count' : 'Order count'} stroke={clientMonthMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line yAxisId="count" type="monotone" dataKey={uploadMetric} name={uploadMetric === 'riders' ? (uploadPeriod === 'daily' ? 'Active riders (4-day)' : 'Rider count') : 'Order count'} stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           )}

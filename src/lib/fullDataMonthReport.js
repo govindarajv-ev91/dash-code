@@ -437,6 +437,8 @@ export function summarizeSourceMonthRows(rows = [], { windowEnd = '', windowDate
     activeEvRiders: 0,
     activeNonEvRiders: 0,
     zeroOrderRiders: 0,
+    zeroOrderEvRiders: 0,
+    zeroOrderNonEvRiders: 0,
     totalOrders: 0,
     evOrders: 0,
     nonEvOrders: 0,
@@ -456,6 +458,8 @@ export function summarizeSourceMonthRows(rows = [], { windowEnd = '', windowDate
     totals.activeEvRiders += Number(r['Active EV Rider Count']) || 0
     totals.activeNonEvRiders += Number(r['Active Non-EV Rider Count']) || 0
     totals.zeroOrderRiders += Number(r['0 Order Rider Count (last 4 days)']) || 0
+    totals.zeroOrderEvRiders += Number(r['0 Order EV Rider Count (last 4 days)']) || 0
+    totals.zeroOrderNonEvRiders += Number(r['0 Order Non-EV Rider Count (last 4 days)']) || 0
     totals.totalOrders += Number(r['Total Order']) || 0
     totals.evOrders += Number(r['EV Order']) || 0
     totals.nonEvOrders += Number(r['Non-EV Order']) || 0
@@ -476,6 +480,8 @@ export function buildFullDataSourceActiveSummary(monthRows = [], { windowEnd = '
     { Metric: 'Total Active EV Riders', Value: t.activeEvRiders },
     { Metric: 'Total Active Non-EV Riders', Value: t.activeNonEvRiders },
     { Metric: 'Total 0-order Riders (last 4 days)', Value: t.zeroOrderRiders },
+    { Metric: 'Total 0-order EV Riders (last 4 days)', Value: t.zeroOrderEvRiders },
+    { Metric: 'Total 0-order Non-EV Riders (last 4 days)', Value: t.zeroOrderNonEvRiders },
     {
       Metric: 'Note',
       Value:
@@ -1622,10 +1628,18 @@ export function buildFullDataSourceMonthRows(
   const activeCountsByMonthKey = new Map()
   if (activeWindowValid && activeWindowEnd) {
     for (const [monthKey, riders] of monthRidersByKey) {
-      const counts = { activeTotal: 0, activeEv: 0, activeNonEv: 0, zeroOrder: 0 }
+      const counts = { activeTotal: 0, activeEv: 0, activeNonEv: 0, zeroOrder: 0, zeroOrderEv: 0, zeroOrderNonEv: 0 }
       for (const worker of riders) {
         if (workerZeroOrdersInSourceWindow(orderIndex, worker, activeWindowEnd)) {
           counts.zeroOrder += 1
+          let identityKeys = identityCache.get(worker)
+          if (!identityKeys) {
+            const mappedEv91 = lookupEv91PublicRiderId(ev91Index, worker) || ''
+            identityKeys = riderDeployIdentityKeys(worker, mappedEv91)
+            identityCache.set(worker, identityKeys)
+          }
+          if (isRiderEvOnDate(riderAssignments, identityKeys, activeWindowEnd, '')) counts.zeroOrderEv += 1
+          else counts.zeroOrderNonEv += 1
           continue
         }
         counts.activeTotal += 1
@@ -1658,6 +1672,8 @@ export function buildFullDataSourceMonthRows(
         activeEv: 0,
         activeNonEv: 0,
         zeroOrder: 0,
+        zeroOrderEv: 0,
+        zeroOrderNonEv: 0,
       }
       const row = {
         Source: m.source,
@@ -1669,6 +1685,8 @@ export function buildFullDataSourceMonthRows(
         'Active EV Rider Count': active.activeEv,
         'Active Non-EV Rider Count': active.activeNonEv,
         '0 Order Rider Count (last 4 days)': active.zeroOrder,
+        '0 Order EV Rider Count (last 4 days)': active.zeroOrderEv,
+        '0 Order Non-EV Rider Count (last 4 days)': active.zeroOrderNonEv,
         'Active window end': activeWindowValid ? activeWindowEnd : '',
         'Active window dates': activeWindowValid ? activeWindowDates.join(', ') : '',
         'Total Order': m.totalOrder,
@@ -1913,11 +1931,17 @@ export function buildFullDataSourceWiseDailyRows(
           activeEv: 0,
           activeNonEv: 0,
           zeroOrder: 0,
+          zeroOrderEv: 0,
+          zeroOrderNonEv: 0,
         })
       }
       const counts = activeCountsByMonthKey.get(monthKey)
       if (workerZeroOrdersInSourceWindow(orderIndex, r.worker, activeWindowEnd)) {
         counts.zeroOrder += 1
+        const mappedEv91 = lookupEv91PublicRiderId(ev91Index, r.worker) || ''
+        const identityKeys = riderDeployIdentityKeys(r.worker, mappedEv91)
+        if (isRiderEvOnDate(riderAssignments, identityKeys, activeWindowEnd, '')) counts.zeroOrderEv += 1
+        else counts.zeroOrderNonEv += 1
         continue
       }
       counts.activeTotal += 1
@@ -1957,6 +1981,8 @@ export function buildFullDataSourceWiseDailyRows(
         'Active EV Rider Count': active.activeEv,
         'Active Non-EV Rider Count': active.activeNonEv,
         '0 Order Rider Count (last 4 days)': active.zeroOrder,
+        '0 Order EV Rider Count (last 4 days)': active.zeroOrderEv,
+        '0 Order Non-EV Rider Count (last 4 days)': active.zeroOrderNonEv,
         'Active window end': activeWindowValid ? activeWindowEnd : '',
         'Active window dates': activeWindowValid ? activeWindowDates.join(', ') : '',
         'Total Order': m.totalOrder,

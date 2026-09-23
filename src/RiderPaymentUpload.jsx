@@ -741,6 +741,11 @@ export default function RiderPaymentUpload() {
           { key: 'city', label: 'City' },
           { key: 'month', label: 'Month' },
           { key: 'orders', label: 'Orders' },
+          { key: 'period_start', label: 'Period Start' },
+          { key: 'period_label', label: 'Period Label' },
+          { key: 'rider_key', label: 'Rider Key' },
+          { key: 'is_first_rider', label: 'First Rider' },
+          { key: 'source_name', label: 'Source Name' },
           { key: 'final_net_payout', label: 'Final Net Payout' },
           { key: 'payment_status', label: 'Status' },
         ]}

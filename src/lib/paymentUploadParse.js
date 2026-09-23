@@ -77,6 +77,7 @@ const RIDER_PAYMENT_FIELD_ALIASES = {
   margin_pct: ['margin_pct', 'margin_percent'],
   margin_amount: ['margin_amount', 'marginamount'],
   region: ['region'],
+  source_name: ['source_name', 'sourcename', 'source'],
 }
 
 const MANUAL_COLLATION_FIELD_ALIASES = {
@@ -135,10 +136,11 @@ export function parseWorkbookArrayBuffer(arrayBuffer, { mapFn, minFields = 2 }) 
 }
 
 export function parseRiderPaymentFile(arrayBuffer) {
-  return parseWorkbookArrayBuffer(arrayBuffer, {
+  const result = parseWorkbookArrayBuffer(arrayBuffer, {
     mapFn: (row) => mapRow(row, RIDER_PAYMENT_FIELD_ALIASES, RIDER_PAYMENT_NUMERIC),
     minFields: 3,
   })
+  return { ...result, rows: deriveRiderPaymentPeriodRows(result.rows) }
 }
 
 export function parseManualCollationFile(arrayBuffer) {
@@ -155,7 +157,7 @@ function parseUploadDate(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value
   const s = String(value).trim()
   if (!s) return null
-  const slash = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/)
+  const slash = s.match(new RegExp('^(\\d{1,2})[-/](\\d{1,2})[-/](\\d{2,4})'))
   if (slash) {
     let year = Number(slash[3])
     if (year < 100) year += 2000
@@ -175,6 +177,75 @@ function deriveMonthLabel(dateText) {
   const d = parseUploadDate(dateText)
   if (!d) return ''
   return `${MONTH_SHORT[d.getMonth()]}-${d.getFullYear()}`
+}
+
+function parsePaymentMonth(value) {
+  const text = toText(value)
+  const match = text.match(/^([A-Za-z]{3,9})[-\s/]?(\d{2}|\d{4})$/)
+  if (!match) return null
+  const month = MONTH_SHORT.findIndex((name) => name.toLowerCase() === match[1].slice(0, 3).toLowerCase())
+  if (month < 0) return null
+  let year = Number(match[2])
+  if (year < 100) year += year >= 70 ? 1900 : 2000
+  return new Date(year, month, 1)
+}
+
+function formatDateKey(date) {
+  if (!date || Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function startOfPaymentPeriod(weekValue, monthValue) {
+  const monthDate = parsePaymentMonth(monthValue)
+  if (!monthDate) return null
+  const weekText = toText(weekValue)
+  const numericWeek = Number(weekText)
+
+  if (Number.isFinite(numericWeek)) {
+    if (numericWeek >= 10000) {
+      const date = new Date(monthDate)
+      date.setDate(date.getDate() + (Math.trunc(numericWeek) % 10000) - 1)
+      return date
+    }
+    const year = 2000 + (Math.trunc(numericWeek) % 100)
+    const weekNumber = Math.floor(numericWeek / 100)
+    const jan4 = new Date(year, 0, 4)
+    const monday = new Date(jan4)
+    monday.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7) + (weekNumber - 1) * 7)
+    return monday
+  }
+
+  if (weekText.toLowerCase() === 'advance') {
+    const date = new Date(monthDate)
+    date.setDate(date.getDate() - 1)
+    return date
+  }
+
+  const offset = Number(weekText.split('-')[0])
+  if (Number.isFinite(offset)) {
+    const date = new Date(monthDate)
+    date.setDate(date.getDate() + offset - 1)
+    return date
+  }
+  return monthDate
+}
+
+function deriveRiderPaymentPeriodRows(rows) {
+  const seen = new Set()
+  return rows.map((row) => {
+    const periodStart = formatDateKey(startOfPaymentPeriod(row.week, row.month))
+    const weekText = toText(row.week)
+    const numericWeek = Number(weekText)
+    const periodLabel = Number.isFinite(numericWeek)
+      ? numericWeek >= 10000
+        ? `Week ${Math.trunc(numericWeek) % 10000} (${toText(row.month)})`
+        : `Week ${Math.floor(numericWeek / 100)} (${2000 + (Math.trunc(numericWeek) % 100)})`
+      : weekText
+    const riderKey = `${row.client_name}|${periodLabel}|${row.rider_id}`
+    const isFirstRider = riderKey !== '||' && !seen.has(riderKey) ? 1 : 0
+    if (riderKey !== '||') seen.add(riderKey)
+    return { ...row, period_start: periodStart, period_label: periodLabel, rider_key: riderKey, is_first_rider: isFirstRider }
+  })
 }
 
 const RENTAL_PENDING_FIELD_ALIASES = {
@@ -441,6 +512,7 @@ export const RIDER_PAYMENT_HEADER_LABELS = [
   'Client Deductions', 'SD', 'Damage', 'Insurance', 'Fleet', 'Traffic', 'On Hold',
   'EV rent', 'Final Net Payout', 'Payment Status', 'Payment Date', 'UTR #', 'Remarks',
   'Acc No', 'IFSC Code', 'PAN Number', 'Vehicle#', 'Margin %', 'Margin Amount', 'Region',
+  'Period Start', 'Period Label', 'Rider Key', 'Is First Rider (dedup flag)', 'Source Name',
 ]
 
 export const MANUAL_COLLATION_HEADER_LABELS = [

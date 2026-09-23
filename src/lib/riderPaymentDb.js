@@ -41,6 +41,11 @@ export const RIDER_PAYMENT_COLUMNS = [
   'payment_date',
   'utr_number',
   'vehicle_number',
+  'period_start',
+  'period_label',
+  'rider_key',
+  'is_first_rider',
+  'source_name',
 ].join(',')
 
 export function isMissingRiderPaymentTable(error) {
@@ -63,6 +68,11 @@ const RIDER_PAYMENT_PREVIEW_COLUMNS = [
   'orders',
   'final_net_payout',
   'payment_status',
+  'period_start',
+  'period_label',
+  'rider_key',
+  'is_first_rider',
+  'source_name',
 ].join(',')
 
 export async function fetchRiderPaymentPreview(limit = 50) {
@@ -158,6 +168,8 @@ let cachedPayments = null
 let paymentsInflight = null
 const PAYMENT_FETCH_CACHE_VERSION = 2
 let cachedPaymentsVersion = 0
+const rangedPaymentsCache = new Map()
+const rangedPaymentsInflight = new Map()
 /** Slim revenue/overview cache for General Overview. */
 let cachedRevenue = null
 let revenueInflight = null
@@ -191,6 +203,35 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
   return paymentsInflight
 }
 
+export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', force = false } = {}) {
+  const cacheKey = `${fromDate}|${toDate}`
+  if (!force && rangedPaymentsCache.has(cacheKey)) return rangedPaymentsCache.get(cacheKey)
+  if (!force && rangedPaymentsInflight.has(cacheKey)) return rangedPaymentsInflight.get(cacheKey)
+
+  const request = fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_COLUMNS, 'id', {
+    useKeyset: true,
+    pageSize: 1000,
+    maxRetries: 10,
+    queryModifier: (query) => {
+      let filtered = query
+      if (fromDate) filtered = filtered.gte('period_start', fromDate)
+      if (toDate) filtered = filtered.lte('period_start', toDate)
+      return filtered
+    },
+  })
+    .then(async ({ data }) => {
+      let rows = data || []
+      // Older uploads may not have period_start; let the page derive it from week/month.
+      if (!rows.length && fromDate && toDate) rows = await fetchAllRiderPayments({ force })
+      rangedPaymentsCache.set(cacheKey, rows)
+      return rows
+    })
+    .finally(() => rangedPaymentsInflight.delete(cacheKey))
+
+  rangedPaymentsInflight.set(cacheKey, request)
+  return request
+}
+
 export function clearRiderPaymentCache() {
   cachedPayments = null
   paymentsInflight = null
@@ -198,6 +239,8 @@ export function clearRiderPaymentCache() {
   cachedRevenue = null
   revenueInflight = null
   cachedRevenueVersion = 0
+  rangedPaymentsCache.clear()
+  rangedPaymentsInflight.clear()
 }
 
 /** Slim columns for General Overview payment charts (revenue / riders / orders / client). */

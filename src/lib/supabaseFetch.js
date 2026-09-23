@@ -43,6 +43,7 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
   while (true) {
     try {
       let query = supabase.from(table).select(columns)
+      if (options.queryModifier) query = options.queryModifier(query)
       if (orderBy) query = query.order(orderBy, { ascending: true })
       if (deployReturnOnly) query = query.or(DEPLOY_RETURN_STATUS_FILTER)
 

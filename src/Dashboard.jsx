@@ -1606,7 +1606,9 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 <YAxis stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip formatter={(value, name) => [Number(value).toLocaleString('en-IN'), name]} contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
                 <Legend verticalAlign="top" height={36} />
-                <Line yAxisId="count" type="monotone" dataKey={uploadMetric} name={uploadMetric === 'riders' ? (uploadPeriod === 'daily' ? 'Active riders (4-day)' : 'Rider count') : 'Order count'} stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line yAxisId="count" type="monotone" dataKey={uploadMetric === 'riders' ? 'evRiders' : 'evOrders'} name="EV" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line yAxisId="count" type="monotone" dataKey={uploadMetric === 'riders' ? 'nonEvRiders' : 'nonEvOrders'} name="Non-EV" stroke="#fb923c" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line yAxisId="count" type="monotone" dataKey={uploadMetric} name="Total" stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           )}

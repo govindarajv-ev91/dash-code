@@ -1370,7 +1370,10 @@ export function buildClientPeriodLineSeries(
     cities.add(cityName)
     if (clientFilter !== 'All' && clientName !== clientFilter) continue
     if (cityFilter !== 'All' && cityName !== cityFilter) continue
-    prepared.push({ date, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders) })
+    const type1 = String(row.type1 || '').toUpperCase()
+    const type2 = String(row.type2 || '').toUpperCase()
+    const isEv = (type1.includes('EV') && !type1.includes('NON')) || (type2.includes('EV') && !type2.includes('NON'))
+    prepared.push({ date, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders), isEv })
   }
 
   if (!prepared.length) return { series: [], totals: { orders: 0, riders: 0 }, clients: [], cities: [] }
@@ -1381,30 +1384,47 @@ export function buildClientPeriodLineSeries(
   const ridersByDate = new Map()
   for (const row of prepared) {
     if (row.date < minDate) continue
-    if (!ridersByDate.has(row.date)) ridersByDate.set(row.date, new Set())
-    if (row.rider) ridersByDate.get(row.date).add(row.rider)
+    if (!ridersByDate.has(row.date)) ridersByDate.set(row.date, { total: new Set(), ev: new Set(), nonEv: new Set() })
+    if (row.rider) {
+      ridersByDate.get(row.date).total.add(row.rider)
+      ridersByDate.get(row.date)[row.isEv ? 'ev' : 'nonEv'].add(row.rider)
+    }
     const parsed = parseISO(row.date)
     const key = period === 'daily'
       ? row.date
       : period === 'weekly'
         ? format(startOfWeek(parsed, { weekStartsOn: 1 }), 'yyyy-MM-dd')
         : format(parsed, 'yyyy-MM')
-    if (!byPeriod.has(key)) byPeriod.set(key, { key, orders: 0, riders: new Set() })
+    if (!byPeriod.has(key)) byPeriod.set(key, { key, orders: 0, evOrders: 0, nonEvOrders: 0, riders: new Set(), evRiders: new Set(), nonEvRiders: new Set() })
     const bucket = byPeriod.get(key)
     bucket.orders += row.orders
-    if (row.rider) bucket.riders.add(row.rider)
+    if (row.isEv) bucket.evOrders += row.orders
+    else bucket.nonEvOrders += row.orders
+    if (row.rider) {
+      bucket.riders.add(row.rider)
+      bucket[row.isEv ? 'evRiders' : 'nonEvRiders'].add(row.rider)
+    }
   }
 
   const series = [...byPeriod.values()].sort((a, b) => a.key.localeCompare(b.key)).map((bucket) => {
     const pointDate = parseISO(bucket.key.length === 7 ? `${bucket.key}-01` : bucket.key)
     let riders = bucket.riders.size
+    let evRiders = bucket.evRiders.size
+    let nonEvRiders = bucket.nonEvRiders.size
     if (period === 'daily') {
       const active = new Set()
+      const activeEv = new Set()
+      const activeNonEv = new Set()
       for (let offset = 0; offset < 4; offset += 1) {
         const date = format(subDays(pointDate, offset), 'yyyy-MM-dd')
-        for (const rider of ridersByDate.get(date) || []) active.add(rider)
+        const day = ridersByDate.get(date)
+        for (const rider of day?.total || []) active.add(rider)
+        for (const rider of day?.ev || []) activeEv.add(rider)
+        for (const rider of day?.nonEv || []) activeNonEv.add(rider)
       }
       riders = active.size
+      evRiders = activeEv.size
+      nonEvRiders = activeNonEv.size
     }
     return {
       period: period === 'daily'
@@ -1413,7 +1433,11 @@ export function buildClientPeriodLineSeries(
           ? `Week ${getISOWeek(pointDate)} · ${format(pointDate, 'dd MMM')}`
           : format(pointDate, 'MMM yyyy'),
       orders: bucket.orders,
+      evOrders: bucket.evOrders,
+      nonEvOrders: bucket.nonEvOrders,
       riders,
+      evRiders,
+      nonEvRiders,
     }
   })
 

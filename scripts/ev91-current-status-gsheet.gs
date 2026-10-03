@@ -201,14 +201,25 @@ function buildVehicleKmIndex_(dayMeta) {
     encodeURIComponent(fromKey) +
     '&run_date=lte.' +
     encodeURIComponent(toKey) +
-    '&order=id.asc'
+    '&order=run_date.asc,id.asc'
 
+  var lastRunDate = ''
   var lastId = 0
   var pageSize = 1000
   var total = 0
   for (var p = 0; p < 200; p++) {
     var url = base + '&limit=' + pageSize
-    if (lastId) url += '&id=gt.' + lastId
+    if (lastRunDate && lastId) {
+      var cursor =
+        '(run_date.gt.' +
+        lastRunDate +
+        ',and(run_date.eq.' +
+        lastRunDate +
+        ',id.gt.' +
+        lastId +
+        '))'
+      url += '&or=' + encodeURIComponent(cursor)
+    }
     var batch = fetchJsonArray_(url, {
       apikey: cfg.key,
       Authorization: 'Bearer ' + cfg.key,
@@ -224,8 +235,10 @@ function buildVehicleKmIndex_(dayMeta) {
       var mapKey = vKey + '|' + dateKey
       // If multiple rows same vehicle+day, keep max KM
       if (index[mapKey] == null || km > index[mapKey]) index[mapKey] = km
-      if (row.id != null) lastId = row.id
     }
+    var lastRow = batch[batch.length - 1]
+    lastRunDate = String(lastRow.run_date || '')
+    lastId = Number(lastRow.id) || 0
     total += batch.length
     if (batch.length < pageSize) break
   }

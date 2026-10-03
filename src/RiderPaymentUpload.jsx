@@ -146,6 +146,7 @@ function ResetConfirmModal({ open, title, message, confirming, onCancel, onConfi
 
 function UploadSection({
   title,
+  uploadDescription = 'Upload Excel (.xlsx, .xls) or CSV. Upload replaces all saved rows for this section.',
   icon: Icon,
   iconColor,
   headerLabels,
@@ -171,7 +172,7 @@ function UploadSection({
           <div>
             <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{title}</h2>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.8rem', color: 'var(--text-dim)', lineHeight: 1.5 }}>
-              Upload Excel (.xlsx, .xls) or CSV. Upload replaces all saved rows for this section.
+              {uploadDescription}
             </p>
             <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
               <strong>{count.toLocaleString()}</strong> rows in database
@@ -401,17 +402,19 @@ export default function RiderPaymentUpload() {
         setPaymentMessage({ type: 'error', text: 'No valid rider payment rows found. Check column headers.' })
         return
       }
-      const inserted = await saveRiderPaymentRows(rows, { replace: true })
+      const inserted = await saveRiderPaymentRows(rows, { replace: false })
       await refreshSummaries()
       setPaymentMessage({
         type: 'success',
-        text: `Saved ${inserted.toLocaleString()} rider payment row(s) from ${sheetName || file.name}.`,
+        text: `Added ${inserted.toLocaleString()} new rider payment row(s); skipped ${(rows.length - inserted).toLocaleString()} duplicate(s) from ${sheetName || file.name}. Existing rows were kept. Reset the month first when uploading a replacement file.`,
       })
     } catch (err) {
       const text = isMissingRiderPaymentTable(err)
         ? getRiderPaymentDbSetupMessage()
         : isStatementTimeout(err)
           ? getRiderPaymentTimeoutMessage()
+          : err instanceof TypeError && /failed to fetch/i.test(err.message || '')
+            ? 'Network connection failed during upload. Existing payment data was kept, but some new rows may have uploaded. Check the connection before retrying to avoid duplicates.'
           : err?.message || 'Upload failed.'
       setPaymentMessage({ type: 'error', text })
     } finally {
@@ -693,7 +696,7 @@ export default function RiderPaymentUpload() {
 
       <div className="glass" style={{ padding: '0.85rem 1rem', marginBottom: '1.25rem', display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
         <Database size={16} />
-        First-time setup: run <code style={{ color: '#fff' }}>sql/create_rider_payment_tables.sql</code> in Supabase SQL Editor.
+        Run <code style={{ color: '#fff' }}>sql/create_rider_payment_tables.sql</code> in Supabase SQL Editor for first-time setup or to enable duplicate payment-row protection on an existing table.
         If the page times out on large data, also run <code style={{ color: '#fff' }}>sql/fix_rider_payment_timeout.sql</code>.
       </div>
 
@@ -728,6 +731,7 @@ export default function RiderPaymentUpload() {
 
       <UploadSection
         title="Rider Payment Data"
+        uploadDescription="Upload appends rows and skips duplicates matching Client, Week, Month, Rider ID, Rider Name, City, Orders, Gross Payout, and Final Net Payout. Reset a month first to replace it."
         icon={Wallet}
         iconColor="var(--accent-green)"
         headerLabels={RIDER_PAYMENT_HEADER_LABELS}

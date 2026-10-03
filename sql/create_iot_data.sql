@@ -9,4 +9,5 @@ create policy "Allow anon read iot_data"
   on public.iot_data for select to anon using (true);
 
 create index if not exists iot_data_run_date_idx on public.iot_data (run_date);
+create index if not exists iot_data_run_date_id_idx on public.iot_data (run_date, id);
 create index if not exists iot_data_vehicle_number_idx on public.iot_data (vehicle_number);

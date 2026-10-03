@@ -51,6 +51,31 @@ alter table public.rider_payment_data add column if not exists period_label text
 alter table public.rider_payment_data add column if not exists rider_key text;
 alter table public.rider_payment_data add column if not exists is_first_rider integer;
 alter table public.rider_payment_data add column if not exists source_name text;
+alter table public.rider_payment_data add column if not exists upload_dedupe_key text generated always as (
+  md5(
+    'S' || length(lower(btrim(coalesce(client_name, ''))))::text || ':' || lower(btrim(coalesce(client_name, ''))) || '|' ||
+    'S' || length(lower(btrim(coalesce(week, ''))))::text || ':' || lower(btrim(coalesce(week, ''))) || '|' ||
+    'S' || length(lower(btrim(coalesce(month, ''))))::text || ':' || lower(btrim(coalesce(month, ''))) || '|' ||
+    'S' || length(lower(btrim(coalesce(rider_id, ''))))::text || ':' || lower(btrim(coalesce(rider_id, ''))) || '|' ||
+    'S' || length(lower(btrim(coalesce(rider_name, ''))))::text || ':' || lower(btrim(coalesce(rider_name, ''))) || '|' ||
+    'S' || length(lower(btrim(coalesce(city, ''))))::text || ':' || lower(btrim(coalesce(city, ''))) || '|' ||
+    case when orders is null then 'N-' else 'N' || length(trim_scale(orders)::text)::text || ':' || trim_scale(orders)::text end || '|' ||
+    case when gross_payout is null then 'N-' else 'N' || length(trim_scale(gross_payout)::text)::text || ':' || trim_scale(gross_payout)::text end || '|' ||
+    case when final_net_payout is null then 'N-' else 'N' || length(trim_scale(final_net_payout)::text)::text || ':' || trim_scale(final_net_payout)::text end
+  )
+) stored;
+
+-- Keep the oldest existing row for each requested payment identity before enforcing uniqueness.
+with ranked_rows as (
+  select id, row_number() over (partition by upload_dedupe_key order by id) as duplicate_rank
+  from public.rider_payment_data
+)
+delete from public.rider_payment_data as payment
+using ranked_rows
+where payment.id = ranked_rows.id and ranked_rows.duplicate_rank > 1;
+
+create unique index if not exists rider_payment_data_upload_dedupe_key_idx
+  on public.rider_payment_data (upload_dedupe_key);
 
 create index if not exists rider_payment_data_rider_id_idx on public.rider_payment_data (rider_id);
 create index if not exists rider_payment_data_month_idx on public.rider_payment_data (month);

@@ -512,7 +512,6 @@ export const RIDER_PAYMENT_HEADER_LABELS = [
   'Client Deductions', 'SD', 'Damage', 'Insurance', 'Fleet', 'Traffic', 'On Hold',
   'EV rent', 'Final Net Payout', 'Payment Status', 'Payment Date', 'UTR #', 'Remarks',
   'Acc No', 'IFSC Code', 'PAN Number', 'Vehicle#', 'Margin %', 'Margin Amount', 'Region',
-  'Period Start', 'Period Label', 'Rider Key', 'Is First Rider (dedup flag)', 'Source Name',
 ]
 
 export const MANUAL_COLLATION_HEADER_LABELS = [

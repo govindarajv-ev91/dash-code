@@ -143,24 +143,30 @@ export async function saveRiderPaymentRows(rows, { replace = true } = {}) {
   let chunkSize = 100
   let inserted = 0
   let i = 0
-  while (i < rows.length) {
-    const chunk = rows.slice(i, i + chunkSize)
-    const { error } = await supabase.from(RIDER_PAYMENT_TABLE).insert(chunk)
-    if (error) {
-      if (isStatementTimeout(error) && chunkSize > 20) {
-        chunkSize = Math.max(20, Math.floor(chunkSize / 2))
-        console.warn(
-          `[rider-payment] insert timed out; retrying with chunk size ${chunkSize}`
-        )
-        await new Promise((r) => setTimeout(r, 400))
-        continue
+  try {
+    while (i < rows.length) {
+      const chunk = rows.slice(i, i + chunkSize)
+      const { data, error } = await supabase
+        .from(RIDER_PAYMENT_TABLE)
+        .upsert(chunk, { onConflict: 'upload_dedupe_key', ignoreDuplicates: true })
+        .select('id')
+      if (error) {
+        if (isStatementTimeout(error) && chunkSize > 20) {
+          chunkSize = Math.max(20, Math.floor(chunkSize / 2))
+          console.warn(
+            `[rider-payment] insert timed out; retrying with chunk size ${chunkSize}`
+          )
+          await new Promise((r) => setTimeout(r, 400))
+          continue
+        }
+        throw error
       }
-      throw error
+      inserted += data?.length || 0
+      i += chunk.length
     }
-    inserted += chunk.length
-    i += chunk.length
+  } finally {
+    clearRiderPaymentCache()
   }
-  clearRiderPaymentCache()
   return inserted
 }
 

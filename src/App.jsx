@@ -208,8 +208,18 @@ async function fetchSecondaryTables() {
   ]
 }
 
+const ACTIVE_PAGE_STORAGE_KEY = 'fleetpro-active-page'
+
+function getSavedActivePage() {
+  try {
+    return window.localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY) || 'dashboard'
+  } catch {
+    return 'dashboard'
+  }
+}
+
 function App() {
-  const [activePage, setActivePage] = useState('dashboard')
+  const [activePage, setActivePage] = useState(getSavedActivePage)
   const [ev91FolderOpen, setEv91FolderOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [riderData, setRiderData] = useState([])
@@ -226,6 +236,14 @@ function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [dataUpdatedAt, setDataUpdatedAt] = useState(null)
   const lastSecondaryFetchRef = useRef(0)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, activePage)
+    } catch {
+      return
+    }
+  }, [activePage])
 
   const applyFleetToState = useCallback((fleetRes, formFleetRes, { cache = true } = {}) => {
     const { dbFleetRows, mergedFleetRows, formFleetRows } = applyFleetFetchResults(fleetRes, formFleetRes)

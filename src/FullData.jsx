@@ -441,6 +441,23 @@ export default function FullData({ onboardingData = [] }) {
     }
   }, [])
 
+  const refreshFullData = useCallback(async () => {
+    setMonthsLoading(true)
+    try {
+      const list = await fetchOrderUploadMonths()
+      setMonths(list)
+      if (selectedMonth && list.includes(selectedMonth)) {
+        await loadMonth(selectedMonth)
+      } else if (list.length) {
+        setSelectedMonth(list[0])
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to refresh months')
+    } finally {
+      setMonthsLoading(false)
+    }
+  }, [selectedMonth, loadMonth])
+
   useEffect(() => {
     if (selectedMonth) loadMonth(selectedMonth)
   }, [selectedMonth, loadMonth])
@@ -846,8 +863,8 @@ export default function FullData({ onboardingData = [] }) {
             <button
               type="button"
               className="glass"
-              onClick={() => selectedMonth && loadMonth(selectedMonth)}
-              disabled={loading || !selectedMonth}
+              onClick={refreshFullData}
+              disabled={loading || monthsLoading || !selectedMonth}
               style={{
                 padding: '0.55rem 0.9rem',
                 display: 'flex',
@@ -857,7 +874,7 @@ export default function FullData({ onboardingData = [] }) {
                 cursor: loading ? 'not-allowed' : 'pointer',
               }}
             >
-              <RefreshCw size={16} className={loading ? 'spin' : ''} />
+              <RefreshCw size={16} className={loading || monthsLoading ? 'spin' : ''} />
               Refresh
             </button>
             <button

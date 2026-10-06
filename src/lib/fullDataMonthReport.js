@@ -25,6 +25,7 @@ import { parseOrderUploadMonthLabel } from './orderUploadDb'
 import { normalizeIotRunDate, iotRowDistanceKm } from './iotDataReport'
 import { getZeroOrderAsOfFromEndDate, riderIdLookupKeys } from './riderPerformanceReport'
 import { calcOrderEarningAndMf, EV_DAILY_RENT } from './fullDataCommercialRates'
+import { isEv91ApiEvDeployReason, isEv91ApiReturnReason } from './ev91DeployReturnSummary'
 import {
   buildOnboardingSourceLookupIndex,
   lookupOnboardingSource,
@@ -42,7 +43,9 @@ const OVERALL_HISTORY_DAYS = 180
 
 export const FULL_DATA_METRICS = [
   { key: 'deployCount', label: 'Deployee Count', section: 'Supply' },
+  { key: 'newRiderDeployCount', label: 'Deployee Count (NEW_RIDER)', section: 'Supply' },
   { key: 'returnCount', label: 'Return Count', section: 'Supply' },
+  { key: 'reasonReturnCount', label: 'Return Count (Exiting / Shifting to Own Vehicle)', section: 'Supply' },
   { key: 'riderCount', label: 'Rider Count', section: 'Supply', uniqueMonth: true },
   { key: 'evRiderCount', label: 'EV rider Count', section: 'Supply', uniqueMonth: true },
   { key: 'nonEvRiderCount', label: 'Non-EV rider Count', section: 'Supply', uniqueMonth: true },
@@ -138,7 +141,9 @@ function isEvType(type1) {
 function emptyDayMetrics() {
   const o = {
     deployCount: 0,
+    newRiderDeployCount: 0,
     returnCount: 0,
+    reasonReturnCount: 0,
     riderCount: 0,
     evRiderCount: 0,
     nonEvRiderCount: 0,
@@ -725,10 +730,12 @@ export async function buildFullDataMonthBaseAsync(
     const m = ensureSlice(slices, dateKey, city, client)
     if (kind === 'deploy') {
       m.deployCount += 1
+      if (isEv91ApiEvDeployReason(row.reason)) m.newRiderDeployCount += 1
       if (!deployEventsByDate.has(dateKey)) deployEventsByDate.set(dateKey, new Map())
       deployEventsByDate.get(dateKey).set(vKey, { city, client })
     } else {
       m.returnCount += 1
+      if (isEv91ApiReturnReason(row.reason)) m.reasonReturnCount += 1
       if (!returnEventsByDate.has(dateKey)) returnEventsByDate.set(dateKey, new Map())
       returnEventsByDate.get(dateKey).set(vKey, { city, client })
     }
@@ -1417,11 +1424,16 @@ export function buildFullDataDeployDetailRows(
     rows.push({
       Date: dateKey,
       Status: kind,
+      Reason: (row.reason || '').toString().trim(),
       City: city,
       Client: client,
       Vehicle: vehicle,
       'Rider ID': riderId,
       'Rider Name': (row.riderName || '').toString().trim(),
+      'Deployee Count (NEW_RIDER)':
+        kind === 'Deploy' && isEv91ApiEvDeployReason(row.reason) ? 1 : 0,
+      'Return Count (Exiting / Shifting to Own Vehicle)':
+        kind === 'Return' && isEv91ApiReturnReason(row.reason) ? 1 : 0,
     })
   }
   rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Status.localeCompare(b.Status) || a.Vehicle.localeCompare(b.Vehicle))

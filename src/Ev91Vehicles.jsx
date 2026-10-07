@@ -18,6 +18,24 @@ const VEHICLE_COLUMNS = [
   { key: 'color', label: 'Color' },
 ]
 
+async function fetchVehiclePage(params) {
+  const response = await fetch(`/api/ev91-vehicles?${params.toString()}`, {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  })
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error(
+      'Production is returning the dashboard page instead of vehicle data. Add the /api/ev91-vehicles rewrite in Amplify Hosting and place it above the SPA fallback rule.'
+    )
+  }
+  const body = await response.json().catch(() => null)
+  if (!response.ok || !body?.success || !Array.isArray(body.vehicles)) {
+    throw new Error(body?.message || `Failed to load EV91 vehicles (HTTP ${response.status})`)
+  }
+  return body
+}
+
 export default function Ev91Vehicles() {
   const [vehicles, setVehicles] = useState([])
   const [page, setPage] = useState(1)
@@ -36,17 +54,7 @@ export default function Ev91Vehicles() {
     const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
     if (search) params.set('search', search)
 
-    fetch(`/api/ev91-vehicles?${params.toString()}`, {
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    })
-      .then(async (response) => {
-        const body = await response.json().catch(() => null)
-        if (!response.ok || !body?.success) {
-          throw new Error(body?.message || `Failed to load EV91 vehicles (HTTP ${response.status})`)
-        }
-        return body
-      })
+    fetchVehiclePage(params)
       .then((body) => {
         if (cancelled) return
         setVehicles(Array.isArray(body.vehicles) ? body.vehicles : [])
@@ -103,14 +111,7 @@ export default function Ev91Vehicles() {
       for (let exportPage = 1; exportPage <= totalPages; exportPage++) {
         const params = new URLSearchParams({ page: String(exportPage), limit: String(PAGE_SIZE) })
         if (search) params.set('search', search)
-        const response = await fetch(`/api/ev91-vehicles?${params.toString()}`, {
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        })
-        const body = await response.json().catch(() => null)
-        if (!response.ok || !body?.success) {
-          throw new Error(body?.message || `Export failed while loading page ${exportPage}`)
-        }
+        const body = await fetchVehiclePage(params)
         exportRows.push(...(Array.isArray(body.vehicles) ? body.vehicles : []))
       }
 

@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useDeferredValue, useCallback, useEffect, startTransition } from 'react'
-import { format, parseISO, subDays } from 'date-fns'
+import { differenceInCalendarDays, eachDayOfInterval, format, parseISO, startOfDay, subDays } from 'date-fns'
 import {
   Download,
   Search,
@@ -46,12 +46,22 @@ import {
   fetchEv91DeployedRiders,
   fetchEv91RiderDetails,
   buildEv91RiderPerformanceReport,
+  mergeEv91RiderDetailsIntoAssignments,
   getEv91RiderPerformanceHeaders,
   getEv91ZeroOrderRiderPerformanceHeaders,
   lookupEv91RentalPending,
 } from './lib/ev91RiderPerformance'
 import { fillPerformanceRowSourceFromOnboarding } from './lib/onboardingSourceLookup'
 import { fetchAllData } from './lib/supabaseFetch'
+import { buildRiderPerformanceReportFromAssignments } from './lib/riderPerformanceReport'
+import {
+  buildEv91OverallIntervalIndexes,
+  fetchEv91OverallStatusAll,
+  findEv91RiderForVehicleOnDate,
+  mergeCurrentStatusIntoIndexes,
+} from './lib/ev91EvLookup'
+import { vehiclePartitionKey } from './lib/fleetDeployReturnExport'
+import { lookupVehicleDayKm } from './lib/riderPerformanceIotKm'
 
 const ROWS_PER_PAGE = 80
 
@@ -80,6 +90,11 @@ export default function Ev91RiderPerformance({
   const [riderDetailsById, setRiderDetailsById] = useState(new Map())
   const [localOnboarding, setLocalOnboarding] = useState([])
   const [currentPage, setCurrentPage] = useState(1)
+  const [dailyExportOpen, setDailyExportOpen] = useState(false)
+  const [dailyExportFrom, setDailyExportFrom] = useState(() => format(subDays(new Date(), 1), 'yyyy-MM-dd'))
+  const [dailyExportTo, setDailyExportTo] = useState(() => format(subDays(new Date(), 1), 'yyyy-MM-dd'))
+  const [dailyExportLoading, setDailyExportLoading] = useState(false)
+  const [dailyExportError, setDailyExportError] = useState('')
   const today = useMemo(() => new Date(), [])
 
   const [zeroOrderEndDate, setZeroOrderEndDate] = useState(() =>
@@ -317,6 +332,106 @@ export default function Ev91RiderPerformance({
     a.download = `ev91_rider_performance${suffix}.csv`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  const exportDailyDeployedCsv = async () => {
+    if (!dailyExportFrom || !dailyExportTo || dailyExportFrom > dailyExportTo) {
+      setDailyExportError('Select a valid date range.')
+      return
+    }
+
+    setDailyExportLoading(true)
+    setDailyExportError('')
+    try {
+      const [overallResult, dailyIotRows] = await Promise.all([
+        fetchEv91OverallStatusAll(),
+        fetchIotDataInRange(dailyExportFrom, dailyExportTo),
+      ])
+      const intervalIndexes = buildEv91OverallIntervalIndexes(overallResult.data || [])
+      mergeCurrentStatusIntoIndexes(intervalIndexes, ev91Rows)
+      const dailyKmIndex = buildVehicleDayKmIndex(dailyIotRows || [])
+      const currentByVehicle = new Map(
+        ev91Rows.map((row) => [vehiclePartitionKey(row.vehicleNumber), row])
+      )
+      const exportHeaders = [
+        'Date', 'V no', 'ID', 'EV91 ID', 'City', 'Category', 'Client', 'Name',
+        'mobile no', 'Hub location', 'Source', 'Allotment Days', 'Current week +/-',
+        'In-active Days', 'Eff/inff', 'That day KM',
+      ]
+      const exportRows = []
+
+      for (const day of eachDayOfInterval({
+        start: parseISO(dailyExportFrom),
+        end: parseISO(dailyExportTo),
+      })) {
+        const asOf = startOfDay(day)
+        const dateKey = format(asOf, 'yyyy-MM-dd')
+        const assignments = []
+
+        for (const vehicleKey of intervalIndexes.vehicleIntervals.keys()) {
+          const interval = findEv91RiderForVehicleOnDate(
+            intervalIndexes.vehicleIntervals,
+            vehicleKey,
+            asOf
+          )
+          if (!interval) continue
+          const liveRow = currentByVehicle.get(vehicleKey)
+          assignments.push({
+            vehicleNumber: interval.vehicleNumber,
+            riderId: interval.clientId || interval.riderId,
+            clientRiderId: interval.clientId,
+            ev91RiderId: interval.ev91RiderId,
+            riderName: interval.riderName,
+            mobile: interval.mobile,
+            client: interval.clientName,
+            city: interval.city,
+            category: liveRow?.operationalStatus || '',
+            source: interval.sourceName,
+            hub: '',
+            deployDate: interval.deployDate,
+            allotmentDays: Math.max(0, differenceInCalendarDays(asOf, interval.deployDate)),
+          })
+        }
+
+        const enrichedAssignments = fillPerformanceRowSourceFromOnboarding(
+          mergeEv91RiderDetailsIntoAssignments(assignments, riderDetailsById),
+          resolvedOnboarding
+        )
+        const dayRows = buildRiderPerformanceReportFromAssignments(
+          enrichedAssignments,
+          orderRowsForMetrics,
+          asOf,
+          { metricsIndex }
+        ).map((row) => ({
+          ...row,
+          Date: format(asOf, 'dd/MM/yyyy'),
+          'That day KM': lookupVehicleDayKm(dailyKmIndex, row['V no'], dateKey),
+        }))
+        exportRows.push(...filterRiderPerformanceRows(dayRows, {
+          city: cityFilter,
+          client: clientFilter,
+          source: sourceFilter,
+          search: deferredSearch,
+          view: 'all',
+          asOfDate: asOf,
+        }))
+      }
+
+      const csv = rowsToPerformanceCsv(exportRows, exportHeaders)
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ev91_deployed_daily_${dailyExportFrom}_to_${dailyExportTo}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+      setDailyExportOpen(false)
+    } catch (err) {
+      console.warn('EV91 daily deployed export failed:', err)
+      setDailyExportError(err?.message || 'Failed to create daily deployed export.')
+    } finally {
+      setDailyExportLoading(false)
+    }
   }
 
   if (loading && !riderData?.length && ev91Loading) {
@@ -562,7 +677,87 @@ export default function Ev91RiderPerformance({
             {activeViewTab === 'zero_orders' ? zeroOrderCount.toLocaleString() : stats.effZero.toLocaleString()}
           </span>
         </button>
+        {activeViewTab === 'all' && (
+          <button
+            type="button"
+            className="fsr-export-btn"
+            style={{ marginLeft: 'auto' }}
+            onClick={() => {
+              setDailyExportError('')
+              setDailyExportOpen(true)
+            }}
+          >
+            <Download size={16} /> Export date-wise
+          </button>
+        )}
       </div>
+
+      {dailyExportOpen && (
+        <div
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !dailyExportLoading) setDailyExportOpen(false)
+          }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center',
+            padding: '1rem', background: 'rgba(0, 0, 0, 0.55)',
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ev91-daily-export-title"
+            className="glass"
+            style={{ width: 'min(100%, 420px)', padding: '1.25rem' }}
+          >
+            <h2 id="ev91-daily-export-title" style={{ marginTop: 0 }}>Export deployed vehicles by day</h2>
+            <div className="rp-filter" style={{ marginBottom: '0.85rem' }}>
+              <label htmlFor="ev91-daily-export-from">From date</label>
+              <input
+                id="ev91-daily-export-from"
+                type="date"
+                value={dailyExportFrom}
+                max={dailyExportTo || undefined}
+                onChange={(event) => setDailyExportFrom(event.target.value)}
+                disabled={dailyExportLoading}
+              />
+            </div>
+            <div className="rp-filter" style={{ marginBottom: '1rem' }}>
+              <label htmlFor="ev91-daily-export-to">To date</label>
+              <input
+                id="ev91-daily-export-to"
+                type="date"
+                value={dailyExportTo}
+                min={dailyExportFrom || undefined}
+                max={reportDate}
+                onChange={(event) => setDailyExportTo(event.target.value)}
+                disabled={dailyExportLoading}
+              />
+            </div>
+            {dailyExportError && (
+              <p role="alert" style={{ color: 'var(--danger, #d64545)' }}>{dailyExportError}</p>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className="glass-btn"
+                onClick={() => setDailyExportOpen(false)}
+                disabled={dailyExportLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="fsr-export-btn"
+                onClick={exportDailyDeployedCsv}
+                disabled={dailyExportLoading || !dailyExportFrom || !dailyExportTo || dailyExportFrom > dailyExportTo}
+              >
+                <Download size={16} /> {dailyExportLoading ? 'Preparing…' : 'Download CSV'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <div className="rp-meta glass">
         <span>

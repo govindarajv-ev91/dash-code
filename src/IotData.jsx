@@ -19,7 +19,10 @@ import {
   fetchRiderOrdersForIot,
   getIotDbSetupMessage,
   isMissingIotTable,
+  IOT_TABLE,
 } from './lib/iotDataDb'
+import IotDataUpload from './IotDataUpload'
+import { formatIotSource, IOT_SOURCES } from './lib/iotDataSources'
 import { buildIotVehicleReport, summarizeIotReport } from './lib/iotDataReport'
 import { dedupeCanonicalCities, normalizeSummaryCity } from './lib/citySummaryAliases'
 import { formatLastUploadAt } from './lib/paymentMonthList'
@@ -31,7 +34,7 @@ import { fetchEv91RiderDetails } from './lib/ev91RiderPerformance'
 
 const ROWS_PER_PAGE = 50
 
-export default function IotData({ fleetData, riderData, vehicleInventoryData = [], loading: appLoading }) {
+export default function IotData({ fleetData, riderData, vehicleInventoryData = [], loading: appLoading, uploadEnabled = false }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   const defaultFrom = format(subDays(new Date(), 6), 'yyyy-MM-dd')
 
@@ -45,6 +48,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
   const [lastUploadAt, setLastUploadAt] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [cityFilter, setCityFilter] = useState('All')
+  const [sourceFilter, setSourceFilter] = useState('All')
   const [currentPage, setCurrentPage] = useState(1)
   const [riderOrderRows, setRiderOrderRows] = useState([])
   const [riderOrdersLoading, setRiderOrdersLoading] = useState(true)
@@ -91,7 +95,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
     }
   }, [])
 
-  const loadRangeData = useCallback(async () => {
+  const loadRangeData = useCallback(async ({ force = false } = {}) => {
     if (!dateFrom || !dateTo || dateFrom > dateTo) {
       setIotError('Select a valid date range (From ≤ To).')
       setIotRows([])
@@ -108,7 +112,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
 
     try {
       const [rows, orders] = await Promise.all([
-        fetchIotDataInRange(dateFrom, dateTo),
+        fetchIotDataInRange(dateFrom, dateTo, { force }),
         fetchRiderOrdersForIot(dateFrom, dateTo, {
           fallbackRows: riderDataRef.current,
         }),
@@ -116,7 +120,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
       setIotRows(rows)
       setRiderOrderRows(orders)
       if (!rows.length) {
-        setIotError('No IoT records for this date range in iot_data. Widen the range or check run_date values.')
+        setIotError('No IoT records for this date range. Widen the range to read older dates or upload the provider’s file.')
       }
       if (!orders.length) {
         setRiderOrdersError('No order_upload_data rows for this date range. Orders will show as 0.')
@@ -142,8 +146,21 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
   }, [loadSummary, loadEv91DeployStatus])
 
   const applyRange = useCallback(() => {
-    loadRangeData()
+    loadRangeData({ force: true })
   }, [loadRangeData])
+
+  const refreshAfterUpload = async (range) => {
+    setSourceFilter(range?.source || 'All')
+    setCityFilter('All')
+    setSearchTerm('')
+    await loadSummary()
+    if (range && (range.dateFrom !== dateFrom || range.dateTo !== dateTo)) {
+      setDateFrom(range.dateFrom)
+      setDateTo(range.dateTo)
+    } else {
+      await loadRangeData()
+    }
+  }
 
   useEffect(() => {
     if (!missingTable) {
@@ -175,8 +192,14 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
     return ['All', ...cities]
   }, [reportRows])
 
+  const sourceOptions = useMemo(() => [...new Set([
+    ...IOT_SOURCES.map((source) => source.value),
+    ...reportRows.map((row) => row.dataSource),
+  ])], [reportRows])
+
   const filtered = useMemo(() => {
     let rows = reportRows
+    if (sourceFilter !== 'All') rows = rows.filter((row) => row.dataSource === sourceFilter)
     if (cityFilter && cityFilter !== 'All') {
       rows = rows.filter((r) => normalizeSummaryCity(r.city) === cityFilter)
     }
@@ -195,9 +218,9 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
         r.city.toLowerCase().includes(q) ||
         String(r.orderCount).includes(q)
     )
-  }, [reportRows, deferredSearch, cityFilter])
+  }, [reportRows, deferredSearch, cityFilter, sourceFilter])
 
-  // Stats follow city + search + date-range filter (e.g. one vehicle → that vehicle's KM only)
+  // Stats follow source, city, search, and date-range filters.
   const stats = useMemo(() => summarizeIotReport(filtered), [filtered])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE))
@@ -208,7 +231,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchTerm, cityFilter, dateFrom, dateTo, reportRows.length])
+  }, [searchTerm, cityFilter, sourceFilter, dateFrom, dateTo, reportRows.length])
 
   const exportExcel = () => {
     if (!filtered.length) return
@@ -250,10 +273,10 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
           <div>
             <h1 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               <Radio size={28} style={{ color: 'var(--accent-blue)' }} />
-              IoT Data
+              {uploadEnabled ? 'IoT Data Upload' : 'IoT Data'}
             </h1>
             <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '720px' }}>
-              Reads from Supabase <code style={{ color: '#fff' }}>iot_data</code> (Alt Mobility). Shows running distance by vehicle and date, with deployed rider, client from fleet, and order count from rider metrics for that date.
+              {uploadEnabled ? 'Upload Opspod-EV91, Alt Mobility, Stridegreen, or Motvolt data and review new or older dates, with rider, client, and daily orders.' : 'Vehicle distance history from Opspod-EV91, Alt Mobility, Stridegreen, and Motvolt, with rider, client, and daily orders.'}
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -276,7 +299,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
             <span style={{ color: '#f87171' }}>{getIotDbSetupMessage()}</span>
           ) : (
             <>
-              <span><strong>{dbCount.toLocaleString()}</strong> rows in <code style={{ color: '#fff' }}>iot_data</code></span>
+              <span>About <strong>{dbCount.toLocaleString()}</strong> rows in <code style={{ color: '#fff' }}>{IOT_TABLE}</code></span>
               <span>· Orders from <code style={{ color: '#fff' }}>order_upload_data</code> only</span>
               <span>· Deploy Status from EV91 Overall / Current API</span>
               <span>· Phone from EV91 Rider Details</span>
@@ -288,6 +311,8 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
           )}
         </div>
       </header>
+
+      {uploadEnabled && <IotDataUpload disabled={missingTable} onSaved={refreshAfterUpload} />}
 
       <div
         className="filter-bar glass"
@@ -336,6 +361,13 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
             {cityOptions.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+          Source
+          <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="fsr-select" style={{ padding: '0.45rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+            <option value="All">All sources</option>
+            {sourceOptions.map((source) => <option key={source} value={source}>{formatIotSource(source)}</option>)}
           </select>
         </label>
         <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
@@ -448,7 +480,7 @@ export default function IotData({ fleetData, riderData, vehicleInventoryData = [
                         <div>{r.city}</div>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{r.hub}</div>
                       </td>
-                      <td style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{r.dataSource}</td>
+                      <td style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{formatIotSource(r.dataSource)}</td>
                       <td>
                         <span
                           className="status-badge"

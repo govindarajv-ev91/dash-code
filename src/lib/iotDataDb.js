@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient'
 import { fetchLastUploadAt } from './paymentMonthList'
 import { parseMetricDate } from './riderPerformanceReport'
 import { fetchOrderUploadsForDateRange } from './orderUploadDb'
+import { IOT_SOURCES } from './iotDataSources'
 
 /** Keep order rows whose date_record falls in [dateFrom, dateTo] (yyyy-MM-dd). */
 export function filterRiderRowsToDateRange(rows, dateFrom, dateTo) {
@@ -40,14 +41,14 @@ export async function fetchRiderOrdersForIot(dateFrom, dateTo, { fallbackRows = 
   return filterRiderRowsToDateRange(onlyOrderUploadRows(fallbackRows), from, to)
 }
 
-/** Live Supabase table (Alt Mobility / pipeline ingest). */
+/** Shared history for all four IoT providers. */
 export const IOT_TABLE = 'iot_data'
 export const IOT_COLUMNS =
   'id,vehicle_number,run_date,total_distance,data_source,raw_vehicle_id,vehicle_master_id,lookup_matched,lookup_match_type,created_at'
 
 export function isMissingIotTable(error) {
   const msg = (error?.message || '').toLowerCase()
-  return msg.includes('iot_data') && (msg.includes('does not exist') || msg.includes('schema cache'))
+  return msg.includes(IOT_TABLE) && (msg.includes('does not exist') || msg.includes('schema cache'))
 }
 
 export function getIotDbSetupMessage() {
@@ -55,7 +56,7 @@ export function getIotDbSetupMessage() {
 }
 
 export async function fetchIotDataCount() {
-  const probe = await supabase.from(IOT_TABLE).select('id', { count: 'exact', head: true })
+  const probe = await supabase.from(IOT_TABLE).select('id', { count: 'estimated', head: true })
   if (probe.error) throw probe.error
   return probe.count ?? 0
 }
@@ -101,18 +102,37 @@ export async function fetchIotDataInRange(dateFrom, dateTo, { force = false } = 
   return all
 }
 
+/** Same transactional upload API as the standalone IoT project. */
 export async function saveIotRows(rows) {
-  if (!rows?.length) return 0
-
-  const chunkSize = 500
-  let saved = 0
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, i + chunkSize)
-    const { error } = await supabase.from(IOT_TABLE).insert(chunk)
-    if (error) throw error
-    saved += chunk.length
+  if (!rows?.length) return { inserted: 0, skipped: 0 }
+  if (rows.some((row) => !IOT_SOURCES.some((source) => source.value === row.data_source))) {
+    throw new Error('Select one of the four supported IoT sources before saving.')
   }
-  return saved
+  const { data, error } = await supabase.rpc('save_iot_upload', { upload_rows: rows })
+  if (error?.code === 'PGRST202' || (error?.code === '42883' && (error.message || '').includes('save_iot_upload'))) {
+    throw new Error('IoT uploads need the existing project’s database update. Ask your administrator to complete the upload setup.')
+  }
+  if (error) throw error
+  const result = Array.isArray(data) ? data[0] : data
+  const inserted = Number(result?.inserted)
+  const skipped = Number(result?.skipped)
+  if (!Number.isSafeInteger(inserted) || !Number.isSafeInteger(skipped) || inserted < 0 || skipped < 0 || inserted + skipped !== rows.length) {
+    clearIotRiderOrderCache()
+    throw new Error('The database did not confirm the upload result. Refresh the report before retrying.')
+  }
+  clearIotRiderOrderCache()
+  return { inserted, skipped }
+}
+
+export async function fetchIotLastUploadsBySource() {
+  const { data, error } = await supabase.rpc('iot_dashboard_last_uploads', {
+    source_keys: IOT_SOURCES.map((source) => source.value),
+  })
+  if (error) throw error
+  return Object.fromEntries((data || []).map((row) => [row.data_source, {
+    date: row.run_date, uploadedAt: row.created_at,
+    vehicles: Number(row.vehicle_count), files: Number(row.file_count),
+  }]))
 }
 
 export async function loadIotSummary() {

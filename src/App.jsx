@@ -70,6 +70,7 @@ const EV91_PAGES = new Set([
   'ev91-operational',
   'ev91-client-period-trend',
   'ev91-vehicles',
+  'ev91-iotupload',
 ])
 const EV91_ENDPOINT_BY_PAGE = {
   'ev91-current': 'current-status',
@@ -717,6 +718,14 @@ function App() {
               <div className="nav-folder-children">
                 <button
                   type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-iotupload' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-iotupload')}
+                >
+                  <Radio size={18} />
+                  IoT Data Upload
+                </button>
+                <button
+                  type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-summary' ? 'active' : ''}`}
                   onClick={() => openEv91Page('ev91-summary')}
                 >
@@ -911,8 +920,10 @@ function App() {
           <PaymentHistory onboardingData={onboardingData} />
         ) : activePage === 'sdpayment' ? (
           <SdPaymentViewer />
-        ) : activePage === 'iotdata' ? (
+        ) : activePage === 'iotdata' || activePage === 'ev91-iotupload' ? (
           <IotData
+            key={activePage}
+            uploadEnabled={activePage === 'ev91-iotupload'}
             fleetData={fleetData}
             riderData={riderData}
             vehicleInventoryData={vehicleInventoryData}

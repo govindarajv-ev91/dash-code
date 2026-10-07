@@ -18,6 +18,7 @@ var CONFIG = {
   EV91_BASE_FALLBACK:
     'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/current-status',
   EV91_API_KEY: 'ev91-mis-public-2026',
+  VEHICLES_BASE: 'https://dashboard.ev91riderz.com/api/v1/vehicles',
   // Same as VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (publishable anon key)
   SUPABASE_URL: 'https://arnxvnkednpzyzyfculx.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_o04xyDV5z09-dAfxP6awvA_FIdop2lH',
@@ -75,9 +76,10 @@ function importEv91CurrentStatus() {
     dayMeta.map(function (m) {
       return m.header
     })
-  )
+  ).concat(['Vehicle Model'])
 
   var rows = fetchDeployedCurrentStatus_()
+  var vehicleModelIndex = buildVehicleModelIndex_()
   var sourceIndex = buildOnboardingSourceIndex_()
   var beforeMissing = 0
   for (var i = 0; i < rows.length; i++) {
@@ -93,7 +95,7 @@ function importEv91CurrentStatus() {
 
   var values = [columns]
   for (var r = 0; r < rows.length; r++) {
-    values.push(rowToValues_(rows[r], dayMeta, kmIndex))
+    values.push(rowToValues_(rows[r], dayMeta, kmIndex, vehicleModelIndex))
   }
 
   var sheet = getTargetSheet_()
@@ -405,7 +407,35 @@ function normalizePhone_(value) {
   return digits.length >= 6 ? digits : ''
 }
 
-function rowToValues_(row, dayMeta, kmIndex) {
+function normalizeVehicleNumber_(value) {
+  return String(value || '').trim().toUpperCase().replace(/[\s\-_/]+/g, '')
+}
+
+function buildVehicleModelIndex_() {
+  var index = {}
+  var page = 1
+  var limit = 100
+
+  for (var i = 0; i < 50; i++) {
+    var url = CONFIG.VEHICLES_BASE + '?page=' + page + '&limit=' + limit
+    var body = fetchJson_(url, { Accept: 'application/json' })
+    var vehicles = body.vehicles || []
+
+    for (var j = 0; j < vehicles.length; j++) {
+      var vehicleKey = normalizeVehicleNumber_(vehicles[j].registrationNumber)
+      var modelName = vehicles[j].model && vehicles[j].model.displayName
+      if (vehicleKey && modelName) index[vehicleKey] = modelName
+    }
+
+    if (!vehicles.length || !(body.pagination && body.pagination.hasNextPage)) break
+    page++
+  }
+
+  Logger.log('Loaded vehicle model mappings=' + Object.keys(index).length)
+  return index
+}
+
+function rowToValues_(row, dayMeta, kmIndex, vehicleModelIndex) {
   var values = [
     cell_(row.city),
     cell_(row.vehicleNumber),
@@ -423,6 +453,8 @@ function rowToValues_(row, dayMeta, kmIndex) {
   for (var i = 0; i < dayMeta.length; i++) {
     values.push(lookupVehicleKm_(kmIndex, row.vehicleNumber, dayMeta[i].dateKey))
   }
+  var vehicleKey = normalizeVehicleNumber_(row.vehicleNumber)
+  values.push(cell_(vehicleModelIndex[vehicleKey] || ''))
   return values
 }
 

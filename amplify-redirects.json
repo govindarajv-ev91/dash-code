@@ -1,5 +1,11 @@
 [
   {
+    "source": "/api/ev91-vehicles",
+    "target": "https://dashboard.ev91riderz.com/api/v1/vehicles",
+    "status": "200",
+    "condition": null
+  },
+  {
     "source": "/api/ev91/<*>",
     "target": "https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/<*>",
     "status": "200",

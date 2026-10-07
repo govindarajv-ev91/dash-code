@@ -116,6 +116,52 @@ function ev91MisApiPlugin() {
   }
 }
 
+function ev91VehiclesApiPlugin() {
+  return {
+    name: 'ev91-vehicles-api',
+    configureServer(server) {
+      const mount = (middlewares) => {
+        middlewares.use('/api/ev91-vehicles', async (req, res, next) => {
+          if (req.method !== 'GET') return next()
+
+          const url = new URL(req.url || '/', 'http://localhost')
+          const query = Object.fromEntries(url.searchParams.entries())
+          const mockRes = createMockRes(res)
+
+          try {
+            const { default: handler } = await import('./api/ev91-vehicles.js')
+            await handler({ method: 'GET', query, url: req.url }, mockRes)
+          } catch (err) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ success: false, message: err?.message || 'API error' }))
+          }
+        })
+      }
+      mount(server.middlewares)
+    },
+    configurePreviewServer(server) {
+      const mount = (middlewares) => {
+        middlewares.use('/api/ev91-vehicles', async (req, res, next) => {
+          if (req.method !== 'GET') return next()
+          const url = new URL(req.url || '/', 'http://localhost')
+          const query = Object.fromEntries(url.searchParams.entries())
+          const mockRes = createMockRes(res)
+          try {
+            const { default: handler } = await import('./api/ev91-vehicles.js')
+            await handler({ method: 'GET', query, url: req.url }, mockRes)
+          } catch (err) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ success: false, message: err?.message || 'API error' }))
+          }
+        })
+      }
+      mount(server.middlewares)
+    },
+  }
+}
+
 function rentalPendingApiPlugin() {
   return {
     name: 'rental-pending-api',
@@ -194,6 +240,7 @@ export default defineConfig({
     react(),
     riderPerformanceApiPlugin(),
     ev91MisApiPlugin(),
+    ev91VehiclesApiPlugin(),
     rentalPendingApiPlugin(),
   ],
   server: {

@@ -8,6 +8,9 @@
     },
     "api/ev91-current-status-csv.js": {
       "maxDuration": 60
+    },
+    "api/ev91-vehicles.js": {
+      "maxDuration": 30
     }
   },
   "rewrites": [

@@ -18,13 +18,14 @@ var CONFIG = {
   EV91_BASE_FALLBACK:
     'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/current-status',
   EV91_API_KEY: 'ev91-mis-public-2026',
+  VEHICLES_BASE: 'https://dashboard.ev91riderz.com/api/v1/vehicles',
   // Same as VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (publishable anon key)
   SUPABASE_URL: 'https://arnxvnkednpzyzyfculx.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_o04xyDV5z09-dAfxP6awvA_FIdop2lH',
   TARGET_SHEET_NAME: 'E91DB Data',
 }
 
-var COLUMNS = [
+var BASE_COLUMNS = [
   'City',
   'Vehicle No.',
   'EV91 Rider ID',
@@ -53,7 +54,15 @@ function getSupabaseConfig_() {
 }
 
 function importEv91CurrentStatus() {
+  var dayMeta = buildLast4DayMeta_()
+  var columns = BASE_COLUMNS.concat(
+    dayMeta.map(function (meta) {
+      return meta.header
+    })
+  ).concat(['Vehicle Model'])
   var rows = fetchDeployedCurrentStatus_()
+  var vehicleModelIndex = buildVehicleModelIndex_()
+  var kmIndex = buildVehicleKmIndex_(dayMeta)
   var sourceIndex = buildOnboardingSourceIndex_()
   var beforeMissing = 0
   for (var i = 0; i < rows.length; i++) {
@@ -65,15 +74,15 @@ function importEv91CurrentStatus() {
     if (isMissingSource_(rows[j].source)) afterMissing++
   }
 
-  var values = [COLUMNS]
+  var values = [columns]
   for (var r = 0; r < rows.length; r++) {
-    values.push(rowToValues_(rows[r]))
+    values.push(rowToValues_(rows[r], dayMeta, kmIndex, vehicleModelIndex))
   }
 
   var sheet = getTargetSheet_()
   sheet.clearContents()
-  sheet.getRange(1, 1, values.length, COLUMNS.length).setValues(values)
-  sheet.getRange(1, 1, 1, COLUMNS.length).setFontWeight('bold')
+  sheet.getRange(1, 1, values.length, columns.length).setValues(values)
+  sheet.getRange(1, 1, 1, columns.length).setFontWeight('bold')
   sheet.setFrozenRows(1)
 
   Logger.log(
@@ -83,6 +92,12 @@ function importEv91CurrentStatus() {
       Object.keys(sourceIndex.byRider).length +
       ' phones=' +
       Object.keys(sourceIndex.byPhone).length +
+      ' · vehicle models=' +
+      Object.keys(vehicleModelIndex).length +
+      ' · KM dates=' +
+      dayMeta.map(function (meta) { return meta.header }).join(', ') +
+      ' · IoT vehicle-days=' +
+      Object.keys(kmIndex).length +
       ' · Source missing before=' +
       beforeMissing +
       ' after=' +
@@ -273,8 +288,143 @@ function normalizePhone_(value) {
   return digits.length >= 6 ? digits : ''
 }
 
-function rowToValues_(row) {
-  return [
+function normalizeVehicleNumber_(value) {
+  return String(value || '').trim().toUpperCase().replace(/[\s\-_/]+/g, '')
+}
+
+function buildLast4DayMeta_() {
+  var timezone = 'Asia/Kolkata'
+  var now = new Date()
+  var out = []
+  for (var offset = 1; offset <= 4; offset++) {
+    var day = new Date(now.getTime() - offset * 24 * 60 * 60 * 1000)
+    var dateKey = Utilities.formatDate(day, timezone, 'yyyy-MM-dd')
+    out.push({
+      offset: offset,
+      dateKey: dateKey,
+      header: 'D-' + offset + ' (' + Utilities.formatDate(day, timezone, 'dd-MMM') + ')',
+    })
+  }
+  return out
+}
+
+function buildVehicleKmIndex_(dayMeta) {
+  var index = {}
+  var config = getSupabaseConfig_()
+  if (!config.url || !config.key) {
+    Logger.log('Skip IoT KM: Supabase URL/key missing')
+    return index
+  }
+
+  var fromKey = dayMeta[dayMeta.length - 1].dateKey
+  var toKey = dayMeta[0].dateKey
+  var select = 'id,vehicle_number,run_date,total_distance,raw_vehicle_id'
+  var base =
+    String(config.url).replace(/\/$/, '') +
+    '/rest/v1/iot_data?select=' +
+    encodeURIComponent(select) +
+    '&run_date=gte.' +
+    encodeURIComponent(fromKey) +
+    '&run_date=lte.' +
+    encodeURIComponent(toKey) +
+    '&order=run_date.asc,id.asc'
+
+  var lastRunDate = ''
+  var lastId = 0
+  var pageSize = 1000
+  var total = 0
+  for (var page = 0; page < 200; page++) {
+    var url = base + '&limit=' + pageSize
+    if (lastRunDate && lastId) {
+      var cursor =
+        '(run_date.gt.' +
+        lastRunDate +
+        ',and(run_date.eq.' +
+        lastRunDate +
+        ',id.gt.' +
+        lastId +
+        '))'
+      url += '&or=' + encodeURIComponent(cursor)
+    }
+
+    var batch = fetchJsonArray_(url, {
+      apikey: config.key,
+      Authorization: 'Bearer ' + config.key,
+      Accept: 'application/json',
+    })
+    if (!batch.length) break
+
+    for (var i = 0; i < batch.length; i++) {
+      var row = batch[i]
+      var vehicleKey = normalizeVehicleNumber_(row.vehicle_number || row.raw_vehicle_id)
+      var dateKey = normalizeRunDate_(row.run_date)
+      var km = Number(row.total_distance)
+      if (!vehicleKey || !dateKey || !isFinite(km)) continue
+      var key = vehicleKey + '|' + dateKey
+      if (index[key] == null || km > index[key]) index[key] = km
+    }
+
+    var lastRow = batch[batch.length - 1]
+    lastRunDate = String(lastRow.run_date || '')
+    lastId = Number(lastRow.id) || 0
+    total += batch.length
+    if (batch.length < pageSize) break
+  }
+
+  Logger.log('Loaded iot_data rows=' + total + ' for ' + fromKey + ' to ' + toKey)
+  return index
+}
+
+function normalizeRunDate_(value) {
+  if (value == null || value === '') return ''
+  var text = String(value).trim()
+  var match = text.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (match) return match[1]
+  var date = new Date(text)
+  if (isNaN(date.getTime())) return ''
+  return Utilities.formatDate(date, 'Asia/Kolkata', 'yyyy-MM-dd')
+}
+
+function lookupVehicleKm_(kmIndex, vehicleNumber, dateKey) {
+  if (!kmIndex || !dateKey) return ''
+  var key = normalizeVehicleNumber_(vehicleNumber) + '|' + dateKey
+  if (kmIndex[key] == null) return ''
+  var km = Number(kmIndex[key])
+  return isFinite(km) ? Math.round(km * 100) / 100 : ''
+}
+
+function buildVehicleModelIndex_() {
+  var index = {}
+  var page = 1
+  var limit = 100
+
+  for (var i = 0; i < 50; i++) {
+    var url =
+      CONFIG.VEHICLES_BASE +
+      '?page=' +
+      page +
+      '&limit=' +
+      limit
+    var body = fetchJson_(url, { Accept: 'application/json' })
+    var vehicles = body.vehicles || []
+
+    for (var j = 0; j < vehicles.length; j++) {
+      var vehicleKey = normalizeVehicleNumber_(vehicles[j].registrationNumber)
+      var modelName = vehicles[j].model && vehicles[j].model.displayName
+      if (vehicleKey && modelName) index[vehicleKey] = modelName
+    }
+
+    if (!vehicles.length || !(body.pagination && body.pagination.hasNextPage)) break
+    page++
+  }
+
+  Logger.log('Loaded vehicle model mappings=' + Object.keys(index).length)
+  return index
+}
+
+function rowToValues_(row, dayMeta, kmIndex, vehicleModelIndex) {
+  var vehicleKey = normalizeVehicleNumber_(row.vehicleNumber)
+  var values = [
     cell_(row.city),
     cell_(row.vehicleNumber),
     cell_(row.ev91RiderId),
@@ -288,6 +438,11 @@ function rowToValues_(row) {
     dateOnly_(row.lastStatusDate),
     cell_(row.source),
   ]
+  for (var i = 0; i < dayMeta.length; i++) {
+    values.push(lookupVehicleKm_(kmIndex, row.vehicleNumber, dayMeta[i].dateKey))
+  }
+  values.push(cell_(vehicleModelIndex[vehicleKey] || ''))
+  return values
 }
 
 function cell_(v) {

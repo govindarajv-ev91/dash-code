@@ -9,7 +9,7 @@
  * 2. Run importEv91CurrentStatus (writes to sheet "E91DB Data"; creates it if missing)
  * 3. Triggers → every 5 hours → importEv91CurrentStatus
  *
- * Source: when EV91 source is "-" / blank, fill from rider_onboarding.source_name
+ * Source: prefer rider_onboarding.source_name; fall back to EV91 source when not found
  * KM: D-1 = yesterday … D-4 = 4 days ago (vehicle total_distance from iot_data)
  */
 
@@ -85,7 +85,7 @@ function importEv91CurrentStatus() {
   for (var i = 0; i < rows.length; i++) {
     if (isMissingSource_(rows[i].source)) beforeMissing++
   }
-  rows = fillMissingSources_(rows, sourceIndex)
+  rows = preferOnboardingSources_(rows, sourceIndex)
   var afterMissing = 0
   for (var j = 0; j < rows.length; j++) {
     if (isMissingSource_(rows[j].source)) afterMissing++
@@ -329,9 +329,8 @@ function buildOnboardingSourceIndex_() {
   return { byRider: byRider, byPhone: byPhone }
 }
 
-function fillMissingSources_(rows, index) {
+function preferOnboardingSources_(rows, index) {
   return rows.map(function (row) {
-    if (!isMissingSource_(row.source)) return row
     var hit =
       lookupAllKeys_(index.byRider, row.clientRiderId) ||
       lookupAllKeys_(index.byRider, row.ev91RiderId) ||
@@ -339,7 +338,7 @@ function fillMissingSources_(rows, index) {
       index.byPhone[normalizePhone_(row.riderContact)] ||
       index.byPhone[normalizePhone_(row.clientRiderId)] ||
       ''
-    if (!hit) return row
+    if (!hit || isMissingSource_(hit)) return row
     var copy = {}
     for (var k in row) {
       if (Object.prototype.hasOwnProperty.call(row, k)) copy[k] = row[k]

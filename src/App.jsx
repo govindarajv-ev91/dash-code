@@ -215,7 +215,8 @@ const ACTIVE_PAGE_STORAGE_KEY = 'fleetpro-active-page'
 
 function getSavedActivePage() {
   try {
-    return window.localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY) || 'dashboard'
+    const savedPage = window.localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY) || 'dashboard'
+    return savedPage === 'ev91-iotupload' ? 'dashboard' : savedPage
   } catch {
     return 'dashboard'
   }
@@ -510,6 +511,11 @@ function App() {
     setEv91FolderOpen(true)
     setActivePage(page)
   }
+  const openEv91IotUpload = () => {
+    if (window.prompt('Enter password to open IoT Data Upload') === '0000') {
+      openEv91Page('ev91-iotupload')
+    }
+  }
 
   return (
     <div className="app-layout app-layout-auto-sidebar">
@@ -719,7 +725,7 @@ function App() {
                 <button
                   type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-iotupload' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-iotupload')}
+                  onClick={openEv91IotUpload}
                 >
                   <Radio size={18} />
                   IoT Data Upload

@@ -11,8 +11,12 @@ globalThis.__iotTestClient = {
   from(table) {
     const query = { table }
     const builder = {}
-    for (const method of ['select', 'gte', 'lte', 'order', 'range']) {
-      builder[method] = (...args) => { query[method] = args; return builder }
+    for (const method of ['select', 'eq', 'gte', 'lte', 'gt', 'order', 'range', 'limit', 'abortSignal']) {
+      builder[method] = (...args) => {
+        query[method] = args
+        if (method === 'eq') (query.eqFilters ||= []).push(args)
+        return builder
+      }
     }
     builder.then = (resolve, reject) => {
       queries.push(query)
@@ -20,10 +24,15 @@ globalThis.__iotTestClient = {
     }
     return builder
   },
-  async rpc(name, args) {
+  rpc(name, args) {
     const query = { rpc: name, args }
-    queries.push(query)
-    return reply(query)
+    return {
+      abortSignal(signal) { query.abortSignal = signal; return this },
+      then(resolve, reject) {
+        queries.push(query)
+        return Promise.resolve(reply(query)).then(resolve, reject)
+      },
+    }
   },
 }
 const server = await createServer({
@@ -130,6 +139,33 @@ test('older dates are read from the existing iot_data table and cached', async (
   assert.equal(queries.length, 1)
 })
 
+test('catch-up reads fresh Opspod vehicle/day keys across every history page', async () => {
+  queries.length = 0
+  reply = (query) => ({ data: query.gt
+    ? [{ id: 1001, vehicle_number: 'TN22EB2091', run_date: '2026-10-10' }]
+    : Array.from({ length: 1000 }, (_, index) => ({ id: index + 1, vehicle_number: `VEHICLE${index}`, run_date: '2026-10-08' })), error: null })
+  const history = await db.fetchExistingOpspodVehicleDays('2026-10-01', '2026-10-10')
+  assert.equal(history.length, 1001)
+  assert.equal(queries.length, 2)
+  assert.equal(queries[0].table, 'iot_data')
+  assert.deepEqual(queries[0].eq, ['data_source', 'opspod_ev91'])
+  assert.deepEqual(queries[0].gte, ['run_date', '2026-10-01'])
+  assert.deepEqual(queries[0].lte, ['run_date', '2026-10-10'])
+  assert.deepEqual(queries[1].gt, ['id', 1000])
+  assert.deepEqual(queries[0].select, ['id,vehicle_number,raw_vehicle_id,run_date'])
+  reply = () => ({ data: [{ id: 1002, vehicle_number: 'TN22EB2023', run_date: '2026-10-09' }], error: null })
+  assert.equal((await db.fetchExistingOpspodVehicleDays('2026-10-01', '2026-10-10'))[0].id, 1002)
+  assert.equal(queries.length, 3, 'the next file sees fresh history rather than a previous file cache')
+})
+
+test('history read errors stop catch-up preparation without making writes', async () => {
+  queries.length = 0
+  reply = () => ({ data: null, error: { message: 'History unavailable' } })
+  await assert.rejects(db.fetchExistingOpspodVehicleDays('2026-10-01', '2026-10-10'), (error) => /History unavailable/.test(error.message))
+  assert.equal(queries.length, 1)
+  assert.equal(queries[0].rpc, undefined)
+})
+
 test('one complete file is saved through the original RPC, preserving lookup and batch IDs', async () => {
   queries.length = 0
   reply = () => ({ data: [{ inserted: '750', skipped: '1' }], error: null })
@@ -165,6 +201,95 @@ test('unconfirmed results and missing migrations show useful errors', async () =
   }
   reply = () => ({ data: null, error: { code: 'PGRST202' } })
   await assert.rejects(db.saveIotRows([uploadRow()]), /database update/)
+})
+
+test('provider history parses numeric counts, distinguishes no uploads, and deduplicates simultaneous refreshes', async () => {
+  queries.length = 0
+  reply = () => ({ data: [{ data_source: 'opspod_ev91', run_date: '2026-10-05',
+    created_at: '2026-10-06T08:04:55Z', vehicle_count: '1653', file_count: '4' }], error: null })
+  const [first, simultaneous] = await Promise.all([db.fetchIotLastUploadsBySource(), db.fetchIotLastUploadsBySource()])
+  assert.equal(first, simultaneous)
+  assert.equal(queries.length, 1)
+  assert.deepEqual(first.history.opspod_ev91, { date: '2026-10-05', uploadedAt: '2026-10-06T08:04:55Z', vehicles: 1653, files: 4 })
+  assert.equal(first.history.alt_mobility, null)
+  assert.deepEqual(first.errors, {})
+  assert.deepEqual(db.getCachedIotUploadHistory(), first.history)
+})
+
+test('RPC timeout falls back to complete latest-day queries with unique vehicles and file counts', async () => {
+  queries.length = 0
+  reply = (query) => {
+    if (query.rpc) return { data: null, error: { code: '57014', message: 'statement timeout' } }
+    const source = query.eqFilters.find(([field]) => field === 'data_source')[1]
+    if (query.select[0] === 'run_date') return { data: source === 'Recent_Details' ? [] : [{ run_date: '2026-10-06' }], error: null }
+    assert.deepEqual(query.eqFilters, [['data_source', source], ['run_date', '2026-10-06']])
+    if (source === 'opspod_ev91') {
+      return { data: query.gt ? [{ id: 1001, vehicle_number: 'EXTRA', created_at: '2026-10-07T05:00:00Z', upload_batch_id: 'batch-c' }]
+        : Array.from({ length: 1000 }, (_, index) => ({ id: index + 1,
+          vehicle_number: index % 2 ? `tn-22-eb-${Math.floor(index / 2)}` : `TN22EB${Math.floor(index / 2)}`,
+          created_at: '2026-10-07T04:00:00Z', upload_batch_id: index < 800 ? 'batch-a' : 'batch-b',
+        })), error: null }
+    }
+    if (source === 'alt_mobility') return { data: [
+      { id: 1, vehicle_number: 'KA-01-AS-1111', created_at: '2026-10-07T04:59:08.100Z', upload_batch_id: null },
+      { id: 2, vehicle_number: 'ka01as1111', created_at: '2026-10-07T10:29:08.900+05:30', upload_batch_id: null },
+      { id: 3, vehicle_number: ' ', raw_vehicle_id: 'raw-42', created_at: '2026-10-07T04:59:09Z', upload_batch_id: 'modern' },
+    ], error: null }
+    return { data: [{ id: 1, vehicle_number: 'OTHER', created_at: '2026-10-07T04:00:00Z', upload_batch_id: 'batch' }], error: null }
+  }
+  const { history, errors } = await db.fetchIotLastUploadsBySource()
+  assert.deepEqual(errors, {})
+  assert.deepEqual(history.opspod_ev91, { date: '2026-10-06', uploadedAt: '2026-10-07T05:00:00Z', vehicles: 501, files: 3 })
+  assert.deepEqual(history.alt_mobility, { date: '2026-10-06', uploadedAt: '2026-10-07T04:59:09Z', vehicles: 2, files: 2 })
+  assert.equal(history.Recent_Details, null)
+  assert.equal(history.vehicle_day_report.vehicles, 1)
+  assert.ok(queries.some((query) => query.gt?.[1] === 1000), 'fallback includes rows beyond the 1000-row server limit')
+})
+
+test('a failed provider preserves its last known summary while healthy providers refresh, then recovers', async () => {
+  const previous = db.getCachedIotUploadHistory().opspod_ev91
+  reply = (query) => {
+    if (query.rpc) return { data: null, error: { code: '57014' } }
+    const source = query.eqFilters.find(([field]) => field === 'data_source')[1]
+    if (source === 'opspod_ev91') return { data: null, error: { message: 'network error' } }
+    return { data: [], error: null }
+  }
+  const failed = await db.fetchIotLastUploadsBySource()
+  assert.deepEqual(failed.history.opspod_ev91, previous)
+  assert.deepEqual(Object.keys(failed.errors), ['opspod_ev91'])
+  assert.equal(failed.history.alt_mobility, null)
+  reply = () => ({ data: [{ data_source: 'opspod_ev91', run_date: '2026-10-07',
+    created_at: '2026-10-08T04:00:00Z', vehicle_count: 1660, file_count: 4 }], error: null })
+  const recovered = await db.fetchIotLastUploadsBySource()
+  assert.equal(recovered.history.opspod_ev91.date, '2026-10-07')
+  assert.deepEqual(recovered.errors, {})
+})
+
+test('malformed summary counts trigger fallback instead of rendering NaN or zero as real history', async () => {
+  reply = (query) => query.rpc
+    ? { data: [{ data_source: 'opspod_ev91', run_date: '2026-10-07', vehicle_count: 'invalid' }], error: null }
+    : { data: [], error: null }
+  const result = await db.fetchIotLastUploadsBySource()
+  assert.equal(result.history.opspod_ev91, null)
+  assert.deepEqual(result.errors, {})
+})
+
+test('refresh after saving waits out a query started before the upload and reads new counts', async () => {
+  queries.length = 0
+  let release
+  const previousQuery = new Promise((resolve) => { release = resolve })
+  reply = () => queries.length === 1 ? previousQuery : { data: [{ data_source: 'opspod_ev91',
+    run_date: '2026-10-07', vehicle_count: 1660, file_count: 4 }], error: null }
+  const old = db.fetchIotLastUploadsBySource()
+  await new Promise((resolve) => setImmediate(resolve))
+  const afterSave = db.fetchIotLastUploadsBySource({ force: true })
+  assert.equal(queries.length, 1)
+  release({ data: [{ data_source: 'opspod_ev91', run_date: '2026-10-06', vehicle_count: 1653, file_count: 3 }], error: null })
+  assert.equal((await old).history.opspod_ev91.date, '2026-10-06')
+  const updated = await afterSave
+  assert.equal(updated.history.opspod_ev91.date, '2026-10-07')
+  assert.equal(updated.history.opspod_ev91.files, 4)
+  assert.equal(queries.length, 2)
 })
 
 test('only the upload tab renders upload actions; both tabs read history for all four providers', () => {

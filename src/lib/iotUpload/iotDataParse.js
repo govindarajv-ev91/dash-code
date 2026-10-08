@@ -7,7 +7,9 @@ import {
   toNumber,
   parseFleetDate,
   formatRunDate,
+  readUploadCell,
 } from './uploadParseUtils.js'
+import { extractOpspodDaywise } from './opspodDaywise.js'
 
 export const IOT_DATA_SOURCES = {
   opspod_ev91: {
@@ -43,14 +45,6 @@ export const IOT_DATA_SOURCES = {
   },
 }
 
-function readCellValue(cell) {
-  if (!cell) return ''
-  if (cell.t === 'e') return cell.w || '#ERROR!'
-  // Keep text dates unchanged and Excel date serials numeric. Display formats
-  // such as M/D/YY are ambiguous and must never become the source of a date.
-  return cell.v ?? ''
-}
-
 function getSourceConfig(sourceKey) {
   const config = IOT_DATA_SOURCES[sourceKey]
   if (!config) throw new Error('Unknown data source. Select a supported data source and try again.')
@@ -71,7 +65,7 @@ function buildRowsFromSheet(sheet, sourceKey, options) {
     const normalizedHeaders = new Set()
     for (let c = range.s.c; c <= range.e.c; c++) {
       const addr = XLSX.utils.encode_cell({ r, c })
-      normalizedHeaders.add(normalizeHeader(readCellValue(sheet[addr])))
+      normalizedHeaders.add(normalizeHeader(readUploadCell(sheet[addr])))
     }
     return requiredHeaders.every((aliases) =>
       aliases.some((alias) => normalizedHeaders.has(alias)),
@@ -86,7 +80,7 @@ function buildRowsFromSheet(sheet, sourceKey, options) {
   const headers = []
   for (let c = range.s.c; c <= range.e.c; c++) {
     const addr = XLSX.utils.encode_cell({ r: headerRow, c })
-    headers[c] = String(readCellValue(sheet[addr])).replace(/^\uFEFF/, '').trim()
+    headers[c] = String(readUploadCell(sheet[addr])).replace(/^\uFEFF/, '').trim()
   }
 
   const rows = []
@@ -97,7 +91,7 @@ function buildRowsFromSheet(sheet, sourceKey, options) {
       const addr = XLSX.utils.encode_cell({ r, c })
       // Keep values under unnamed columns so a nonempty invalid row is not
       // mistaken for a blank row and silently discarded.
-      row[header || `unnamed_column_${c + 1}`] = readCellValue(sheet[addr])
+      row[header || `unnamed_column_${c + 1}`] = readUploadCell(sheet[addr])
     }
     rows.push(row)
   }
@@ -143,7 +137,7 @@ function mapIotRow(normalized, sourceKey, config, options) {
 
 export function parseIotWorkbookRows(jsonRows, sourceKey, options = {}) {
   const config = getSourceConfig(sourceKey)
-  const { firstDataRow = 2 } = options
+  const { firstDataRow = 2, rowNumbers } = options
   const parsed = []
   const failures = []
 
@@ -151,7 +145,7 @@ export function parseIotWorkbookRows(jsonRows, sourceKey, options = {}) {
     const normalized = normalizeRowKeys(row)
     if (!Object.values(normalized).some((value) => toText(value) !== '')) continue
     const result = mapIotRow(normalized, sourceKey, config, options)
-    if (result.errors) failures.push({ row: firstDataRow + index, errors: result.errors })
+    if (result.errors) failures.push({ row: rowNumbers?.[index] ?? firstDataRow + index, errors: result.errors })
     else parsed.push(result.row)
   }
 
@@ -165,7 +159,7 @@ export function parseIotWorkbookRows(jsonRows, sourceKey, options = {}) {
   return parsed
 }
 
-export function parseIotWorkbookArrayBuffer(arrayBuffer, sourceKey) {
+export function parseIotWorkbookArrayBuffer(arrayBuffer, sourceKey, options = {}) {
   // raw prevents CSV date coercion; cellDates:false avoids timezone conversion
   // of actual Excel date cells. Their serials use the workbook's date system.
   const workbook = XLSX.read(arrayBuffer, { type: 'array', raw: true, cellDates: false })
@@ -173,6 +167,13 @@ export function parseIotWorkbookArrayBuffer(arrayBuffer, sourceKey) {
   if (!sheetName) return { rows: [], sheetName: null }
 
   const sheet = workbook.Sheets[sheetName]
+  if (sourceKey === 'opspod_ev91') {
+    const daywise = extractOpspodDaywise(sheet, options)
+    if (daywise) {
+      const rows = parseIotWorkbookRows(daywise.rows, sourceKey, { firstDataRow: daywise.firstDataRow, rowNumbers: daywise.rowNumbers })
+      return { rows, sheetName, importInfo: daywise.importInfo }
+    }
+  }
   const rows = buildRowsFromSheet(sheet, sourceKey, { date1904: Boolean(workbook.Workbook?.WBProps?.date1904) })
 
   return { rows, sheetName }
@@ -181,8 +182,9 @@ export function parseIotWorkbookArrayBuffer(arrayBuffer, sourceKey) {
 export function detectIotDataSource(headers) {
   const normalized = new Set((headers || []).map(normalizeHeader))
   const has = (...aliases) => aliases.some((a) => normalized.has(a))
+  const hasDayColumn = [...normalized].some((key) => /^\d{1,2}$/.test(key) && Number(key) >= 1 && Number(key) <= 31)
 
-  if (has('object') && has('total_distance') && has('date')) return 'opspod_ev91'
+  if (has('object') && has('total_distance') && (has('date') || hasDayColumn)) return 'opspod_ev91'
   if (has('reg_no') && has('total_distance_date')) return 'alt_mobility'
   if (has('reg_no') && has('report_date') && has('distance') && has('vin')) return 'Recent_Details'
   if (has('vehicle_no') && has('distance_km') && has('s_no')) return 'vehicle_day_report'

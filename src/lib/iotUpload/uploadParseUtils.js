@@ -5,6 +5,13 @@ const MAX_YEAR = 2100
 const EXCEL_SERIAL_MIN = Date.UTC(MIN_YEAR, 0, 1) / 86400000 + 25569
 const EXCEL_SERIAL_MAX = Date.UTC(MAX_YEAR, 11, 31) / 86400000 + 25569
 
+export function readUploadCell(cell) {
+  if (!cell) return ''
+  if (cell.t === 'e') return cell.w || '#ERROR!'
+  // Preserve text dates and Excel serials without using ambiguous display formats.
+  return cell.v ?? ''
+}
+
 export function normalizeHeader(value) {
   return String(value ?? '')
     .replace(/^\uFEFF/, '')

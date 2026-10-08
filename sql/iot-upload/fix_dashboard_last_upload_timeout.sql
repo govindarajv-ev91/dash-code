@@ -19,19 +19,22 @@ stable
 security invoker
 set search_path = public
 as $$
+  -- One indexed lookup per provider avoids scanning its complete history.
   with latest_dates as (
-    select distinct on (d.data_source)
-      d.data_source,
-      d.run_date
-    from public.iot_data d
-    where d.data_source = any(source_keys)
-    order by d.data_source, d.run_date desc
+    select source.data_source, latest.run_date
+    from (select distinct unnest(source_keys) as data_source) source
+    cross join lateral (
+      select d.run_date from public.iot_data d
+      where d.data_source = source.data_source
+      order by d.run_date desc
+      limit 1
+    ) latest
   )
   select
     latest.data_source,
     latest.run_date,
     max(d.created_at) as created_at,
-    count(distinct nullif(regexp_replace(upper(coalesce(d.vehicle_number, d.raw_vehicle_id, '')), '[^A-Z0-9]', '', 'g'), '')) as vehicle_count,
+    count(distinct nullif(regexp_replace(upper(coalesce(nullif(btrim(d.vehicle_number), ''), d.raw_vehicle_id, '')), '[^A-Z0-9]', '', 'g'), '')) as vehicle_count,
     count(distinct coalesce(d.upload_batch_id, 'legacy:' || date_trunc('second', d.created_at)::text)) as file_count
   from latest_dates latest
   join public.iot_data d

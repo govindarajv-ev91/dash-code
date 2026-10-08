@@ -4,6 +4,7 @@ import { fetchLastUploadAt } from './paymentMonthList'
 import { parseMetricDate } from './riderPerformanceReport'
 import { fetchOrderUploadsForDateRange } from './orderUploadDb'
 import { IOT_SOURCES } from './iotDataSources'
+import { toText, vehicleMatchKey } from './iotUpload/uploadParseUtils'
 
 /** Keep order rows whose date_record falls in [dateFrom, dateTo] (yyyy-MM-dd). */
 export function filterRiderRowsToDateRange(rows, dateFrom, dateTo) {
@@ -102,6 +103,32 @@ export async function fetchIotDataInRange(dateFrom, dateTo, { force = false } = 
   return all
 }
 
+/** Fresh, minimal vehicle/day keys for automatic Opspod catch-up across multiple files. */
+export async function fetchExistingOpspodVehicleDays(dateFrom, dateTo) {
+  const all = []
+  let lastId = null
+  const pageSize = 1000
+  while (true) {
+    let query = supabase.from(IOT_TABLE)
+      .select('id,vehicle_number,raw_vehicle_id,run_date')
+      .eq('data_source', 'opspod_ev91')
+      .gte('run_date', dateFrom)
+      .lte('run_date', dateTo)
+      .order('id', { ascending: true })
+      .limit(pageSize)
+    if (lastId !== null) query = query.gt('id', lastId)
+    const { data, error } = await query
+    if (error) throw error
+    if (!data?.length) break
+    all.push(...data)
+    if (data.length < pageSize) break
+    const nextId = data.at(-1).id
+    if (nextId == null || nextId === lastId) throw new Error('Could not read complete Opspod upload history. Choose the file again to retry.')
+    lastId = nextId
+  }
+  return all
+}
+
 /** Same transactional upload API as the standalone IoT project. */
 export async function saveIotRows(rows) {
   if (!rows?.length) return { inserted: 0, skipped: 0 }
@@ -124,15 +151,100 @@ export async function saveIotRows(rows) {
   return { inserted, skipped }
 }
 
-export async function fetchIotLastUploadsBySource() {
-  const { data, error } = await supabase.rpc('iot_dashboard_last_uploads', {
-    source_keys: IOT_SOURCES.map((source) => source.value),
-  })
-  if (error) throw error
-  return Object.fromEntries((data || []).map((row) => [row.data_source, {
-    date: row.run_date, uploadedAt: row.created_at,
-    vehicles: Number(row.vehicle_count), files: Number(row.file_count),
-  }]))
+let cachedUploadHistory = {}
+let uploadHistoryInflight = null
+
+export function getCachedIotUploadHistory() {
+  return { ...cachedUploadHistory }
+}
+
+function timedHistoryQuery(query) {
+  return query.abortSignal(AbortSignal.timeout(8000))
+}
+
+function parseUploadSummary(row) {
+  const vehicles = Number(row.vehicle_count)
+  const files = Number(row.file_count)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(row.run_date || '') ||
+      row.vehicle_count == null || row.file_count == null ||
+      !Number.isSafeInteger(vehicles) || vehicles < 0 || !Number.isSafeInteger(files) || files < 0) {
+    throw new Error('Incomplete IoT upload summary.')
+  }
+  return { date: row.run_date, uploadedAt: row.created_at, vehicles, files }
+}
+
+/** Read just one provider's latest day if the combined dashboard RPC fails. */
+async function fetchSourceUploadHistory(source) {
+  const latest = await timedHistoryQuery(supabase.from(IOT_TABLE)
+    .select('run_date').eq('data_source', source)
+    .order('run_date', { ascending: false }).limit(1))
+  if (latest.error) throw latest.error
+  const date = latest.data?.[0]?.run_date
+  if (!date) return null
+  const vehicles = new Set()
+  const files = new Set()
+  let uploadedAt = null
+  let lastId = null
+  while (true) {
+    let query = supabase.from(IOT_TABLE)
+      .select('id,vehicle_number,raw_vehicle_id,upload_batch_id,created_at')
+      .eq('data_source', source).eq('run_date', date)
+      .order('id', { ascending: true }).limit(1000)
+    if (lastId !== null) query = query.gt('id', lastId)
+    const { data, error } = await timedHistoryQuery(query)
+    if (error) throw error
+    if (!data?.length) break
+    for (const row of data) {
+      const key = vehicleMatchKey(toText(row.vehicle_number) || row.raw_vehicle_id)
+      if (key) vehicles.add(key)
+      const timestamp = Date.parse(row.created_at)
+      if (Number.isFinite(timestamp)) {
+        if (!uploadedAt || timestamp > Date.parse(uploadedAt)) uploadedAt = row.created_at
+      }
+      if (row.upload_batch_id != null) files.add(String(row.upload_batch_id))
+      else if (Number.isFinite(timestamp)) files.add(`legacy:${Math.floor(timestamp / 1000)}`)
+    }
+    if (data.length < 1000) break
+    const nextId = data.at(-1).id
+    if (nextId == null || nextId === lastId) throw new Error('Incomplete IoT upload history.')
+    lastId = nextId
+  }
+  return { date, uploadedAt, vehicles: vehicles.size, files: files.size }
+}
+
+export async function fetchIotLastUploadsBySource({ force = false } = {}) {
+  if (uploadHistoryInflight) {
+    if (!force) return uploadHistoryInflight
+    // A save must not reuse a summary query that started before the new rows existed.
+    await uploadHistoryInflight
+    if (uploadHistoryInflight) return uploadHistoryInflight
+  }
+  uploadHistoryInflight = (async () => {
+    const sources = IOT_SOURCES.map((source) => source.value)
+    try {
+      const { data, error } = await timedHistoryQuery(supabase.rpc('iot_dashboard_last_uploads', { source_keys: sources }))
+      if (error) throw error
+      if (!Array.isArray(data)) throw new Error('Invalid IoT upload summary response.')
+      const history = Object.fromEntries(sources.map((source) => [source, null]))
+      for (const row of data) {
+        if (sources.includes(row.data_source)) history[row.data_source] = parseUploadSummary(row)
+      }
+      cachedUploadHistory = history
+      return { history: { ...history }, errors: {} }
+    } catch {
+      const results = await Promise.allSettled(sources.map(fetchSourceUploadHistory))
+      const errors = {}
+      const history = { ...cachedUploadHistory }
+      results.forEach((result, index) => {
+        const source = sources[index]
+        if (result.status === 'fulfilled') history[source] = result.value
+        else errors[source] = 'Upload history is temporarily unavailable.'
+      })
+      cachedUploadHistory = history
+      return { history: { ...history }, errors }
+    }
+  })().finally(() => { uploadHistoryInflight = null })
+  return uploadHistoryInflight
 }
 
 export async function loadIotSummary() {

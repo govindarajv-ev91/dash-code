@@ -190,6 +190,23 @@ try {
     assert.equal(row.vehicle_count, 1)
     assert.equal(row.file_count, 1)
   })
+
+  await test('upload cards summarize the latest day with normalized vehicles and legacy files', () => {
+    sql(`insert into public.iot_data (vehicle_number,raw_vehicle_id,run_date,total_distance,data_source,upload_batch_id,created_at)
+      values
+      ('CARD1','old','2026-10-07',1,'opspod_ev91','file-a','2026-10-08T04:00:00Z'),
+      ('card-1','old','2026-10-07',2,'opspod_ev91','file-a','2026-10-08T04:00:01Z'),
+      (' ','RAW2','2026-10-07',3,'opspod_ev91',null,'2026-10-08T04:00:02.1Z'),
+      (null,'RAW3','2026-10-07',4,'opspod_ev91',null,'2026-10-08T04:00:02.9Z'),
+      ('OLD','old','2026-10-06',5,'opspod_ev91','old-file','2026-10-09T04:00:00Z');`)
+    const output = sql("set role anon; select row_to_json(r) from public.iot_dashboard_last_uploads(array['opspod_ev91','opspod_ev91','no-history']) r;")
+    const rows = output.split(/\r?\n/).filter((line) => line.startsWith('{')).map((line) => JSON.parse(line))
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].run_date, '2026-10-07')
+    assert.equal(rows[0].vehicle_count, 3)
+    assert.equal(rows[0].file_count, 2)
+    assert.equal(Date.parse(rows[0].created_at), Date.parse('2026-10-08T04:00:02.9Z'))
+  })
 } catch (error) {
   console.error(error.message)
   if (existsSync(logPath)) console.error(readFileSync(logPath, 'utf8').slice(-4000))

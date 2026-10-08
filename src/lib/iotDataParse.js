@@ -8,6 +8,7 @@ export {
 } from './iotUpload/iotDataParse.js'
 export { attachVehicleLookup, attachEv91VehicleLookup } from './iotUpload/vehicleLookup.js'
 export { IOT_SOURCE_TEMPLATES } from './iotUpload/sourceTemplates.js'
+export { getOpspodUploadDate } from './iotUpload/opspodDaywise.js'
 export { downloadUnmatchedVehicles } from './iotUpload/downloadCsv.js'
 
 export function downloadIotDataTemplate(sourceKey) {

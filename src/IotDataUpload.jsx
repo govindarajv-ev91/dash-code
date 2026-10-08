@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, Loader, Upload } from 'lucide-react'
+import { Download, Loader, RefreshCw, Upload } from 'lucide-react'
 import {
   attachEv91VehicleLookup, allowsMultiFilePerDate, downloadIotDataTemplate,
   downloadUnmatchedVehicles, IOT_SOURCE_TEMPLATES, parseIotWorkbookArrayBuffer, toIotDbRows,
+  getOpspodUploadDate,
 } from './lib/iotDataParse'
-import { fetchIotLastUploadsBySource, saveIotRows } from './lib/iotDataDb'
+import { fetchExistingOpspodVehicleDays, fetchIotLastUploadsBySource, getCachedIotUploadHistory, saveIotRows } from './lib/iotDataDb'
+import { filterOpspodCatchupRows } from './lib/iotUpload/opspodCatchup'
 import { fetchAllEv91Vehicles } from './lib/ev91VehiclesApi'
 import { formatIotSource, IOT_SOURCES } from './lib/iotDataSources'
 import { formatLastUploadAt } from './lib/paymentMonthList'
@@ -16,27 +18,52 @@ export default function IotDataUpload({ disabled, onSaved }) {
   const [pendingRows, setPendingRows] = useState([])
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(null)
-  const [lastUploads, setLastUploads] = useState({})
-  const [historyError, setHistoryError] = useState('')
+  const [lastUploads, setLastUploads] = useState(getCachedIotUploadHistory)
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyErrors, setHistoryErrors] = useState({})
+  const [importInfo, setImportInfo] = useState(null)
   const busyRef = useRef(false)
   const fileInputRef = useRef(null)
   const template = IOT_SOURCE_TEMPLATES[source]
   const unmatched = preview.filter((row) => !row.lookup_matched)
 
-  const refreshSourceHistory = useCallback(async () => {
+  const refreshSourceHistory = useCallback(async ({ force = false } = {}) => {
+    setHistoryLoading(true)
     try {
-      setLastUploads(await fetchIotLastUploadsBySource())
-      setHistoryError('')
+      const result = await fetchIotLastUploadsBySource({ force })
+      setLastUploads(result.history)
+      setHistoryErrors(result.errors)
     } catch {
-      setHistoryError('Upload history by provider is unavailable. You can still read older dates using the report below.')
+      setHistoryErrors(Object.fromEntries(IOT_SOURCES.map((item) => [item.value, 'Upload history is temporarily unavailable.'])))
+    } finally {
+      setHistoryLoading(false)
     }
   }, [])
 
-  useEffect(() => { void refreshSourceHistory() }, [refreshSourceHistory])
+  useEffect(() => {
+    void refreshSourceHistory()
+    const refreshVisible = () => { if (document.visibilityState === 'visible') void refreshSourceHistory() }
+    const interval = window.setInterval(refreshVisible, 60000)
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+    }
+  }, [refreshSourceHistory])
+
+  useEffect(() => {
+    if (!Object.keys(historyErrors).length) return
+    const retry = window.setTimeout(() => {
+      if (document.visibilityState === 'visible') void refreshSourceHistory()
+    }, 15000)
+    return () => window.clearTimeout(retry)
+  }, [historyErrors, refreshSourceHistory])
 
   const chooseSource = (key) => {
     if (busyRef.current) return
-    setSource(key); setPendingRows([]); setPreview([]); setFileName(''); setMessage(null)
+    setSource(key); setPendingRows([]); setPreview([]); setFileName(''); setMessage(null); setImportInfo(null)
   }
 
   const chooseFile = async (event) => {
@@ -45,15 +72,27 @@ export default function IotDataUpload({ disabled, onSaved }) {
     if (!file || busyRef.current) return
     busyRef.current = true
     setBusy(true)
-    setPreview([]); setPendingRows([]); setMessage(null); setFileName(file.name)
+    setPreview([]); setPendingRows([]); setMessage(null); setFileName(file.name); setImportInfo(null)
     try {
       if (!/\.(xlsx?|csv)$/i.test(file.name)) throw new Error('Choose an Excel (.xlsx or .xls) or CSV file.')
-      const { rows } = parseIotWorkbookArrayBuffer(await file.arrayBuffer(), source)
-      if (!rows.length) throw new Error('The first worksheet has no data. Fill in the selected provider template and choose the file again.')
-      const resolved = attachEv91VehicleLookup(rows, await fetchAllEv91Vehicles())
-      setPreview(resolved)
+      const { rows, importInfo: info } = parseIotWorkbookArrayBuffer(await file.arrayBuffer(), source)
+      if (!rows.length) throw new Error('The first worksheet has no vehicle data. Choose a report containing vehicle rows and try again.')
+      const [vehicles, existingRows] = await Promise.all([
+        fetchAllEv91Vehicles(),
+        info ? fetchExistingOpspodVehicleDays(info.dateFrom, info.dateTo) : Promise.resolve([]),
+      ])
+      const resolved = attachEv91VehicleLookup(rows, vehicles)
+      const catchup = info ? filterOpspodCatchupRows(resolved, existingRows) : { rows: resolved, alreadySaved: 0 }
+      setPreview(catchup.rows)
+      setImportInfo(info ? {
+        ...info, alreadySaved: catchup.alreadySaved,
+        newDates: [...new Set(catchup.rows.map((row) => row.run_date))].sort(),
+      } : null)
+      if (info && !catchup.rows.length) {
+        setMessage({ error: false, text: 'All completed vehicle/date records in this report are already saved. No new rows to upload.' })
+      }
       // Retain the exact payload and batch ID across retries, as in the original project.
-      setPendingRows(toIotDbRows(resolved, crypto.randomUUID()))
+      setPendingRows(toIotDbRows(catchup.rows, crypto.randomUUID()))
     } catch (error) {
       setMessage({ error: true, text: error.message || 'Could not read the file.' })
     } finally {
@@ -71,7 +110,7 @@ export default function IotDataUpload({ disabled, onSaved }) {
       const dates = pendingRows.map((row) => row.run_date).sort()
       setPendingRows([])
       setMessage({ error: false, text: 'Saved ' + inserted.toLocaleString() + ' ' + formatIotSource(source) + ' rows. ' + skipped.toLocaleString() + ' duplicate rows skipped. Older dates are kept.' })
-      await refreshSourceHistory()
+      await refreshSourceHistory({ force: true })
       await onSaved?.({ dateFrom: dates[0], dateTo: dates[dates.length - 1], source })
     } catch (error) {
       setMessage({ error: true, text: error.message || 'Upload failed. You can retry the same file safely.' })
@@ -82,25 +121,34 @@ export default function IotDataUpload({ disabled, onSaved }) {
 
   return (
     <section className="glass" aria-label="IoT file upload" style={{ padding: '1rem', marginBottom: '1rem' }}>
-      <h2 style={{ fontSize: '1.05rem', margin: '0 0 0.75rem' }}>Upload IoT data</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
+        <h2 style={{ fontSize: '1.05rem', margin: 0 }}>Upload IoT data</h2>
+        <button type="button" className="glass-btn" onClick={refreshSourceHistory} disabled={historyLoading}>
+          <RefreshCw size={14} className={historyLoading ? 'spin' : undefined} /> Refresh history
+        </button>
+      </div>
       <div role="group" aria-label="IoT upload source" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.6rem' }}>
         {IOT_SOURCES.map((item) => {
           const history = lastUploads[item.value]
+          const historyError = historyErrors[item.value]
           return <button key={item.value} type="button" className={source === item.value ? 'btn-primary' : 'glass-btn'}
             aria-pressed={source === item.value} onClick={() => chooseSource(item.value)} disabled={busy}
             style={{ padding: '0.75rem', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
             <strong>{item.label}</strong>
             <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>{history
-              ? 'Latest data: ' + history.date + ' · ' + history.vehicles.toLocaleString() + ' vehicles'
-              : 'Select provider to upload'}</span>
+              ? 'Latest data: ' + history.date + ' · ' + history.vehicles.toLocaleString() + ' unique vehicles'
+              : historyError ? 'Upload history unavailable'
+                : historyLoading ? 'Loading upload history…' : 'No uploads yet'}</span>
             <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
-              File count (latest date): <strong>{history ? history.files.toLocaleString() : '—'}</strong>
+              File count (latest date): <strong>{history ? history.files.toLocaleString() : historyError || historyLoading ? '—' : '0'}</strong>
             </span>
             {history?.uploadedAt && <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>Uploaded: {formatLastUploadAt(history.uploadedAt)}</span>}
+            {historyError && <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>{history ? 'Showing previous history. Retrying automatically…' : 'Retrying automatically…'}</span>}
           </button>
         })}
       </div>
       <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>Choose the provider and upload its Excel/CSV export. New data is added to the existing IoT history. Older dates remain available.</p>
+      {source === 'opspod_ev91' && <p style={{ color: 'var(--accent-blue)', fontSize: '0.85rem' }}>Upload the original Daywise Distance export directly. Missing vehicle/day records through yesterday ({getOpspodUploadDate().split('-').reverse().join('-')}, India time) are picked automatically, including missed holiday uploads. Existing records are skipped.</p>}
       <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Vehicle lookup uses EV91 Vehicles. The full inventory is cached for 5 minutes for faster repeat uploads.</p>
       <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>{allowsMultiFilePerDate(source)
         ? 'Opspod permits more files on the same date; existing vehicle/date rows are skipped.'
@@ -116,13 +164,17 @@ export default function IotDataUpload({ disabled, onSaved }) {
           onClick={() => downloadUnmatchedVehicles(unmatched, { fileNameHint: fileName })}><Download size={16} /> Download unmatched ({unmatched.length.toLocaleString()})</button>}
       </div>
       <details style={{ fontSize: '0.8rem', marginTop: '0.85rem', color: 'var(--text-dim)' }}>
-        <summary>Expected columns for {template.label}</summary>
-        <p>{template.headers.join(' · ')}</p>
-        <p>Vehicle: {template.requiredFields.vehicle} · Date: {template.requiredFields.date} · Daily KM: {template.requiredFields.distance}.</p>
+        <summary>Supported formats for {template.label}</summary>
+        {source === 'opspod_ev91' && <p>Daywise exports: keep the title, Month or Duration row, Object, and numbered day columns (1–31). ID Name, Branch, and Company columns are optional. Completed dates are checked against saved records for each vehicle. Daily KM comes from numbered day columns; Total Distance is the monthly total.</p>}
+        <p>{source === 'opspod_ev91' ? 'Optional daily template: ' : ''}{template.headers.join(' · ')}</p>
+        <p>{source === 'opspod_ev91' ? 'Daily template fields — ' : ''}Vehicle: {template.requiredFields.vehicle} · Date: {template.requiredFields.date} · Daily KM: {template.requiredFields.distance}.</p>
         <p>Vehicle numbers, chassis numbers, motor IDs, and composite identifiers are matched against EV91 Vehicles. Each file is saved together.</p>
       </details>
-      {historyError && <p role="status" style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>{historyError}</p>}
-      {fileName && <p style={{ fontSize: '0.85rem' }}>{fileName} · {preview.length.toLocaleString()} valid rows · {(preview.length - unmatched.length).toLocaleString()} matched · {unmatched.length.toLocaleString()} unmatched</p>}
+      {fileName && <p style={{ fontSize: '0.85rem' }}>{fileName} · {preview.length.toLocaleString()} {importInfo ? 'new rows' : 'valid rows'} · {(preview.length - unmatched.length).toLocaleString()} matched · {unmatched.length.toLocaleString()} unmatched</p>}
+      {importInfo && <div role="status" style={{ color: 'var(--accent-blue)', fontSize: '0.85rem' }}>
+        <p>Automatic catch-up: {importInfo.dateFrom.split('-').reverse().join('-')} to {importInfo.dateTo.split('-').reverse().join('-')} ({importInfo.dayCount} completed days). {importInfo.alreadySaved.toLocaleString()} already saved rows skipped.</p>
+        {importInfo.newDates.length > 0 && <p>Dates ready to save: {importInfo.newDates.map((date) => date.split('-').reverse().join('-')).join(', ')}.</p>}
+      </div>}
       {message && <p role={message.error ? 'alert' : 'status'} style={{ color: message.error ? '#fbbf24' : '#4ade80' }}>{message.text}</p>}
       {preview.length > 0 && <div className="table-container" style={{ maxHeight: '260px', marginTop: '0.75rem' }}>
         <table><thead><tr><th>Raw vehicle ID</th><th>Vehicle number</th><th>Run date</th><th>Distance (KM)</th><th>Source</th><th>Lookup</th></tr></thead>

@@ -20,6 +20,29 @@ client, city, KM totals, order counts, and Excel export remain available.
 The Stridegreen and Motvolt source values deliberately follow the existing
 project's mapping to keep historical rows compatible.
 
+Opspod also accepts the original **Daywise Distance** export without editing.
+Keep the report title, `Month : MM-YYYY` or
+`Duration: from DD-MM-YYYY ... to DD-MM-YYYY` line, and numbered day columns.
+The parser finds `Object` regardless of optional `ID Name`, `Branch`, or
+`Company` columns. For these reports it automatically fills **missing completed
+vehicle/day records** through yesterday, calculated in `Asia/Kolkata`. For example,
+if records through 8 October are saved and uploads resume on 11 October, the
+report's columns `9` and `10` supply the two missing dates without a date selector.
+All completed dates in the report are checked against fresh Opspod history after
+vehicle lookup; existing records are skipped per canonical vehicle and date.
+This also fills older gaps and partial uploads across the four separate files.
+Today and future dates are excluded. With no existing history, all completed
+report dates are imported. Daily KM comes from each day column; monthly
+`Total Distance` is ignored. Preview lists new dates and the already saved count.
+All completed dates covered by the metadata must have exactly one day column;
+missing metadata, duplicate/missing columns, and durations crossing months reject
+the file. Older-month reports can fill older gaps; a gap spanning two months
+requires exports containing those months. Blank completed-day cells save zero,
+following existing Opspod rules. Empty rows and
+total footers are skipped. All four downloaded layouts work with Excel or CSV.
+The six-column daily template remains supported with its explicit `Date`,
+including historical dates.
+
 Parsing, date handling, matching rules, and upload behavior were reused from
 `C:\Users\user\Documents\Development code\IOT DATA Upload`.
 Registration numbers, chassis numbers, motor IDs, and composite identifiers
@@ -37,6 +60,17 @@ vehicle/date records. The other three providers reject an entire file if any
 of its dates already has data for that provider. A file is saved in one
 database transaction through the existing `save_iot_upload` RPC. Retry uses the
 same batch ID and exact payload.
+
+Provider cards distinguish loading, no uploads, and unavailable history. They
+refresh after saving, when the tab regains focus, and every minute while visible.
+Failures retry automatically after 15 seconds and retain previously loaded
+counts. If `iot_dashboard_last_uploads` fails or returns incomplete counts, the
+client reads each provider's latest date separately and paginates all its rows
+to compute unique vehicles, distinct saved file batches, and the upload time.
+A failed provider does not clear healthy providers. The count is vehicles, not
+riders; file counts describe batches that saved rows on the latest data date.
+The optional SQL summary update in `sql/iot-upload/` uses indexed per-provider
+lookups instead of scanning all historical dates.
 
 Validation also follows the old project: negative finite distances become
 zero; blank distances become zero for Opspod and Stridegreen. Other blank

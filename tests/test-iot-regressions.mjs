@@ -124,6 +124,14 @@ await test('calendar dates are stable across India, UTC and US timezones', () =>
     import assert from 'node:assert/strict';
     import * as XLSX from 'xlsx';
     import { parseIotWorkbookArrayBuffer } from './src/lib/iotDataParse.js';
+    import { getOpspodUploadDate } from './src/lib/iotUpload/opspodDaywise.js';
+    assert.equal(getOpspodUploadDate(new Date('2026-09-30T18:30:00Z')), '2026-09-30');
+    const daywiseSheet = XLSX.utils.aoa_to_sheet([['Daywise Distance'],['Duration: from 07-10-2026 to 08-10-2026'],['Branch','Object','Total Distance',7,8],['Chennai','TN22EB2009',9999,42,8]]);
+    const daywiseBook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(daywiseBook,daywiseSheet,'Report');
+    const daily = parseIotWorkbookArrayBuffer(XLSX.write(daywiseBook,{type:'array',bookType:'xlsx'}),'opspod_ev91',{now:new Date('2026-10-08T06:00:00Z')}).rows;
+    assert.equal(daily[0].run_date,'2026-10-07');
+    assert.equal(daily[0].total_distance,42);
     const sheet = XLSX.utils.aoa_to_sheet([['Object','Date','Total Distance'],['TN22EB2009',new Date(2026,5,5),10]]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook,sheet,'Sheet1');

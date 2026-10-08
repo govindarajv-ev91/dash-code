@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Bike, ChevronLeft, ChevronRight, Download, RefreshCw, Search, X } from 'lucide-react'
+import { fetchEv91VehiclePage as fetchVehiclePage } from './lib/ev91VehiclesApi'
 
 const PAGE_SIZE = 100
 const VEHICLE_COLUMNS = [
@@ -17,24 +18,6 @@ const VEHICLE_COLUMNS = [
   { key: 'variant', label: 'Variant' },
   { key: 'color', label: 'Color' },
 ]
-
-async function fetchVehiclePage(params) {
-  const response = await fetch(`/api/ev91-vehicles?${params.toString()}`, {
-    headers: { Accept: 'application/json' },
-    cache: 'no-store',
-  })
-  const contentType = response.headers.get('content-type') || ''
-  if (!contentType.toLowerCase().includes('application/json')) {
-    throw new Error(
-      'Production is returning the dashboard page instead of vehicle data. Add the /api/ev91-vehicles rewrite in Amplify Hosting and place it above the SPA fallback rule.'
-    )
-  }
-  const body = await response.json().catch(() => null)
-  if (!response.ok || !body?.success || !Array.isArray(body.vehicles)) {
-    throw new Error(body?.message || `Failed to load EV91 vehicles (HTTP ${response.status})`)
-  }
-  return body
-}
 
 export default function Ev91Vehicles() {
   const [vehicles, setVehicles] = useState([])

@@ -20,11 +20,17 @@ client, city, KM totals, order counts, and Excel export remain available.
 The Stridegreen and Motvolt source values deliberately follow the existing
 project's mapping to keep historical rows compatible.
 
-Parsing, date handling, vehicle lookup, and upload behavior were reused from
+Parsing, date handling, matching rules, and upload behavior were reused from
 `C:\Users\user\Documents\Development code\IOT DATA Upload`.
 Registration numbers, chassis numbers, motor IDs, and composite identifiers
-are matched against `vehicle_master`, using the master date appropriate to the
-run date. Unmatched rows are identified in the preview and can be downloaded.
+are matched against the complete **EV91 Vehicles** inventory using the same
+`/api/ev91-vehicles` API as that page. Inventory pages are fetched four at a time
+and cached in memory for five minutes for faster repeat uploads. A failed or
+incomplete inventory fetch stops file preparation and can be retried by choosing
+the file again. Unmatched rows are identified in the preview and can be downloaded.
+The API supplies current inventory rather than dated vehicle master snapshots.
+`vehicle_master_id` stays null for API matches because EV91 IDs do not refer to
+that Supabase table; registration, match status, and match type are still saved.
 
 Opspod accepts additional files for an existing date and skips duplicate
 vehicle/date records. The other three providers reject an entire file if any

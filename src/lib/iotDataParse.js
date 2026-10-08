@@ -6,7 +6,7 @@ export {
   IOT_DATA_SOURCES, parseIotWorkbookArrayBuffer, parseIotWorkbookRows,
   detectIotDataSource, toIotDbRows, allowsMultiFilePerDate,
 } from './iotUpload/iotDataParse.js'
-export { attachVehicleLookup } from './iotUpload/vehicleLookup.js'
+export { attachVehicleLookup, attachEv91VehicleLookup } from './iotUpload/vehicleLookup.js'
 export { IOT_SOURCE_TEMPLATES } from './iotUpload/sourceTemplates.js'
 export { downloadUnmatchedVehicles } from './iotUpload/downloadCsv.js'
 

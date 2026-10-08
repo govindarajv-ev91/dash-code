@@ -207,3 +207,17 @@ export function attachVehicleLookup(rows, masterRows) {
     }
   })
 }
+
+/** Reuse registration/chassis/motor matching with the EV91 Vehicles inventory. */
+export function attachEv91VehicleLookup(rows, vehicles) {
+  const lookupRows = (vehicles || [])
+    .filter((vehicle) => toText(vehicle.registrationNumber))
+    .map((vehicle) => ({
+      // EV91 UUIDs are not foreign keys into the Supabase vehicle_master table.
+      id: null,
+      vehicle_number: toText(vehicle.registrationNumber),
+      chassis_number: toText(vehicle.chassisNumber),
+      engine_motor_number: toText(vehicle.motorNumber),
+    }))
+  return attachVehicleLookup(rows, lookupRows)
+}

@@ -82,6 +82,43 @@ test('chassis, motor, and composite IDs use the original date-aware vehicle look
   }
 })
 
+test('EV91 inventory resolves all providers without treating API UUIDs as vehicle master IDs', () => {
+  const vehicles = [
+    { id: 'ev91-uuid-1', registrationNumber: 'TN22EB2091', chassisNumber: 'VIN123', motorNumber: 'MOTOR123' },
+    { id: 'ev91-uuid-2', registrationNumber: 'TN22EB2023', chassisNumber: 'VIN456', motorNumber: null },
+    { id: 'unregistered', registrationNumber: null, chassisNumber: 'UNKNOWN' },
+  ]
+  for (const [source, template] of Object.entries(parser.IOT_SOURCE_TEMPLATES)) {
+    for (const [identifier, expected, matchType] of [
+      ['tn-22-eb-2091', 'TN22EB2091', 'vehicle_number'],
+      ['VIN123', 'TN22EB2091', 'chassis_number'],
+      ['MOTOR123', 'TN22EB2091', 'engine_motor_number'],
+      ['TN22EB2091-VIN456', 'TN22EB2023', 'chassis_number'],
+      ['UNKNOWN', null, null],
+    ]) {
+      const raw = Object.fromEntries(template.headers.map((header, index) => [header, template.sampleRow[index]]))
+      raw[template.requiredFields.vehicle] = identifier
+      // Isolate the primary ID from the template's sample VIN/chassis.
+      for (const key of ['VIN', 'Chassis No', 'VCU ID']) delete raw[key]
+      const parsed = parser.parseIotWorkbookRows([raw], source)
+      const [resolved] = parser.attachEv91VehicleLookup(parsed, vehicles)
+      assert.equal(resolved.vehicle_number, expected, `${source}: ${identifier}`)
+      assert.equal(resolved.lookup_matched, Boolean(expected))
+      assert.equal(resolved.lookup_match_type, matchType)
+      assert.equal(resolved.vehicle_master_id, null)
+      const [saved] = parser.toIotDbRows([resolved], 'api-lookup-batch')
+      assert.equal(saved.vehicle_master_id, null)
+      assert.equal(saved.vehicle_number, expected || identifier)
+      assert.equal(saved.upload_batch_id, 'api-lookup-batch')
+    }
+  }
+  const [secondary] = parser.attachEv91VehicleLookup([
+    { raw_vehicle_id: 'NO-PLATE', secondary_vehicle_ids: ['VIN123'], run_date: '2026-06-18' },
+  ], vehicles)
+  assert.equal(secondary.vehicle_number, 'TN22EB2091')
+  assert.equal(secondary.vehicle_master_id, null)
+})
+
 test('older dates are read from the existing iot_data table and cached', async () => {
   db.clearIotRiderOrderCache(); queries.length = 0
   reply = () => ({ data: [uploadRow({ run_date: '2026-06-18' })], error: null })

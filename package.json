@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:iot": "node --test tests/iot-upload.test.mjs tests/test-iot-regressions.mjs tests/test-vehicle-lookup.mjs tests/test-date-parse.mjs",
+    "test:iot": "node --test tests/iot-upload.test.mjs tests/ev91-vehicles-api.test.mjs tests/test-iot-regressions.mjs tests/test-vehicle-lookup.mjs tests/test-date-parse.mjs",
     "test:iot:sql": "node tests/test-upload-sql.mjs",
     "preview": "vite preview"
   },

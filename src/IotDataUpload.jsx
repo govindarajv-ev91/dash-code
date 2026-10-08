@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Download, Loader, Upload } from 'lucide-react'
 import {
-  attachVehicleLookup, allowsMultiFilePerDate, downloadIotDataTemplate,
+  attachEv91VehicleLookup, allowsMultiFilePerDate, downloadIotDataTemplate,
   downloadUnmatchedVehicles, IOT_SOURCE_TEMPLATES, parseIotWorkbookArrayBuffer, toIotDbRows,
 } from './lib/iotDataParse'
 import { fetchIotLastUploadsBySource, saveIotRows } from './lib/iotDataDb'
-import { fetchAllVehicleMaster } from './lib/vehicleMasterDb'
+import { fetchAllEv91Vehicles } from './lib/ev91VehiclesApi'
 import { formatIotSource, IOT_SOURCES } from './lib/iotDataSources'
 import { formatLastUploadAt } from './lib/paymentMonthList'
 
@@ -50,7 +50,7 @@ export default function IotDataUpload({ disabled, onSaved }) {
       if (!/\.(xlsx?|csv)$/i.test(file.name)) throw new Error('Choose an Excel (.xlsx or .xls) or CSV file.')
       const { rows } = parseIotWorkbookArrayBuffer(await file.arrayBuffer(), source)
       if (!rows.length) throw new Error('The first worksheet has no data. Fill in the selected provider template and choose the file again.')
-      const resolved = attachVehicleLookup(rows, await fetchAllVehicleMaster())
+      const resolved = attachEv91VehicleLookup(rows, await fetchAllEv91Vehicles())
       setPreview(resolved)
       // Retain the exact payload and batch ID across retries, as in the original project.
       setPendingRows(toIotDbRows(resolved, crypto.randomUUID()))
@@ -101,6 +101,7 @@ export default function IotDataUpload({ disabled, onSaved }) {
         })}
       </div>
       <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>Choose the provider and upload its Excel/CSV export. New data is added to the existing IoT history. Older dates remain available.</p>
+      <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Vehicle lookup uses EV91 Vehicles. The full inventory is cached for 5 minutes for faster repeat uploads.</p>
       <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>{allowsMultiFilePerDate(source)
         ? 'Opspod permits more files on the same date; existing vehicle/date rows are skipped.'
         : 'This provider accepts one upload per date. A file containing an already uploaded date is rejected without saving any rows.'}</p>
@@ -118,7 +119,7 @@ export default function IotDataUpload({ disabled, onSaved }) {
         <summary>Expected columns for {template.label}</summary>
         <p>{template.headers.join(' · ')}</p>
         <p>Vehicle: {template.requiredFields.vehicle} · Date: {template.requiredFields.date} · Daily KM: {template.requiredFields.distance}.</p>
-        <p>Vehicle numbers, chassis numbers, and motor IDs use the same vehicle master lookup as the original upload project. Each file is saved together.</p>
+        <p>Vehicle numbers, chassis numbers, motor IDs, and composite identifiers are matched against EV91 Vehicles. Each file is saved together.</p>
       </details>
       {historyError && <p role="status" style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>{historyError}</p>}
       {fileName && <p style={{ fontSize: '0.85rem' }}>{fileName} · {preview.length.toLocaleString()} valid rows · {(preview.length - unmatched.length).toLocaleString()} matched · {unmatched.length.toLocaleString()} unmatched</p>}

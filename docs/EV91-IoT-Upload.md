@@ -43,6 +43,19 @@ total footers are skipped. All four downloaded layouts work with Excel or CSV.
 The six-column daily template remains supported with its explicit `Date`,
 including historical dates.
 
+Alt Mobility also accepts the original export with `reg_no` and one or more
+`YYYY-MM-DD` distance columns, without adding `Total Distance Date`. An export
+with `2026-10-01`, `2026-10-02`, and `2026-10-03` creates three daily rows per
+vehicle; a single `2026-10-07` column creates one. Each date column supplies
+its daily KM, while the aggregate `total_distance` column is ignored. Preview
+lists the imported dates. CSV and Excel are supported, including ISO-formatted
+Excel date cells as headers. Invalid/duplicate dates, missing registrations,
+and blank or invalid daily distances reject the entire file. Zero is valid;
+negative finite values follow the existing clamp-to-zero rule. The daily
+template with `Total Distance Date` is still supported. Alt Mobility keeps its
+one-upload-per-date rule: if any date in the file is already saved, the save
+RPC rejects the entire file without altering history.
+
 Parsing, date handling, matching rules, and upload behavior were reused from
 `C:\Users\user\Documents\Development code\IOT DATA Upload`.
 Registration numbers, chassis numbers, motor IDs, and composite identifiers

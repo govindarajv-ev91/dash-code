@@ -10,6 +10,7 @@ import {
   readUploadCell,
 } from './uploadParseUtils.js'
 import { extractOpspodDaywise } from './opspodDaywise.js'
+import { extractAltMobilityDaywise } from './altMobilityDaywise.js'
 
 export const IOT_DATA_SOURCES = {
   opspod_ev91: {
@@ -167,6 +168,13 @@ export function parseIotWorkbookArrayBuffer(arrayBuffer, sourceKey, options = {}
   if (!sheetName) return { rows: [], sheetName: null }
 
   const sheet = workbook.Sheets[sheetName]
+  if (sourceKey === 'alt_mobility') {
+    const daywise = extractAltMobilityDaywise(sheet)
+    if (daywise) {
+      const rows = parseIotWorkbookRows(daywise.rows, sourceKey, { rowNumbers: daywise.rowNumbers })
+      return { rows, sheetName, importInfo: daywise.importInfo }
+    }
+  }
   if (sourceKey === 'opspod_ev91') {
     const daywise = extractOpspodDaywise(sheet, options)
     if (daywise) {
@@ -183,9 +191,10 @@ export function detectIotDataSource(headers) {
   const normalized = new Set((headers || []).map(normalizeHeader))
   const has = (...aliases) => aliases.some((a) => normalized.has(a))
   const hasDayColumn = [...normalized].some((key) => /^\d{1,2}$/.test(key) && Number(key) >= 1 && Number(key) <= 31)
+  const hasDateColumn = (headers || []).some((header) => /^\d{4}-\d{2}-\d{2}$/.test(toText(header)))
 
   if (has('object') && has('total_distance') && (has('date') || hasDayColumn)) return 'opspod_ev91'
-  if (has('reg_no') && has('total_distance_date')) return 'alt_mobility'
+  if (has('reg_no') && (has('total_distance_date') || hasDateColumn)) return 'alt_mobility'
   if (has('reg_no') && has('report_date') && has('distance') && has('vin')) return 'Recent_Details'
   if (has('vehicle_no') && has('distance_km') && has('s_no')) return 'vehicle_day_report'
 

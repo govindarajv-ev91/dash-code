@@ -132,6 +132,9 @@ await test('calendar dates are stable across India, UTC and US timezones', () =>
     const daily = parseIotWorkbookArrayBuffer(XLSX.write(daywiseBook,{type:'array',bookType:'xlsx'}),'opspod_ev91',{now:new Date('2026-10-08T06:00:00Z')}).rows;
     assert.equal(daily[0].run_date,'2026-10-07');
     assert.equal(daily[0].total_distance,42);
+    const altCsv = new TextEncoder().encode('reg_no,total_distance,2026-10-01,2026-10-02,2026-10-03\\nTN22EB2009,999,10,20,30');
+    const altRows = parseIotWorkbookArrayBuffer(altCsv,'alt_mobility').rows;
+    assert.deepEqual(altRows.map(row => [row.run_date,row.total_distance]),[['2026-10-01',10],['2026-10-02',20],['2026-10-03',30]]);
     const sheet = XLSX.utils.aoa_to_sheet([['Object','Date','Total Distance'],['TN22EB2009',new Date(2026,5,5),10]]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook,sheet,'Sheet1');

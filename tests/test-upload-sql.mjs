@@ -207,6 +207,16 @@ try {
     assert.equal(rows[0].file_count, 2)
     assert.equal(Date.parse(rows[0].created_at), Date.parse('2026-10-08T04:00:02.9Z'))
   })
+
+  await test('Alt Mobility saves date-column exports together and rolls back files with an overlapping day', () => {
+    const dates = ['2026-09-01', '2026-09-02', '2026-09-03']
+    const rows = dates.flatMap((date) => upload(1, { source: 'alt_mobility', batch: 'alt-date-columns', date, prefix: 'ALTDAY' }))
+    assert.deepEqual(save(rows), { inserted: 3, skipped: 0 })
+    assert.equal(sql("select count(distinct run_date) from public.iot_data where upload_batch_id = 'alt-date-columns'"), '3')
+    const overlap = ['2026-09-03', '2026-09-04'].flatMap((date) => upload(1, { source: 'alt_mobility', batch: 'alt-overlap', date, prefix: 'ALTNEW' }))
+    sqlFailure(rpcSql(overlap), /already exists.*2026-09-03/)
+    assert.equal(sql("select count(*) from public.iot_data where upload_batch_id = 'alt-overlap'"), '0')
+  })
 } catch (error) {
   console.error(error.message)
   if (existsSync(logPath)) console.error(readFileSync(logPath, 'utf8').slice(-4000))

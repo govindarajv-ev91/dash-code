@@ -23,7 +23,8 @@ import { buildVehicleDayKmIndex } from './serviceScheduleReport'
 import { KM_PRODUCTIVITY_BUCKETS, kmToBucketKey } from './vehicleKmProductivityReport'
 import { parseOrderUploadMonthLabel } from './orderUploadDb'
 import { normalizeIotRunDate, iotRowDistanceKm } from './iotDataReport'
-import { getZeroOrderAsOfFromEndDate, riderIdLookupKeys } from './riderPerformanceReport'
+import { riderIdLookupKeys } from './riderPerformanceReport'
+import { buildFullDataZeroOrderIndex, buildFullDataZeroOrderIndexAsync, fullDataZeroOrderWindowKeys, fullDataAssignmentHasZeroOrders, fullDataAssignmentPastDeploymentGrace, selectFullDataZeroOrderAssignments } from './fullDataZeroOrder'
 import { calcOrderEarningAndMf, EV_DAILY_RENT } from './fullDataCommercialRates'
 import { isEv91ApiEvDeployReason, isEv91ApiReturnReason } from './ev91DeployReturnSummary'
 import {
@@ -65,7 +66,7 @@ export const FULL_DATA_METRICS = [
     label: 'D-1 0 order rider count',
     section: 'Supply',
     yesterdayTotal: true,
-    hint: 'BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy only',
+    hint: 'BB, Blinkit, Zepto, Porter 2W, Flipkart-LMA, Amazon, Swiggy only; excludes riders deployed on the report date or the previous 3 days',
   },
   { key: 'totalEarning', label: 'Total Earing', section: 'Supply' },
   { key: 'evEarning', label: 'EV Earing', section: 'Supply' },
@@ -240,13 +241,8 @@ function buildIotUploadedDates(iotRows = []) {
 }
 
 function yieldToMain() {
-  return new Promise((resolve) => {
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => setTimeout(resolve, 0))
-    } else {
-      setTimeout(resolve, 0)
-    }
-  })
+  // RAF pauses in background tabs; a task yield lets builds finish there too.
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 /** Drop EV91 rows outside [fromKey-HISTORY, toKey] so index build stays light. */
@@ -293,7 +289,7 @@ export function monthDaysFromLabel(monthLabel) {
   }
 }
 
-export function collectFullDataFilterOptions(orderRows = [], overallRows = []) {
+export function collectFullDataFilterOptions(orderRows = [], overallRows = [], currentRows = []) {
   const cities = new Set()
   const clients = new Set()
   for (const row of orderRows || []) {
@@ -302,7 +298,7 @@ export function collectFullDataFilterOptions(orderRows = [], overallRows = []) {
     if (city && city !== 'Unknown') cities.add(city)
     if (client && client !== 'Unknown') clients.add(client)
   }
-  for (const row of overallRows || []) {
+  for (const row of [...(overallRows || []), ...(currentRows || [])]) {
     const city = normalizeSummaryCity(row.cityName || row.city)
     const client = normalizeSummaryClient(row.clientName)
     if (city && city !== 'Unknown') cities.add(city)
@@ -315,17 +311,21 @@ export function collectFullDataFilterOptions(orderRows = [], overallRows = []) {
 }
 
 /** worker UPPER → dateKey → delivered sum (order_upload only — fast). */
+function addOrderDeliveredRow(byWorker, row, dateCache) {
+  const worker = (row.worker_code || '').toString().trim().toUpperCase()
+  if (!dateCache.has(row.date_record)) dateCache.set(row.date_record, toMetricDateKey(row.date_record))
+  const dateKey = dateCache.get(row.date_record)
+  if (!worker || !dateKey) return
+  const delivered = Number(row.delivered) || 0
+  if (!byWorker.has(worker)) byWorker.set(worker, new Map())
+  const dayMap = byWorker.get(worker)
+  dayMap.set(dateKey, (dayMap.get(dateKey) || 0) + delivered)
+}
+
 function buildOrderDeliveredIndex(orderRows = []) {
   const byWorker = new Map()
-  for (const row of orderRows || []) {
-    const worker = (row.worker_code || '').toString().trim().toUpperCase()
-    const dateKey = toMetricDateKey(row.date_record)
-    if (!worker || !dateKey) continue
-    const delivered = Number(row.delivered) || 0
-    if (!byWorker.has(worker)) byWorker.set(worker, new Map())
-    const dayMap = byWorker.get(worker)
-    dayMap.set(dateKey, (dayMap.get(dateKey) || 0) + delivered)
-  }
+  const dateCache = new Map()
+  for (const row of orderRows || []) addOrderDeliveredRow(byWorker, row, dateCache)
   return byWorker
 }
 
@@ -348,42 +348,6 @@ function isD1ZeroOrderClient(clientName) {
   if (key === 'amazon' || key.startsWith('amazon')) return true
   if (key.includes('swiggy') || key === 'instamart' || key.includes('instamart')) return true
   return false
-}
-
-function workerZeroOrdersInWindow(orderIndex, workerId, endDateKey) {
-  if (!workerId) return true
-  const endDate = startOfDay(parseISO(endDateKey))
-  if (Number.isNaN(endDate.getTime())) return false
-  const asOf = getZeroOrderAsOfFromEndDate(endDate)
-  const dayMap = orderIndex.get(workerId.toUpperCase())
-  for (let n = 1; n <= 4; n++) {
-    const dayKey = format(subDays(asOf, n), 'yyyy-MM-dd')
-    if ((dayMap?.get(dayKey) || 0) > 0) return false
-  }
-  return true
-}
-
-/** Calendar dates in the last-4-day order window ending on endDateKey (sorted). */
-function activeWindowDateKeys(endDateKey) {
-  const endDate = startOfDay(parseISO(endDateKey))
-  if (Number.isNaN(endDate.getTime())) return []
-  const asOf = getZeroOrderAsOfFromEndDate(endDate)
-  return [1, 2, 3, 4].map((n) => format(subDays(asOf, n), 'yyyy-MM-dd')).sort()
-}
-
-/** Days in the last-4 window where this worker had delivered > 0. */
-function workerOrderDaysInLast4Window(orderIndex, workerId, endDateKey) {
-  if (!workerId || !endDateKey) return []
-  const endDate = startOfDay(parseISO(endDateKey))
-  if (Number.isNaN(endDate.getTime())) return []
-  const asOf = getZeroOrderAsOfFromEndDate(endDate)
-  const dayMap = orderIndex.get(workerId.toUpperCase())
-  const out = []
-  for (let n = 1; n <= 4; n++) {
-    const dayKey = format(subDays(asOf, n), 'yyyy-MM-dd')
-    if ((dayMap?.get(dayKey) || 0) > 0) out.push(dayKey)
-  }
-  return out
 }
 
 /** Source Wise: 4 calendar days immediately before end date (e.g. Sep 01 → Aug 28–31). */
@@ -528,28 +492,6 @@ function maxZeroOrderEndDateKey(asOf = new Date()) {
   return format(subDays(startOfDay(asOf), 1), 'yyyy-MM-dd')
 }
 
-/** Dates that have any delivered > 0 in order upload. */
-function buildOrderActiveDates(orderIndex) {
-  const dates = new Set()
-  for (const dayMap of orderIndex.values()) {
-    for (const [d, v] of dayMap) {
-      if ((v || 0) > 0) dates.add(d)
-    }
-  }
-  return dates
-}
-
-/** True if the 4-day 0-order window has any uploaded orders (else skip day). */
-function zeroOrderWindowHasOrders(activeDates, endDateKey) {
-  const endDate = startOfDay(parseISO(endDateKey))
-  if (Number.isNaN(endDate.getTime())) return false
-  const asOf = getZeroOrderAsOfFromEndDate(endDate)
-  for (let n = 1; n <= 4; n++) {
-    if (activeDates.has(format(subDays(asOf, n), 'yyyy-MM-dd'))) return true
-  }
-  return false
-}
-
 function flattenDeployIntervals(vehicleIntervals) {
   const list = []
   for (const [vKey, intervals] of vehicleIntervals || []) {
@@ -562,6 +504,9 @@ function flattenDeployIntervals(vehicleIntervals) {
         city: iv.city || '',
         client: iv.clientName || '',
         riderId: (iv.clientId || iv.ev91RiderId || iv.riderId || '').toString().trim().toUpperCase(),
+        clientRiderId: (iv.clientId || '').toString().trim(),
+        riderName: iv.riderName || '',
+        mobile: iv.mobile || '',
         ev91RiderId: (iv.ev91RiderId || '').toString().trim(),
         vehicleNumber: (iv.vehicleNumber || '').toString().trim(),
         sourceName: (iv.sourceName || iv.source || '').toString().trim(),
@@ -612,8 +557,15 @@ export async function buildFullDataMonthBaseAsync(
 
   // --- Orders (Supply) ---
   const riderDayParts = new Map()
+  const orderDateCache = new Map()
+  let orderOps = 0
   for (const row of orderRows || []) {
-    const dateKey = toMetricDateKey(row.date_record)
+    if (++orderOps % 1000 === 0) {
+      await yieldToMain()
+      if (shouldCancel()) return emptyBase(monthLabel)
+    }
+    if (!orderDateCache.has(row.date_record)) orderDateCache.set(row.date_record, toMetricDateKey(row.date_record))
+    const dateKey = orderDateCache.get(row.date_record)
     if (!dateKey || dateKey < fromKey || dateKey > toKey) continue
 
     const city = row.city
@@ -846,6 +798,7 @@ export async function buildFullDataMonthBaseAsync(
     metrics: FULL_DATA_METRICS,
     _flatIntervals: flatIntervals,
     _orderRowsRef: orderRows,
+    _currentRowsRef: currentRows,
   }
 
   report('ready')
@@ -869,70 +822,41 @@ export async function buildFullDataMonthBaseAsync(
 /** Fill 0-order counts into an existing base (can run after table is already shown). */
 export async function fillZeroOrderIntoBaseAsync(
   base,
-  { shouldCancel = () => false, orderRows = null, flatIntervals = null } = {}
+  { shouldCancel = () => false, orderRows = null, flatIntervals = null,
+    currentRows = base?._currentRowsRef ?? null, riderDetailsById = null, asOfDate = new Date() } = {}
 ) {
   if (!base?.days?.length) return base
   const intervals = flatIntervals || base._flatIntervals || []
   const orders = orderRows || base._orderRowsRef || []
-  const orderIndex = buildOrderDeliveredIndex(orders)
-  const activeDates = buildOrderActiveDates(orderIndex)
-  const yesterday = maxZeroOrderEndDateKey()
-  let lastOrderDay = ''
-  for (const d of activeDates) {
-    if (d > lastOrderDay) lastOrderDay = d
-  }
-  // Cap at yesterday AND last day that has order upload (no empty/future days)
-  const maxEnd =
-    lastOrderDay && lastOrderDay < yesterday ? lastOrderDay : yesterday
-  const fromKey = base.fromKey
-  const toKey = base.toKey
-  const relevant = intervals.filter(
-    (iv) => iv.fromKey <= toKey && (iv.toKey == null || iv.toKey > fromKey)
-  )
-
-  for (let di = 0; di < base.days.length; di++) {
-    const dateKey = base.days[di].dateKey
-    // reset then rebuild for this date across parts
+  const orderIndex = await buildFullDataZeroOrderIndexAsync(orders, shouldCancel, {
+    fromKey: fullDataZeroOrderWindowKeys(base.days[0].dateKey).at(-1),
+    toKey: base.days.at(-1).dateKey,
+  })
+  if (!orderIndex) return base
+  const yesterday = maxZeroOrderEndDateKey(asOfDate)
+  for (const { dateKey } of base.days) {
     const dayMap = base.slices.get(dateKey)
-    if (dayMap) {
-      for (const m of dayMap.values()) {
-        m.zeroOrderRiderCount = 0
-        m.d1ZeroOrderRiderCount = 0
-      }
+    for (const m of dayMap?.values() || []) {
+      m.zeroOrderRiderCount = 0
+      m.d1ZeroOrderRiderCount = 0
     }
-
-    // Same 4-day 0-order window as "0 order Rider count"
-    if (dateKey > maxEnd || !zeroOrderWindowHasOrders(activeDates, dateKey)) {
-      await yieldToMain()
-      if (shouldCancel()) return base
-      continue
-    }
-
-    const seenRiders = new Set()
-    const seenD1Riders = new Set()
-    for (let i = 0; i < relevant.length; i++) {
-      const iv = relevant[i]
-      if (iv.fromKey > dateKey) continue
-      if (iv.toKey != null && iv.toKey <= dateKey) continue
-      if (!iv.riderId) continue
-      if (!workerZeroOrdersInWindow(orderIndex, iv.riderId, dateKey)) continue
-
-      if (!seenRiders.has(iv.riderId)) {
-        seenRiders.add(iv.riderId)
-        const m = ensureSlice(base.slices, dateKey, iv.city, iv.client)
+    if (dateKey <= yesterday) {
+      const windowKeys = fullDataZeroOrderWindowKeys(dateKey)
+      const assignments = selectFullDataZeroOrderAssignments(intervals, currentRows, dateKey, asOfDate, riderDetailsById)
+      for (let i = 0; i < assignments.length; i++) {
+        if (i > 0 && i % 1000 === 0) {
+          await yieldToMain()
+          if (shouldCancel()) return base
+        }
+        const assignment = assignments[i]
+        if (!fullDataAssignmentHasZeroOrders(assignment, orderIndex, windowKeys)) continue
+        // Allocate both counts to one rider assignment, so D-1 stays a subset
+        // under every city/client filter as well as in the overall total.
+        const m = ensureSlice(base.slices, dateKey, assignment.city, assignment.client)
         m.zeroOrderRiderCount += 1
-      }
-
-      // Same 0-order riders, only the selected clients
-      if (isD1ZeroOrderClient(iv.client) && !seenD1Riders.has(iv.riderId)) {
-        seenD1Riders.add(iv.riderId)
-        const m = ensureSlice(base.slices, dateKey, iv.city, iv.client)
-        m.d1ZeroOrderRiderCount += 1
-      }
-
-      if (i > 0 && i % 1000 === 0) {
-        await yieldToMain()
-        if (shouldCancel()) return base
+        if (isD1ZeroOrderClient(assignment.client) && fullDataAssignmentPastDeploymentGrace(assignment, windowKeys.at(-1))) {
+          m.d1ZeroOrderRiderCount += 1
+        }
       }
     }
     await yieldToMain()
@@ -1315,6 +1239,9 @@ export function buildFullDataZeroOrderDetailRows(
     cityFilter = 'All',
     clientFilter = 'All',
     flatIntervals = null,
+    currentRows = null,
+    riderDetailsById = null,
+    asOfDate = new Date(),
   } = {}
 ) {
   const nameByRider = new Map()
@@ -1344,18 +1271,12 @@ export function buildFullDataZeroOrderDetailRows(
     }
   }
 
-  const orderIndex = buildOrderDeliveredIndex(orderRows)
-  const activeDates = buildOrderActiveDates(orderIndex)
-  const yesterday = maxZeroOrderEndDateKey()
-  let lastOrderDay = ''
-  for (const d of activeDates) {
-    if (d > lastOrderDay) lastOrderDay = d
-  }
-  const maxEnd = lastOrderDay && lastOrderDay < yesterday ? lastOrderDay : yesterday
-
-  const intervals = (flatIntervals || []).filter(
-    (iv) => iv.fromKey <= (toKey || iv.fromKey) && (iv.toKey == null || iv.toKey > (fromKey || iv.fromKey))
-  )
+  const orderIndex = buildFullDataZeroOrderIndex(orderRows, {
+    fromKey: fromKey ? fullDataZeroOrderWindowKeys(fromKey).at(-1) : '',
+    toKey,
+  })
+  const yesterday = maxZeroOrderEndDateKey(asOfDate)
+  const intervals = flatIntervals || []
 
   const rows = []
   for (const day of days || []) {
@@ -1363,27 +1284,24 @@ export function buildFullDataZeroOrderDetailRows(
     if (!dateKey) continue
     if (fromKey && dateKey < fromKey) continue
     if (toKey && dateKey > toKey) continue
-    if (dateKey > maxEnd || !zeroOrderWindowHasOrders(activeDates, dateKey)) continue
-
-    const seen = new Set()
-    for (const iv of intervals) {
-      if (iv.fromKey > dateKey) continue
-      if (iv.toKey != null && iv.toKey <= dateKey) continue
-      if (!iv.riderId || seen.has(iv.riderId)) continue
+    if (dateKey > yesterday) continue
+    const windowKeys = fullDataZeroOrderWindowKeys(dateKey)
+    for (const iv of selectFullDataZeroOrderAssignments(intervals, currentRows, dateKey, asOfDate, riderDetailsById)) {
       if (!matchesCityClientFilter(iv.city, iv.client, cityFilter, clientFilter)) continue
-      if (!workerZeroOrdersInWindow(orderIndex, iv.riderId, dateKey)) continue
-      seen.add(iv.riderId)
+      if (!fullDataAssignmentHasZeroOrders(iv, orderIndex, windowKeys)) continue
       const extra = extraByRider.get(String(iv.riderId).toUpperCase()) || {}
       rows.push({
         Date: dateKey,
         'Worker Code': iv.riderId,
         'EV91 ID': iv.ev91RiderId || extra.ev91Id || '',
-        'Rider Name': nameByRider.get(String(iv.riderId).toUpperCase()) || '',
+        'Rider Name': iv.riderName || nameByRider.get(String(iv.riderId).toUpperCase()) || '',
         'V Number': iv.vehicleNumber || extra.vehicle || iv.vKey || '',
-        'Source Name': iv.sourceName || extra.source || '',
+        'Source Name': iv.sourceName || iv.source || extra.source || '',
         Client: normalizeSummaryClient(iv.client),
         City: normalizeSummaryCity(iv.city),
         'D-1 client': isD1ZeroOrderClient(iv.client) ? 'Yes' : 'No',
+        'Deployment Date': iv.deploymentDateKey || iv.fromKey || '',
+        'Included in D-1 count': isD1ZeroOrderClient(iv.client) && fullDataAssignmentPastDeploymentGrace(iv, windowKeys.at(-1)) ? 'Yes' : 'No',
       })
     }
   }

@@ -5,6 +5,7 @@ import TempSourceActive from './TempSourceActive'
 import DailyMailer from './DailyMailer'
 import RiderDetails from './RiderDetails'
 import IotUploadPasswordDialog from './components/IotUploadPasswordDialog'
+import FullDataPage from './components/FullDataPage'
 import { fetchAllData } from './lib/supabaseFetch'
 import { scheduleCacheWrite } from './lib/deferredCache'
 import {
@@ -38,7 +39,6 @@ const Ev91ClientPeriodTrend = lazy(() => import('./Ev91ClientPeriodTrend'))
 const Ev91Vehicles = lazy(() => import('./Ev91Vehicles'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
-const FullData = lazy(() => import('./FullData'))
 const SourceWiseData = lazy(() => import('./SourceWiseData'))
 import {
   FLEET_FORM_CACHE_KEY,
@@ -950,7 +950,7 @@ function App() {
             loading={loading}
           />
         ) : activePage === 'fulldata' ? (
-          <FullData onboardingData={onboardingData} />
+          <FullDataPage onboardingData={onboardingData} riderData={riderData} />
         ) : activePage === 'sourcewise' ? (
           <SourceWiseData onboardingData={onboardingData} />
         ) : activePage === 'fleetdata' ? (

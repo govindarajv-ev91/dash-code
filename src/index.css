@@ -1549,13 +1549,43 @@ select option {
 /* EV91 Client Period Trend header actions */
 .ev91-client-trend-main {
   min-width: 0;
-  /* Let sticky filters follow the page scroll; tables handle horizontal scrolling. */
+  /* Keep the original document scroll and full-height tables. */
   overflow: visible;
+}
+
+.ev91-client-trend-page {
+  min-width: 0;
+  padding-bottom: 20px;
+}
+
+.ev91-client-trend-page > section {
+  scrollbar-width: none;
+}
+
+.ev91-client-trend-page > section::-webkit-scrollbar {
+  display: none;
+}
+
+.ev91-client-trend-page-scrollbar {
+  position: fixed;
+  bottom: 0;
+  z-index: 21;
+  height: 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: #182337;
+  color-scheme: dark;
+}
+
+.ev91-client-trend-page-scrollbar:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .ev91-client-trend-filters {
   position: sticky;
   top: 0;
+  left: 0;
   z-index: 20;
   display: flex;
   align-items: flex-end;
@@ -1571,6 +1601,35 @@ select option {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+}
+
+.ev91-client-trend-page .data-table,
+.ev91-client-trend-sticky-header .data-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.ev91-client-trend-sticky-header {
+  position: fixed;
+  z-index: 19;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--surface-card, #182337);
+  box-shadow: 0 2px 0 var(--border-color);
+}
+
+.ev91-client-trend-sticky-header .data-table {
+  table-layout: fixed;
+}
+
+.ev91-client-trend-sticky-columns {
+  overflow: hidden;
+}
+
+.ev91-client-trend-page thead th,
+.ev91-client-trend-sticky-header th {
+  background: var(--surface-card, #182337);
+  white-space: nowrap;
 }
 
 .ev91-client-trend-header {

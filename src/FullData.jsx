@@ -33,6 +33,9 @@ import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
 import { fetchEv91RiderDetails } from './lib/ev91RiderPerformance'
 import { shareFullDataScreenshot } from './lib/fullDataShareScreenshot'
 import { FULL_DATA_RATE_INFO, EV_DAILY_RENT } from './lib/fullDataCommercialRates'
+import { selectOverviewOrderRows } from './lib/mergeRiderMetrics'
+
+const EMPTY_ROWS = []
 
 const SOURCE_DAILY_COLUMNS = [
   'Source',
@@ -352,7 +355,7 @@ const multiBtnStyle = {
   cursor: 'pointer',
 }
 
-export default function FullData({ onboardingData = [] }) {
+export default function FullData({ onboardingData = EMPTY_ROWS, riderData = EMPTY_ROWS }) {
   const [months, setMonths] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [cityFilter, setCityFilter] = useState('All')
@@ -365,6 +368,7 @@ export default function FullData({ onboardingData = [] }) {
 
   const [monthsLoading, setMonthsLoading] = useState(true)
   const [loading, setLoading] = useState(false)
+  const [loadedMonth, setLoadedMonth] = useState('')
   const [error, setError] = useState(null)
   const [reportBase, setReportBase] = useState(null)
   const [building, setBuilding] = useState(false)
@@ -381,6 +385,7 @@ export default function FullData({ onboardingData = [] }) {
   const [ev91RiderDetails, setEv91RiderDetails] = useState(() => new Map())
   const [sourceLoading, setSourceLoading] = useState(false)
   const captureRef = useRef(null)
+  const monthRequestRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -403,73 +408,88 @@ export default function FullData({ onboardingData = [] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- init months once
   }, [])
 
-  const loadMonth = useCallback(async (monthLabel) => {
+  const loadMonth = useCallback(async (monthLabel, { force = false } = {}) => {
     if (!monthLabel) return
+    const request = ++monthRequestRef.current
     const { fromKey, toKey } = monthDaysFromLabel(monthLabel)
-    if (!fromKey || !toKey) {
-      setError('Invalid month label')
+    setLoadedMonth('')
+    setReportBase(null)
+    if (!fromKey || !toKey || fromKey > toKey) {
+      setLoading(false)
+      setError('Choose a valid month up to the current month.')
       return
     }
 
     setLoading(true)
     setError(null)
-    setReportBase(null)
     try {
-      const [orders, overall, current, iot, onboardingRows, mappingRes] = await Promise.all([
-        fetchOrderUploadsForHistory(monthLabel),
-        fetchEv91OverallStatusAll({ force: false }),
-        fetchEv91CurrentStatusAll({ force: false }).catch(() => ({ data: [] })),
-        fetchIotDataInRange(fromKey, toKey),
-        fetchRiderOnboardingRows({ force: true, full: true }).catch(() => []),
-        fetchEv91ClientMappingAll().catch(() => ({ data: [] })),
+      const [orders, overall, current, iot] = await Promise.all([
+        fetchOrderUploadsForHistory(monthLabel, { force }),
+        fetchEv91OverallStatusAll({ force }),
+        fetchEv91CurrentStatusAll({ force }).catch(() => ({ data: [] })),
+        fetchIotDataInRange(fromKey, toKey, { force }),
       ])
+      if (request !== monthRequestRef.current) return
       setOrderRows(orders || [])
       // Trim before state so we never hold/process years of EV91 history on this page
       setOverallRows(trimOverallRowsForMonth(overall?.data || [], fromKey, toKey))
       setCurrentRows(current?.data || [])
       setIotRows(iot || [])
-      if (onboardingRows?.length) setLocalOnboarding(onboardingRows)
-      setMappingRows(mappingRes?.data || [])
+      setLoadedMonth(monthLabel)
     } catch (err) {
-      setError(err.message || 'Failed to load Full Data')
+      if (request !== monthRequestRef.current) return
+      setError(/statement timeout/i.test(err.message || '') || err.code === '57014'
+        ? 'The database took too long to load this month. Please retry with Refresh. If this continues, contact your administrator.'
+        : err.message || 'Failed to load Full Data')
       setOrderRows([])
       setOverallRows([])
       setCurrentRows([])
       setIotRows([])
     } finally {
-      setLoading(false)
+      if (request === monthRequestRef.current) setLoading(false)
     }
   }, [])
 
   const refreshFullData = useCallback(async () => {
+    const request = monthRequestRef.current
     setMonthsLoading(true)
     try {
       const list = await fetchOrderUploadMonths()
+      if (request !== monthRequestRef.current) return
       setMonths(list)
       if (selectedMonth && list.includes(selectedMonth)) {
-        await loadMonth(selectedMonth)
+        await loadMonth(selectedMonth, { force: true })
       } else if (list.length) {
         setSelectedMonth(list[0])
       }
     } catch (err) {
+      if (request !== monthRequestRef.current) return
       setError(err.message || 'Failed to refresh months')
     } finally {
       setMonthsLoading(false)
     }
   }, [selectedMonth, loadMonth])
 
+  const cancelMonthLoad = useCallback(() => { monthRequestRef.current++ }, [])
+
   useEffect(() => {
     if (selectedMonth) loadMonth(selectedMonth)
-  }, [selectedMonth, loadMonth])
+    return cancelMonthLoad
+  }, [selectedMonth, loadMonth, cancelMonthLoad])
 
   useEffect(() => {
     if (onboardingData?.length) setLocalOnboarding(onboardingData)
   }, [onboardingData])
 
   const filterOptions = useMemo(
-    () => collectFullDataFilterOptions(orderRows, overallRows),
-    [orderRows, overallRows]
+    () => collectFullDataFilterOptions(orderRows, overallRows, currentRows),
+    [orderRows, overallRows, currentRows]
   )
+
+  const zeroOrderRows = useMemo(() => {
+    const referenceRows = selectOverviewOrderRows(riderData)
+    return referenceRows.length ? referenceRows : orderRows
+  }, [riderData, orderRows])
 
   useEffect(() => {
     if (cityFilter !== 'All' && filterOptions.cities.length && !filterOptions.cities.includes(cityFilter)) {
@@ -486,8 +506,9 @@ export default function FullData({ onboardingData = [] }) {
 
   // Chunked async build — show table ASAP, then fill 0-order in background
   useEffect(() => {
-    if (!selectedMonth || loading) {
+    if (!selectedMonth || loading || loadedMonth !== selectedMonth) {
       setReportBase(null)
+      setBuilding(false)
       setBuildStep('')
       return undefined
     }
@@ -525,9 +546,14 @@ export default function FullData({ onboardingData = [] }) {
 
         setBuilding(false)
         setBuildStep('zero-order')
+        // Keep the matrix visible while loading the reference tab's fallback contacts.
+        const riderDetailsById = await fetchEv91RiderDetails().catch(() => new Map())
+        if (cancelled) return
+        base._zeroOrderRiderDetails = riderDetailsById
         await fillZeroOrderIntoBaseAsync(base, {
           shouldCancel: () => cancelled,
-          orderRows,
+          orderRows: zeroOrderRows,
+          riderDetailsById,
           flatIntervals: base._flatIntervals,
         })
         if (cancelled) return
@@ -547,7 +573,7 @@ export default function FullData({ onboardingData = [] }) {
     return () => {
       cancelled = true
     }
-  }, [selectedMonth, loading, orderRows, overallRows, currentRows, iotRows])
+  }, [selectedMonth, loadedMonth, loading, orderRows, zeroOrderRows, overallRows, currentRows, iotRows])
 
   const deferredCity = useDeferredValue(cityFilter)
   const deferredClient = useDeferredValue(clientFilter)
@@ -578,7 +604,7 @@ export default function FullData({ onboardingData = [] }) {
   }, [])
 
   const sourceReport = useMemo(() => {
-    if (!sourceViewOpen || !report.fromKey) return { daily: [], month: [], riders: [], activeSummary: [] }
+    if (!sourceViewOpen || sourceLoading || !report.fromKey) return { daily: [], month: [], riders: [], activeSummary: [] }
     return buildFullDataSourceWiseDailyRows(
       orderRows,
       resolvedOnboarding,
@@ -595,6 +621,7 @@ export default function FullData({ onboardingData = [] }) {
     })
   }, [
     sourceViewOpen,
+    sourceLoading,
     orderRows,
     resolvedOnboarding,
     overallRows,
@@ -655,6 +682,8 @@ export default function FullData({ onboardingData = [] }) {
       clientFilter,
       days: report.days,
       flatIntervals: reportBase?._flatIntervals || [],
+      currentRows,
+      riderDetailsById: reportBase?._zeroOrderRiderDetails,
     }
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildFullDataSummaryExportRows(report)), 'Summary')
@@ -670,7 +699,7 @@ export default function FullData({ onboardingData = [] }) {
     )
     XLSX.utils.book_append_sheet(
       wb,
-      XLSX.utils.json_to_sheet(buildFullDataZeroOrderDetailRows(orderRows, overallRows, filters)),
+      XLSX.utils.json_to_sheet(buildFullDataZeroOrderDetailRows(zeroOrderRows, overallRows, filters)),
       '0 Order'
     )
     XLSX.utils.book_append_sheet(
@@ -825,6 +854,8 @@ export default function FullData({ onboardingData = [] }) {
     })
   }, [report.metrics])
 
+  const zeroOrderPending = buildStep === 'zero-order'
+
   return (
     <div className="dashboard-container">
       <header className="header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '1rem', overflow: 'visible' }}>
@@ -881,7 +912,7 @@ export default function FullData({ onboardingData = [] }) {
               type="button"
               className="glass"
               onClick={exportExcel}
-              disabled={!report.days.length || loading || building}
+              disabled={!report.days.length || loading || building || zeroOrderPending}
               title="Download the Full Data summary table"
               style={{
                 padding: '0.55rem 0.9rem',
@@ -899,7 +930,7 @@ export default function FullData({ onboardingData = [] }) {
               type="button"
               className="glass"
               onClick={exportDetailExcel}
-              disabled={!report.days.length || loading || building}
+              disabled={!report.days.length || loading || building || zeroOrderPending}
               title="Download raw detail: orders, deploy/return, IoT KM"
               style={{
                 padding: '0.55rem 0.9rem',
@@ -937,7 +968,7 @@ export default function FullData({ onboardingData = [] }) {
               type="button"
               className="glass"
               onClick={shareWhatsAppScreenshot}
-              disabled={!report.days.length || loading || building || sharing}
+              disabled={!report.days.length || loading || building || zeroOrderPending || sharing}
               title="Capture Full Data table screenshot and share on WhatsApp"
               style={{
                 padding: '0.55rem 0.9rem',
@@ -1364,13 +1395,13 @@ export default function FullData({ onboardingData = [] }) {
           </div>
         ) : (
         <div style={{ maxHeight: 'calc(100vh - 260px)', overflow: 'auto', paddingRight: 4, background: '#ffffff' }}>
-          {loading || building || (!report.days.length && selectedMonth) ? (
+          {loading || building || (!report.days.length && selectedMonth && loadedMonth !== selectedMonth && !error) ? (
             <div className="loading-container" style={{ minHeight: '240px' }}>
               <span className="loader" />
             </div>
           ) : !report.days.length ? (
             <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-dim)' }}>
-              {monthsLoading ? 'Loading months…' : 'No month selected or invalid month.'}
+              {error ? 'Unable to load this month. Use Refresh to try again.' : monthsLoading ? 'Loading months…' : 'No data available for the selected month.'}
             </div>
           ) : (
             <div
@@ -1495,7 +1526,8 @@ export default function FullData({ onboardingData = [] }) {
                           ) : null}
                         </td>
                         <td style={stickyTotal} data-metric-total={metric.key}>
-                          {formatFullDataCell(report.totals[metric.key], metric.hold)}
+                          {zeroOrderPending && ['zeroOrderRiderCount', 'd1ZeroOrderRiderCount'].includes(metric.key)
+                            ? '…' : formatFullDataCell(report.totals[metric.key], metric.hold)}
                         </td>
                         {report.days.map((d, di) => (
                           <td
@@ -1511,7 +1543,8 @@ export default function FullData({ onboardingData = [] }) {
                               background: d.dateKey === todayDateKey() ? '#fef9c3' : '#ffffff',
                             }}
                           >
-                            {formatFullDataCell(report.byDate[d.dateKey]?.[metric.key], metric.hold)}
+                            {zeroOrderPending && ['zeroOrderRiderCount', 'd1ZeroOrderRiderCount'].includes(metric.key)
+                              ? '…' : formatFullDataCell(report.byDate[d.dateKey]?.[metric.key], metric.hold)}
                           </td>
                         ))}
                       </tr>

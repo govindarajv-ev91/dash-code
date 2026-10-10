@@ -18,6 +18,7 @@ create table if not exists public.iot_data (
 );
 
 create index if not exists iot_data_run_date_idx on public.iot_data (run_date desc);
+create index if not exists iot_data_run_date_id_idx on public.iot_data (run_date, id);
 create index if not exists iot_data_vehicle_number_idx on public.iot_data (vehicle_number);
 create index if not exists iot_data_data_source_idx on public.iot_data (data_source);
 -- A nonunique index preserves legacy duplicate rows. The upload RPC enforces

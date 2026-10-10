@@ -3,6 +3,7 @@ import { after, test } from 'node:test'
 import { createServer } from 'vite'
 
 const server = await createServer({
+  cacheDir: 'node_modules/.vite-tests/ev91-onboarding-pending',
   server: { middlewareMode: true },
   optimizeDeps: { noDiscovery: true, include: [] },
 })

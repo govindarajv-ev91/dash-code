@@ -19,6 +19,7 @@ globalThis.__paymentPeriodTestClient = {
   },
 }
 const server = await createServer({
+  cacheDir: 'node_modules/.vite-tests/rider-payment-period',
   server: { middlewareMode: true },
   optimizeDeps: { noDiscovery: true, include: [] },
   plugins: [{

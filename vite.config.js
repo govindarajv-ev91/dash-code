@@ -236,6 +236,9 @@ function rentalPendingApiPlugin() {
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Keep the running dashboard's optimized dependencies separate from SSR tests.
+  cacheDir: 'node_modules/.vite-dev',
+  optimizeDeps: { include: ['html-to-image'] },
   plugins: [
     react(),
     riderPerformanceApiPlugin(),

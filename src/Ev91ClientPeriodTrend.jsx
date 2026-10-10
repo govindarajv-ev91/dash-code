@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { CalendarDays, Download, Loader, RefreshCw, Table2, Users } from 'lucide-react'
 import { addDays, endOfMonth, format, getISOWeek, parseISO, startOfMonth, startOfWeek } from 'date-fns'
 import { fetchRiderPaymentsForPeriod } from './lib/riderPaymentDb'
@@ -6,6 +6,8 @@ import { normalizeSummaryCity } from './lib/citySummaryAliases'
 import { buildOnboardingSourceLookupIndex, lookupOnboardingSource } from './lib/onboardingSourceLookup'
 import { riderIdLookupKeys } from './lib/riderPerformanceReport'
 import { buildClientSourceReport } from './lib/ev91ClientSourceReport'
+import { attachClientPeriodStickyHeader } from './lib/clientPeriodStickyHeader'
+import { attachClientPeriodHorizontalScroll } from './lib/clientPeriodHorizontalScroll'
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -213,6 +215,8 @@ function buildRiderReport(rows, filters, mode, periods) {
 }
 
 export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS }) {
+  const pageRef = useRef(null)
+  const filtersRef = useRef(null)
   const [paymentResult, setPaymentResult] = useState({ key: '', rows: [], error: '' })
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
@@ -221,6 +225,15 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
   const [city, setCity] = useState('All')
   const [client, setClient] = useState('All')
   const [viewMode, setViewMode] = useState('weekly')
+
+  useLayoutEffect(() => {
+    const stopHorizontalScroll = attachClientPeriodHorizontalScroll(pageRef.current)
+    const stopStickyHeader = attachClientPeriodStickyHeader(pageRef.current, filtersRef.current)
+    return () => {
+      stopHorizontalScroll()
+      stopStickyHeader()
+    }
+  }, [])
 
   const from = parseISO(fromDate)
   const to = parseISO(toDate)
@@ -413,7 +426,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
   }
 
   return (
-    <div className="page-container">
+    <div className="page-container ev91-client-trend-page" ref={pageRef}>
       <div className="header ev91-client-trend-header">
         <div>
           <h1><Table2 size={22} /> EV91 Client Period Trend</h1>
@@ -429,7 +442,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         </div>
       </div>
 
-      <div className="glass ev91-client-trend-filters" role="region" aria-label="Client period trend filters">
+      <div className="glass ev91-client-trend-filters" ref={filtersRef} role="region" aria-label="Client period trend filters">
         <label className="filter-label">From<input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={selectStyle} /></label>
         <label className="filter-label">To<input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={selectStyle} /></label>
         <label className="filter-label">City<select value={city} onChange={(e) => setCity(e.target.value)} style={selectStyle}><option value="All">All cities</option>{options.cities.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
@@ -442,20 +455,20 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
 
       <section className="glass" style={{ padding: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><CalendarDays size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} gross payout revenue</h3><span>{city} · {client}</span></div>
-        <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 3 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
+        <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 5 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
           {activeReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeReport.totals[period].toLocaleString('en-IN')}</th>)}<th>{activeReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}<td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No data for the selected filters.</td></tr>}
         </tbody></table>
       </section>
 
       <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} client unique rider count</h3><span>Unique riders · same filters</span></div>
-        <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 3 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
+        <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 5 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
           {activeRiderReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeRiderReport.totals[period].toLocaleString('en-IN')}</th>)}<th>{activeRiderReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeRiderReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}<td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No rider data for the selected filters.</td></tr>}
         </tbody></table>
       </section>
       <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source-wise rider count</h3><span>Unique riders · last column: highest to lowest</span></div>
-        <table className="data-table"><thead><tr><th style={{ ...frozenSourceStyle, zIndex: 3 }}>Source</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}</tr></thead><tbody>
+        <table className="data-table"><thead><tr><th style={{ ...frozenSourceStyle, zIndex: 5 }}>Source</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}</tr></thead><tbody>
           {activeSourceRows.length ? <><tr><th style={frozenSourceStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0).toLocaleString('en-IN')}</th>)}</tr>{activeSourceRows.map((row) => <tr key={row.source}><td style={frozenSourceStyle}>{row.source}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}</tr>)}</> : <tr><td colSpan={activeReport.periods.length + 1}>No source-wise data for the selected filters.</td></tr>}
         </tbody></table>
       </section>
@@ -467,7 +480,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         <table className="data-table">
           <thead>
             <tr>
-              <th style={{ ...frozenSourceStyle, zIndex: 3 }}>Source</th>
+              <th style={{ ...frozenSourceStyle, zIndex: 5 }}>Source</th>
               {activeReport.periods.map((period) => <th key={period}>
                 {viewMode === 'weekly' ? <>
                   <div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div>

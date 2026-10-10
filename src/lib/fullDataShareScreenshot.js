@@ -1,5 +1,3 @@
-import { toBlob, toCanvas, toPng } from 'html-to-image'
-
 const MAX_CANVAS_EDGE = 8192
 const CAPTURE_PAD_X = 72
 const CAPTURE_PAD_Y = 20
@@ -166,6 +164,8 @@ function canvasToPngBlob(canvas) {
  */
 export async function captureElementPngBlob(node, { backgroundColor = '#ffffff', sharePrep = null } = {}) {
   if (!node) throw new Error('Nothing to capture')
+  // Screenshot code is optional: downloading it must not block opening Full Data.
+  const { toBlob, toCanvas, toPng } = await import('html-to-image')
 
   const host = document.createElement('div')
   host.style.cssText = [

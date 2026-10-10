@@ -287,6 +287,7 @@ export async function fetchEv91MisData(endpoint, params = {}) {
  * Caches unfiltered full pulls briefly so Summary / Lookup / refresh don't re-download.
  */
 const EV91_ALL_CACHE = new Map()
+const EV91_ALL_INFLIGHT = new Map()
 const EV91_ALL_CACHE_TTL_MS = 5 * 60 * 1000
 
 function ev91AllCacheKey(endpoint, params) {
@@ -299,43 +300,56 @@ export async function fetchAllEv91MisData(endpoint, params = {}, pageSize = 1000
   if (cached && Date.now() - cached.at < EV91_ALL_CACHE_TTL_MS) {
     return cached.value
   }
+  if (EV91_ALL_INFLIGHT.has(key)) return EV91_ALL_INFLIGHT.get(key)
 
-  const all = []
-  let offset = 0
-  let summary = {}
-  let pagination = {}
+  const inflight = (async () => {
+    const all = []
+    let offset = 0
+    let summary = {}
+    let pagination = {}
 
-  for (let i = 0; i < 50; i++) {
-    const result = await fetchEv91MisData(endpoint, {
-      ...params,
-      limit: pageSize,
-      offset,
-    })
-    all.push(...result.data)
-    summary = result.summary || summary
-    pagination = result.pagination || {}
-    if (!result.pagination?.hasMore || !result.data.length) break
-    // Advance by actual rows returned (API may cap below requested pageSize)
-    offset += result.data.length
-  }
+    for (let i = 0; i < 50; i++) {
+      const result = await fetchEv91MisData(endpoint, {
+        ...params,
+        limit: pageSize,
+        offset,
+      })
+      all.push(...result.data)
+      summary = result.summary || summary
+      pagination = result.pagination || {}
+      if (!result.pagination?.hasMore || !result.data.length) break
+      // Advance by actual rows returned (API may cap below requested pageSize)
+      offset += result.data.length
+    }
 
-  const value = {
-    data: all,
-    summary,
-    pagination: { ...pagination, total: all.length, hasMore: false },
-  }
-  EV91_ALL_CACHE.set(key, { at: Date.now(), value })
-  return value
+    const value = {
+      data: all,
+      summary,
+      pagination: { ...pagination, total: all.length, hasMore: false },
+    }
+    if (EV91_ALL_INFLIGHT.get(key) === inflight) {
+      EV91_ALL_CACHE.set(key, { at: Date.now(), value })
+    }
+    return value
+  })().finally(() => {
+    if (EV91_ALL_INFLIGHT.get(key) === inflight) EV91_ALL_INFLIGHT.delete(key)
+  })
+  EV91_ALL_INFLIGHT.set(key, inflight)
+  return inflight
 }
 
 /** Drop cached full pulls (e.g. after explicit Refresh). */
 export function clearEv91AllCache(endpoint = null) {
   if (!endpoint) {
     EV91_ALL_CACHE.clear()
+    EV91_ALL_INFLIGHT.clear()
     return
   }
-  for (const key of [...EV91_ALL_CACHE.keys()]) {
-    if (key.startsWith(`${endpoint}|`)) EV91_ALL_CACHE.delete(key)
+  for (const key of new Set([...EV91_ALL_CACHE.keys(), ...EV91_ALL_INFLIGHT.keys()])) {
+    if (key.startsWith(`${endpoint}|`)) {
+      EV91_ALL_CACHE.delete(key)
+      EV91_ALL_INFLIGHT.delete(key)
+    }
   }
 }
 

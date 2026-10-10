@@ -11,7 +11,7 @@ globalThis.__iotTestClient = {
   from(table) {
     const query = { table }
     const builder = {}
-    for (const method of ['select', 'eq', 'gte', 'lte', 'gt', 'order', 'range', 'limit', 'abortSignal']) {
+    for (const method of ['select', 'eq', 'gte', 'lte', 'gt', 'or', 'order', 'range', 'limit', 'abortSignal']) {
       builder[method] = (...args) => {
         query[method] = args
         if (method === 'eq') (query.eqFilters ||= []).push(args)
@@ -36,6 +36,7 @@ globalThis.__iotTestClient = {
   },
 }
 const server = await createServer({
+  cacheDir: 'node_modules/.vite-tests/iot-upload',
   server: { middlewareMode: true },
   optimizeDeps: { noDiscovery: true, include: [] },
   plugins: [{

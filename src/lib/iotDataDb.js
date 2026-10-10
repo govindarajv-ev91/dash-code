@@ -63,44 +63,76 @@ export async function fetchIotDataCount() {
 }
 
 const iotRangeCache = new Map()
+const iotRangeInflight = new Map()
+let iotRangeGeneration = 0
 
 export function clearIotRiderOrderCache() {
   iotRangeCache.clear()
+  iotRangeInflight.clear()
+  iotRangeGeneration++
 }
 
 export async function fetchIotDataInRange(dateFrom, dateTo, { force = false } = {}) {
   const from = (dateFrom ?? '').toString().trim()
   const to = (dateTo ?? '').toString().trim()
-  if (!from || !to) return []
+  if (!from || !to || from > to) return []
 
   const cacheKey = `${from}|${to}`
   if (!force && iotRangeCache.has(cacheKey)) {
     return iotRangeCache.get(cacheKey)
   }
 
-  const all = []
-  let offset = 0
-  const pageSize = 1000
+  if (!force && iotRangeInflight.has(cacheKey)) return iotRangeInflight.get(cacheKey)
+  const generation = iotRangeGeneration
+  const inflight = (async () => {
+    const all = []
+    let cursor = null
+    let pageSize = 1000
+    let timeouts = 0
 
-  while (true) {
-    const { data, error } = await supabase
-      .from(IOT_TABLE)
-      .select(IOT_COLUMNS)
-      .gte('run_date', from)
-      .lte('run_date', to)
-      .order('run_date', { ascending: true })
-      .order('id', { ascending: true })
-      .range(offset, offset + pageSize - 1)
-
-    if (error) throw error
-    if (!data?.length) break
-    all.push(...data)
-    if (data.length < pageSize) break
-    offset += pageSize
-  }
-
-  iotRangeCache.set(cacheKey, all)
-  return all
+    while (true) {
+      let query = supabase
+        .from(IOT_TABLE)
+        .select(IOT_COLUMNS)
+        .gte('run_date', from)
+        .lte('run_date', to)
+        .order('run_date', { ascending: true })
+        .order('id', { ascending: true })
+        .limit(pageSize)
+      // Resume at the last date/id instead of scanning and discarding OFFSET rows.
+      // Supported by the (run_date, id) index in fix_full_data_timeout.sql.
+      if (cursor) query = query.or(`run_date.gt.${cursor.date},and(run_date.eq.${cursor.date},id.gt.${cursor.id})`)
+      const { data, error } = await query
+      if (error) {
+        if ((error.code === '57014' || /statement timeout/i.test(error.message || '')) && timeouts < 6) {
+          timeouts++
+          pageSize = Math.max(100, Math.floor(pageSize / 2))
+          await new Promise((resolve) => setTimeout(resolve, Math.min(200 * timeouts, 1000)))
+          continue
+        }
+        throw error
+      }
+      timeouts = 0
+      if (!data?.length) break
+      all.push(...data)
+      if (data.length < pageSize) break
+      const last = data.at(-1)
+      const next = { date: String(last.run_date), id: String(last.id) }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(next.date) || !/^\d+$/.test(next.id) ||
+          (cursor && (next.date < cursor.date || (next.date === cursor.date && BigInt(next.id) <= BigInt(cursor.id))))) {
+        throw new Error('Could not read complete IoT history. Refresh to retry.')
+      }
+      cursor = next
+    }
+    if (generation === iotRangeGeneration && iotRangeInflight.get(cacheKey) === inflight) {
+      iotRangeCache.set(cacheKey, all)
+    }
+    return all
+  })().finally(() => {
+    if (iotRangeInflight.get(cacheKey) === inflight) iotRangeInflight.delete(cacheKey)
+  })
+  iotRangeInflight.set(cacheKey, inflight)
+  return inflight
 }
 
 /** Fresh, minimal vehicle/day keys for automatic Opspod catch-up across multiple files. */

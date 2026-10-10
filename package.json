@@ -9,6 +9,9 @@
     "lint": "eslint .",
     "test:payment-trend": "node --test tests/rider-payment-period.test.mjs tests/ev91-client-source-report.test.mjs",
     "test:onboarding-pending": "node --test tests/ev91-onboarding-pending.test.mjs",
+    "test:full-data": "node --test tests/full-data-performance.test.mjs tests/full-data-page.test.mjs",
+    "pretest:full-data:bundle": "npm run build",
+    "test:full-data:bundle": "node --experimental-vm-modules --test tests/full-data-bundle.test.mjs",
     "test:iot": "node --test tests/iot-upload.test.mjs tests/ev91-vehicles-api.test.mjs tests/opspod-daywise.test.mjs tests/alt-mobility-daywise.test.mjs tests/test-iot-regressions.mjs tests/test-vehicle-lookup.mjs tests/test-date-parse.mjs",
     "test:iot:sql": "node tests/test-upload-sql.mjs",
     "preview": "vite preview"
@@ -35,6 +38,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "jsdom": "26.1.0",
     "vite": "^8.0.4"
   }
 }

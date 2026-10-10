@@ -398,6 +398,7 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
     return historyMonthInflight.get(label)
   }
 
+  const generation = ordersFetchGeneration
   const inflight = (async () => {
     // month + id keyset; composite index (month, id) recommended — see SQL file.
     let pageSize = 500
@@ -427,14 +428,8 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
             await new Promise((r) => setTimeout(r, 400 * consecutiveTimeouts))
             continue
           }
-          // Already at min page size — if we have partial data, stop gracefully.
-          if (byId.size > 0) {
-            console.warn(
-              `[orders] history ${label} incomplete after timeouts (${byId.size} rows kept)`
-            )
-            break
-          }
-          throw error
+          await new Promise((r) => setTimeout(r, Math.min(400 * consecutiveTimeouts, 1000)))
+          continue
         }
         throw error
       }
@@ -442,16 +437,23 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
       consecutiveTimeouts = 0
       if (!data?.length) break
       for (const row of data) byId.set(row.id, row)
-      cursor = data[data.length - 1].id
+      const nextCursor = data[data.length - 1].id
+      if (nextCursor == null || (cursor != null && BigInt(nextCursor) <= BigInt(cursor))) {
+        throw new Error('Could not read complete order history. Refresh to retry.')
+      }
+      cursor = nextCursor
       if (typeof onPage === 'function') onPage([...byId.values()])
       if (data.length < pageSize) break
     }
 
     const rows = [...byId.values()]
-    if (rows.length) historyMonthCache.set(label, rows)
+    // Never cache a partial month or a pull invalidated by a newer upload/refresh.
+    if (generation === ordersFetchGeneration && historyMonthInflight.get(label) === inflight) {
+      historyMonthCache.set(label, rows)
+    }
     return rows
   })().finally(() => {
-    historyMonthInflight.delete(label)
+    if (historyMonthInflight.get(label) === inflight) historyMonthInflight.delete(label)
   })
 
   historyMonthInflight.set(label, inflight)

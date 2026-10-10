@@ -22,9 +22,11 @@ import {
 import { EV91_CITIES, formatEv91Cell } from './lib/ev91MisApi'
 
 const ROWS_PER_PAGE = 80
+const EMPTY_ONBOARDING_ROWS = []
 
 export default function Ev91OnboardingPending({
   riderData,
+  onboardingData = EMPTY_ONBOARDING_ROWS,
   loading,
   refreshing = false,
   dataUpdatedAt = null,
@@ -62,8 +64,8 @@ export default function Ev91OnboardingPending({
   }, [loadMapping, reloadKey])
 
   const report = useMemo(
-    () => buildEv91OnboardingPendingRows(orderRows, mappingRows),
-    [orderRows, mappingRows]
+    () => buildEv91OnboardingPendingRows(orderRows, mappingRows, onboardingData),
+    [orderRows, mappingRows, onboardingData]
   )
 
   const cities = useMemo(() => {
@@ -89,6 +91,7 @@ export default function Ev91OnboardingPending({
         row.city,
         row.client,
         row.mobile,
+        row.sourceName,
         row.status,
         row.mappingPhone,
         row.mappingSource,
@@ -306,7 +309,7 @@ export default function Ev91OnboardingPending({
             <Search size={16} />
             <input
               type="text"
-              placeholder="Search Client ID, EV91 ID, name, phone…"
+              placeholder="Search Client ID, EV91 ID, name, phone, source…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />

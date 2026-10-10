@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { CalendarDays, Download, Loader, RefreshCw, Table2, Users } from 'lucide-react'
-import * as XLSX from 'xlsx'
 import { addDays, endOfMonth, format, getISOWeek, parseISO, startOfMonth, startOfWeek } from 'date-fns'
 import { fetchRiderPaymentsForPeriod } from './lib/riderPaymentDb'
 import { normalizeSummaryCity } from './lib/citySummaryAliases'
 import { buildOnboardingSourceLookupIndex, lookupOnboardingSource } from './lib/onboardingSourceLookup'
 import { riderIdLookupKeys } from './lib/riderPerformanceReport'
+import { buildClientSourceReport } from './lib/ev91ClientSourceReport'
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -31,6 +31,8 @@ const frozenSourceStyle = {
 }
 
 const EMPTY_ONBOARDING_ROWS = []
+const EMPTY_PERIOD_REPORT = { periods: [], periodStarts: {}, rows: [], totals: {}, grandTotal: 0 }
+const EMPTY_WEEKLY_REPORT = { weeks: [], weekStarts: {}, rows: [], totals: {}, grandTotal: 0 }
 
 function todayKey() {
   return format(new Date(), 'yyyy-MM-dd')
@@ -210,40 +212,40 @@ function buildRiderReport(rows, filters, mode, periods) {
   return { rows: reportRows, totals, grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0) }
 }
 
-export default function Ev91ClientPeriodTrend({ onboardingData = [] }) {
-  const [paymentRows, setPaymentRows] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS }) {
+  const [paymentResult, setPaymentResult] = useState({ key: '', rows: [], error: '' })
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const [fromDate, setFromDate] = useState(defaultFromKey)
   const [toDate, setToDate] = useState(todayKey)
   const [city, setCity] = useState('All')
   const [client, setClient] = useState('All')
   const [viewMode, setViewMode] = useState('weekly')
 
+  const from = parseISO(fromDate)
+  const to = parseISO(toDate)
+  const queryFromDate = viewMode === 'monthly' && !Number.isNaN(from.getTime())
+    ? format(startOfMonth(from), 'yyyy-MM-dd')
+    : fromDate
+  const queryToDate = viewMode === 'monthly' && !Number.isNaN(to.getTime())
+    ? format(endOfMonth(to), 'yyyy-MM-dd')
+    : toDate
+  const queryKey = `${queryFromDate}|${queryToDate}`
+  const paymentRows = paymentResult.rows
+  const loading = paymentResult.key !== queryKey
+  const error = (loading ? '' : paymentResult.error) || exportError
+
   useEffect(() => {
     let cancelled = false
-    const from = parseISO(fromDate)
-    const to = parseISO(toDate)
-    const queryFromDate = viewMode === 'monthly' && !Number.isNaN(from.getTime())
-      ? format(startOfMonth(from), 'yyyy-MM-dd')
-      : fromDate
-    const queryToDate = viewMode === 'monthly' && !Number.isNaN(to.getTime())
-      ? format(endOfMonth(to), 'yyyy-MM-dd')
-      : toDate
-    fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate })
+    fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate, slim: true })
       .then((rows) => {
-        if (!cancelled) {
-          setPaymentRows(rows || [])
-        }
+        if (!cancelled) setPaymentResult({ key: queryKey, rows: rows || [], error: '' })
       })
       .catch((err) => {
-        if (!cancelled) setError(err?.message || 'Failed to load Rider Payment Data.')
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) setPaymentResult({ key: queryKey, rows: [], error: err?.message || 'Failed to load Rider Payment Data.' })
       })
     return () => { cancelled = true }
-  }, [fromDate, toDate, viewMode])
+  }, [queryFromDate, queryToDate, queryKey])
 
   const onboardingRows = onboardingData ?? EMPTY_ONBOARDING_ROWS
 
@@ -280,32 +282,8 @@ export default function Ev91ClientPeriodTrend({ onboardingData = [] }) {
     }
   }, [orderRows, fromDate, toDate])
 
-  const sourceRows = useMemo(() => {
-    const bySource = new Map()
-    for (const row of orderRows) {
-      const date = String(row.period_start || '').slice(0, 10)
-      if (!date || (fromDate && date < fromDate) || (toDate && date > toDate)) continue
-      if (city !== 'All' && normalizeSummaryCity(row.city) !== city) continue
-      if (client !== 'All' && comparable(row.client_name) !== comparable(client)) continue
-      const label = canonicalWeekInfo(row).label
-      const source = lookupOnboardingSource(onboardingSourceIndex, {
-        riderIds: [row.rider_id, row.rider_name],
-        phone: row.rider_mobile_number,
-      }) || String(row.source_name || 'Unknown').trim() || 'Unknown'
-      if (!bySource.has(source)) bySource.set(source, new Map())
-      const sourcePeriods = bySource.get(source)
-      if (!sourcePeriods.has(label)) sourcePeriods.set(label, new Set())
-      sourcePeriods.get(label).add(row.rider_key || `${row.client_name}|${row.period_label}|${row.rider_id}`)
-    }
-    return [...bySource.entries()]
-      .map(([source, values]) => ({
-        source,
-        values: Object.fromEntries([...values.entries()].map(([label, riders]) => [label, riders.size])),
-      }))
-      .sort((a, b) => a.source.localeCompare(b.source))
-  }, [orderRows, onboardingSourceIndex, city, client, fromDate, toDate])
-
   const weeklyReport = useMemo(() => {
+    if (viewMode !== 'weekly') return EMPTY_WEEKLY_REPORT
     const byClient = new Map()
     const weekOrder = new Map()
     for (const row of orderRows) {
@@ -332,9 +310,10 @@ export default function Ev91ClientPeriodTrend({ onboardingData = [] }) {
       totals,
       grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0),
     }
-  }, [orderRows, city, client, fromDate, toDate])
+  }, [orderRows, city, client, fromDate, toDate, viewMode])
 
   const weeklyRiderReport = useMemo(() => {
+    if (viewMode !== 'weekly') return EMPTY_PERIOD_REPORT
     const byClient = new Map()
     for (const row of orderRows) {
       const date = String(row.period_start || '').slice(0, 10)
@@ -356,54 +335,77 @@ export default function Ev91ClientPeriodTrend({ onboardingData = [] }) {
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
     const totals = Object.fromEntries(weeklyReport.weeks.map((week) => [week, rows.reduce((sum, row) => sum + (row.values[week] || 0), 0)]))
     return { rows, totals, grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0) }
-  }, [orderRows, city, client, fromDate, toDate, weeklyReport.weeks])
+  }, [orderRows, city, client, fromDate, toDate, weeklyReport.weeks, viewMode])
 
   const filters = useMemo(() => ({ city, client, fromDate, toDate }), [city, client, fromDate, toDate])
-  const monthlyReport = useMemo(() => buildRevenueReport(orderRows, filters, 'monthly'), [orderRows, filters])
-  const monthlyRiderReport = useMemo(() => buildRiderReport(orderRows, filters, 'monthly', monthlyReport.periods), [orderRows, filters, monthlyReport.periods])
-  const monthlySourceRows = useMemo(() => {
-    const bySource = new Map()
-    for (const row of orderRows) {
-      if (!rowMatches(row, filters, 'monthly')) continue
-      const period = periodInfo(row, 'monthly').label
-      const source = lookupOnboardingSource(onboardingSourceIndex, { riderIds: [row.rider_id, row.rider_name], phone: row.rider_mobile_number }) || String(row.source_name || 'Unknown').trim() || 'Unknown'
-      if (!bySource.has(source)) bySource.set(source, new Map())
-      if (!bySource.get(source).has(period)) bySource.get(source).set(period, new Set())
-      bySource.get(source).get(period).add(row.rider_key || `${row.client_name}|${row.period_label}|${row.rider_id || row.rider_name || row.id}`)
-    }
-    return [...bySource.entries()].map(([source, values]) => ({ source, values: Object.fromEntries([...values.entries()].map(([period, riders]) => [period, riders.size])) })).sort((a, b) => a.source.localeCompare(b.source))
-  }, [orderRows, onboardingSourceIndex, filters])
+  const monthlyReport = useMemo(() => viewMode === 'monthly' ? buildRevenueReport(orderRows, filters, 'monthly') : EMPTY_PERIOD_REPORT, [orderRows, filters, viewMode])
+  const monthlyRiderReport = useMemo(() => viewMode === 'monthly' ? buildRiderReport(orderRows, filters, 'monthly', monthlyReport.periods) : EMPTY_PERIOD_REPORT, [orderRows, filters, monthlyReport.periods, viewMode])
 
   const activeReport = viewMode === 'monthly' ? monthlyReport : { periods: weeklyReport.weeks, periodStarts: weeklyReport.weekStarts, rows: weeklyReport.rows, totals: weeklyReport.totals, grandTotal: weeklyReport.grandTotal }
   const activeRiderReport = viewMode === 'monthly' ? monthlyRiderReport : weeklyRiderReport
-  const activeSourceRows = viewMode === 'monthly' ? monthlySourceRows : sourceRows
+  const sourceReport = useMemo(() => buildClientSourceReport(orderRows, {
+    periods: activeReport.periods,
+    matches: (row) => {
+      if (viewMode === 'monthly') return rowMatches(row, filters, 'monthly')
+      const date = String(row.period_start || '').slice(0, 10)
+      return date && (!filters.fromDate || date >= filters.fromDate) &&
+        (!filters.toDate || date <= filters.toDate) &&
+        (filters.city === 'All' || normalizeSummaryCity(row.city) === filters.city) &&
+        (filters.client === 'All' || comparable(row.client_name) === comparable(filters.client))
+    },
+    sourceForRow: (row) => lookupOnboardingSource(onboardingSourceIndex, {
+      riderIds: [row.rider_id, row.rider_name], phone: row.rider_mobile_number,
+    }) || String(row.source_name || 'Unknown').trim() || 'Unknown',
+    periodForRow: (row) => periodInfo(row, viewMode).label,
+  }), [orderRows, activeReport.periods, filters, onboardingSourceIndex, viewMode])
+  const activeSourceRows = sourceReport.riderRows
 
-  const exportReport = () => {
-    const filteredRows = orderRows.filter((row) => rowMatches(row, filters)).map((row) => {
-      const detail = [row.rider_id, row.rider_name]
-        .flatMap((value) => riderIdLookupKeys(value))
-        .map((key) => onboardingDetailIndex.get(key))
-        .find(Boolean)
-      const sourceName = lookupOnboardingSource(onboardingSourceIndex, { riderIds: [row.rider_id, row.rider_name], phone: row.rider_mobile_number }) || row.source_name || 'Unknown'
-      return {
-        ...row,
-        'Source Name': sourceName,
-        'Source Phone Number': onboardingPhone(detail) || String(row.rider_mobile_number || row.mobile || row.phone || '').trim(),
-      }
-    })
-    const periods = activeReport.periods
-    const matrix = (rows, totalRow) => [...rows.map((row) => ({ Name: row.name, ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])), Total: row.total })), { Name: 'Total', ...Object.fromEntries(periods.map((period) => [period, totalRow.totals[period] || 0])), Total: totalRow.grandTotal }]
-    const sourceExport = [{ Source: 'Total', ...Object.fromEntries(periods.map((period) => [period, activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)])) }, ...activeSourceRows.map((row) => ({ Source: row.source, ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])) }))]
-    const workbook = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filteredRows), 'Raw Data')
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(matrix(activeReport.rows, activeReport)), `${viewMode} Revenue`)
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(matrix(activeRiderReport.rows, activeRiderReport)), `${viewMode} Riders`)
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sourceExport), `${viewMode} Sources`)
-    XLSX.writeFile(workbook, `ev91-client-trend-${viewMode}-${todayKey()}.xlsx`)
+  const exportReport = async () => {
+    if (exporting || loading) return
+    setExporting(true)
+    setExportError('')
+    try {
+      const [XLSX, fullRows] = await Promise.all([
+        import('xlsx'),
+        fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate }),
+      ])
+      const filteredRows = normalizeRows(fullRows).filter((row) => rowMatches(row, filters, viewMode)).map((row) => {
+        const detail = [row.rider_id, row.rider_name]
+          .flatMap((value) => riderIdLookupKeys(value))
+          .map((key) => onboardingDetailIndex.get(key))
+          .find(Boolean)
+        const sourceName = lookupOnboardingSource(onboardingSourceIndex, { riderIds: [row.rider_id, row.rider_name], phone: row.rider_mobile_number }) || row.source_name || 'Unknown'
+        return {
+          ...row,
+          'Source Name': sourceName,
+          'Source Phone Number': onboardingPhone(detail) || String(row.rider_mobile_number || row.mobile || row.phone || '').trim(),
+        }
+      })
+      const periods = activeReport.periods
+      const matrix = (rows, totalRow) => [...rows.map((row) => ({ Name: row.name, ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])), Total: row.total })), { Name: 'Total', ...Object.fromEntries(periods.map((period) => [period, totalRow.totals[period] || 0])), Total: totalRow.grandTotal }]
+      const sourceExport = [{ Source: 'Total', ...Object.fromEntries(periods.map((period) => [period, activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)])) }, ...activeSourceRows.map((row) => ({ Source: row.source, ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])) }))]
+      const sourceRevenueExport = [
+        { Source: 'Total', ...sourceReport.revenueTotals },
+        ...sourceReport.revenueRows.map((row) => ({
+          Source: row.source,
+          ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])),
+        })),
+      ]
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filteredRows), 'Raw Data')
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(matrix(activeReport.rows, activeReport)), `${viewMode} Revenue`)
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(matrix(activeRiderReport.rows, activeRiderReport)), `${viewMode} Riders`)
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sourceExport), `${viewMode} Sources`)
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sourceRevenueExport), `${viewMode} Source Revenue`)
+      XLSX.writeFile(workbook, `ev91-client-trend-${viewMode}-${todayKey()}.xlsx`)
+    } catch (err) {
+      setExportError(err?.message || 'Failed to export Rider Payment Data.')
+    } finally {
+      setExporting(false)
+    }
   }
 
   const resetFilters = () => {
-    setLoading(true)
     setFromDate(defaultFromKey())
     setToDate(todayKey())
     setCity('All')
@@ -412,22 +414,24 @@ export default function Ev91ClientPeriodTrend({ onboardingData = [] }) {
 
   return (
     <div className="page-container">
-      <div className="page-header">
+      <div className="header ev91-client-trend-header">
         <div>
           <h1><Table2 size={22} /> EV91 Client Period Trend</h1>
           <p>Rider Payment Data · weekly gross payout revenue and source-wise rider count</p>
         </div>
-        <button type="button" className="btn-secondary" onClick={exportReport} title="Export raw data and summaries">
-          <Download size={15} /> Export
-        </button>
-        <button type="button" className="btn-secondary" onClick={resetFilters} title="Clear filters">
-          <RefreshCw size={15} /> Clear Filters
-        </button>
+        <div className="ev91-client-trend-actions">
+          <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={exportReport} disabled={loading || exporting} title="Export raw data and summaries">
+            <Download size={15} /> {exporting ? 'Exporting...' : 'Export'}
+          </button>
+          <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={resetFilters} title="Clear filters">
+            <RefreshCw size={15} /> Clear Filters
+          </button>
+        </div>
       </div>
 
-      <div className="glass" style={{ position: 'sticky', top: 0, zIndex: 10, padding: '1rem', marginBottom: '1rem', display: 'flex', gap: '0.8rem', flexWrap: 'wrap', alignItems: 'end' }}>
-        <label className="filter-label">From<input type="date" value={fromDate} onChange={(e) => { setLoading(true); setFromDate(e.target.value) }} style={selectStyle} /></label>
-        <label className="filter-label">To<input type="date" value={toDate} onChange={(e) => { setLoading(true); setToDate(e.target.value) }} style={selectStyle} /></label>
+      <div className="glass ev91-client-trend-filters" role="region" aria-label="Client period trend filters">
+        <label className="filter-label">From<input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={selectStyle} /></label>
+        <label className="filter-label">To<input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={selectStyle} /></label>
         <label className="filter-label">City<select value={city} onChange={(e) => setCity(e.target.value)} style={selectStyle}><option value="All">All cities</option>{options.cities.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         <label className="filter-label">Client<select value={client} onChange={(e) => setClient(e.target.value)} style={{ ...selectStyle, minWidth: 175 }}><option value="All">All clients</option>{options.clients.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         <div role="radiogroup" aria-label="Trend period" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
@@ -450,10 +454,41 @@ export default function Ev91ClientPeriodTrend({ onboardingData = [] }) {
         </tbody></table>
       </section>
       <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
-        <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source-wise rider count</h3><span>Unique riders · same filters</span></div>
+        <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source-wise rider count</h3><span>Unique riders · last column: highest to lowest</span></div>
         <table className="data-table"><thead><tr><th style={{ ...frozenSourceStyle, zIndex: 3 }}>Source</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}</tr></thead><tbody>
           {activeSourceRows.length ? <><tr><th style={frozenSourceStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0).toLocaleString('en-IN')}</th>)}</tr>{activeSourceRows.map((row) => <tr key={row.source}><td style={frozenSourceStyle}>{row.source}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}</tr>)}</> : <tr><td colSpan={activeReport.periods.length + 1}>No source-wise data for the selected filters.</td></tr>}
         </tbody></table>
+      </section>
+      <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
+        <div className="table-header">
+          <h3><CalendarDays size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source gross payout revenue</h3>
+          <span>Gross payout · last column: highest to lowest</span>
+        </div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ ...frozenSourceStyle, zIndex: 3 }}>Source</th>
+              {activeReport.periods.map((period) => <th key={period}>
+                {viewMode === 'weekly' ? <>
+                  <div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div>
+                  <small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small>
+                </> : period}
+              </th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {sourceReport.revenueRows.length ? <>
+              <tr>
+                <th style={frozenSourceStyle}>Total</th>
+                {activeReport.periods.map((period) => <th key={period}>{sourceReport.revenueTotals[period].toLocaleString('en-IN')}</th>)}
+              </tr>
+              {sourceReport.revenueRows.map((row) => <tr key={row.source}>
+                <td style={frozenSourceStyle}>{row.source}</td>
+                {activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}
+              </tr>)}
+            </> : <tr><td colSpan={activeReport.periods.length + 1}>No source revenue data for the selected filters.</td></tr>}
+          </tbody>
+        </table>
       </section>
       {loading ? <div className="page-loading"><Loader className="spin" size={18} /> Loading Rider Payment Data...</div> : null}
       {error ? <div className="glass" style={{ marginTop: '1rem', padding: '1rem', color: '#f87171' }}>{error}</div> : null}

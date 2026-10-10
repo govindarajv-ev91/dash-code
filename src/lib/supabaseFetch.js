@@ -80,6 +80,7 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
       const isTimeout = err?.code === '57014'
       const isBadColumn = err?.code === '42703' || err?.message?.includes('does not exist')
       if (isBadColumn) {
+        if (options.throwOnError) throw err
         console.error(`Stopped fetching ${table} — invalid column in select:`, err)
         break
       }
@@ -92,6 +93,7 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
 
       consecutiveErrors++
       if (consecutiveErrors > maxRetries) {
+        if (options.throwOnError) throw err
         console.error(`Stopped fetching ${table} after ${maxRetries} failures.`, err)
         break
       }

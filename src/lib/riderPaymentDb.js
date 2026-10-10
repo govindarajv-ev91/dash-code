@@ -176,6 +176,28 @@ const PAYMENT_FETCH_CACHE_VERSION = 2
 let cachedPaymentsVersion = 0
 const rangedPaymentsCache = new Map()
 const rangedPaymentsInflight = new Map()
+let paymentCacheGeneration = 0
+/** Only fields used by Client Period Trend; full payment details load on export. */
+export const RIDER_PAYMENT_TREND_COLUMNS =
+  'id,client_name,week,month,rider_id,rider_name,city,orders,gross_payout,period_start,period_label,rider_key,source_name'
+
+function paymentDateRanges(fromDate, toDate) {
+  // Partition by calendar month so independent keyset scans can run concurrently.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) ||
+      Number.isNaN(new Date(`${fromDate}T00:00:00`).getTime()) ||
+      Number.isNaN(new Date(`${toDate}T00:00:00`).getTime())) {
+    return [{ fromDate, toDate }]
+  }
+  const ranges = []
+  let start = fromDate
+  while (start <= toDate) {
+    const [year, month] = start.split('-').map(Number)
+    const end = `${start.slice(0, 7)}-${new Date(year, month, 0).getDate()}`
+    ranges.push({ fromDate: start, toDate: end < toDate ? end : toDate })
+    start = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, '0')}-01`
+  }
+  return ranges
+}
 /** Slim revenue/overview cache for General Overview. */
 let cachedRevenue = null
 let revenueInflight = null
@@ -209,36 +231,63 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
   return paymentsInflight
 }
 
-export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', force = false } = {}) {
-  const cacheKey = `${fromDate}|${toDate}`
-  if (!force && rangedPaymentsCache.has(cacheKey)) return rangedPaymentsCache.get(cacheKey)
+export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', force = false, slim = false } = {}) {
+  if (fromDate && toDate && fromDate > toDate) return []
+  const columns = slim ? RIDER_PAYMENT_TREND_COLUMNS : RIDER_PAYMENT_COLUMNS
+  const cacheKey = `${columns}|${fromDate}|${toDate}`
+  if (!force) {
+    for (const cached of rangedPaymentsCache.values()) {
+      if (cached.columns === columns &&
+          (!cached.fromDate || (fromDate && cached.fromDate <= fromDate)) &&
+          (!cached.toDate || (toDate && cached.toDate >= toDate))) {
+        return cached.rows.filter((row) => !row.period_start ||
+          ((!fromDate || row.period_start >= fromDate) && (!toDate || row.period_start <= toDate)))
+      }
+    }
+  }
   if (!force && rangedPaymentsInflight.has(cacheKey)) return rangedPaymentsInflight.get(cacheKey)
 
-  const request = fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_COLUMNS, 'id', {
-    useKeyset: true,
-    pageSize: 1000,
-    maxRetries: 10,
-    queryModifier: (query) => {
-      let filtered = query
-      if (fromDate) filtered = filtered.gte('period_start', fromDate)
-      if (toDate) filtered = filtered.lte('period_start', toDate)
-      return filtered
-    },
+  const generation = paymentCacheGeneration
+  const request = (async () => {
+    const ranges = paymentDateRanges(fromDate, toDate)
+    const pages = new Array(ranges.length)
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(4, ranges.length) }, async () => {
+      while (next < ranges.length) {
+        const index = next++
+        const range = ranges[index]
+        const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, columns, 'id', {
+          useKeyset: true,
+          pageSize: 1000,
+          maxRetries: 2,
+          throwOnError: true,
+          queryModifier: (query) => {
+            let filtered = query
+            if (range.fromDate) filtered = filtered.gte('period_start', range.fromDate)
+            if (range.toDate) filtered = filtered.lte('period_start', range.toDate)
+            return filtered
+          },
+        })
+        pages[index] = data || []
+      }
+    }))
+    let rows = pages.flat().sort((a, b) => Number(a.id) - Number(b.id))
+    // Older uploads may not have period_start; let the page derive it from week/month.
+    if (!rows.length && fromDate && toDate) rows = await fetchAllRiderPayments({ force })
+    if (generation === paymentCacheGeneration) {
+      rangedPaymentsCache.set(cacheKey, { columns, fromDate, toDate, rows })
+    }
+    return rows
+  })().finally(() => {
+    if (rangedPaymentsInflight.get(cacheKey) === request) rangedPaymentsInflight.delete(cacheKey)
   })
-    .then(async ({ data }) => {
-      let rows = data || []
-      // Older uploads may not have period_start; let the page derive it from week/month.
-      if (!rows.length && fromDate && toDate) rows = await fetchAllRiderPayments({ force })
-      rangedPaymentsCache.set(cacheKey, rows)
-      return rows
-    })
-    .finally(() => rangedPaymentsInflight.delete(cacheKey))
 
   rangedPaymentsInflight.set(cacheKey, request)
   return request
 }
 
 export function clearRiderPaymentCache() {
+  paymentCacheGeneration++
   cachedPayments = null
   paymentsInflight = null
   cachedPaymentsVersion = 0

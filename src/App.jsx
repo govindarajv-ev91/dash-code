@@ -4,6 +4,7 @@ import RiderAttendance from './RiderAttendance'
 import TempSourceActive from './TempSourceActive'
 import DailyMailer from './DailyMailer'
 import RiderDetails from './RiderDetails'
+import IotUploadPasswordDialog from './components/IotUploadPasswordDialog'
 import { fetchAllData } from './lib/supabaseFetch'
 import { scheduleCacheWrite } from './lib/deferredCache'
 import {
@@ -225,6 +226,7 @@ function getSavedActivePage() {
 function App() {
   const [activePage, setActivePage] = useState(getSavedActivePage)
   const [ev91FolderOpen, setEv91FolderOpen] = useState(false)
+  const [iotUploadPasswordOpen, setIotUploadPasswordOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [riderData, setRiderData] = useState([])
   const [fleetData, setFleetData] = useState([])
@@ -512,13 +514,20 @@ function App() {
     setActivePage(page)
   }
   const openEv91IotUpload = () => {
-    if (window.prompt('Enter password to open IoT Data Upload') === '0000') {
-      openEv91Page('ev91-iotupload')
-    }
+    setIotUploadPasswordOpen(true)
   }
 
   return (
     <div className="app-layout app-layout-auto-sidebar">
+      {iotUploadPasswordOpen && (
+        <IotUploadPasswordDialog
+          onDismiss={() => setIotUploadPasswordOpen(false)}
+          onUnlock={() => {
+            setIotUploadPasswordOpen(false)
+            openEv91Page('ev91-iotupload')
+          }}
+        />
+      )}
       <div className="sidebar-shell">
         <aside className="sidebar">
           <div className="sidebar-logo">
@@ -833,7 +842,7 @@ function App() {
         </aside>
       </div>
 
-      <main className="main-content">
+      <main className={`main-content${activePage === 'ev91-client-period-trend' ? ' ev91-client-trend-main' : ''}`}>
         <Suspense fallback={<PageLoading />}>
         {activePage === 'dashboard' ? (
           <Dashboard 
@@ -1000,6 +1009,7 @@ function App() {
         ) : activePage === 'ev91-onboarding' ? (
           <Ev91OnboardingPending
             riderData={riderData}
+            onboardingData={onboardingData}
             loading={loading}
             refreshing={refreshing}
             dataUpdatedAt={dataUpdatedAt}

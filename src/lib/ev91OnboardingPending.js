@@ -193,16 +193,48 @@ export function buildUniqueOrderRiders(orderRows = []) {
   )
 }
 
+function onboardingContactValue(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (text && !['-', '—', 'n/a', 'na', 'null', 'none', 'unknown', 'not available'].includes(text.toLowerCase())) {
+      return text
+    }
+  }
+  return ''
+}
+
+/** Index onboarding contacts by rider/client IDs, using the same aliases as order matching. */
+function buildOnboardingContactIndex(onboardingRows) {
+  const index = new Map()
+  for (const row of onboardingRows || []) {
+    if (!row) continue
+    const workerName = onboardingContactValue(row.rider_name, row.worker_name, row.name)
+    const mobile = onboardingContactValue(row.rider_mobile_number, row.mobile, row.phone, row.mob_number)
+    const sourceName = onboardingContactValue(row.source_name)
+    if (!workerName && !mobile && !sourceName) continue
+    for (const value of [row.rider_id_details, row.rider_id, row.worker_code, row.client_rider_id, row.merge]) {
+      for (const alias of riderIdLookupKeys(value)) {
+        const previous = index.get(alias)
+        index.set(alias, {
+          workerName: previous?.workerName || workerName,
+          mobile: previous?.mobile || mobile,
+          sourceName: previous?.sourceName || sourceName,
+        })
+      }
+    }
+  }
+  return index
+}
+
 /**
  * Match unique order Client IDs against Client Mapping History.
- * Returns all riders with status:
- * - Mapped with EV91 ID
- * - Missing EV91 ID (in mapping but blank)
- * - Not in Client Mapping
+ * Use onboarding contacts for riders with status "Not in Client Mapping".
+ * Returns mapped riders, mappings with a missing EV91 ID, and riders absent from mapping.
  */
-export function buildEv91OnboardingPendingRows(orderRows, mappingRows) {
+export function buildEv91OnboardingPendingRows(orderRows, mappingRows, onboardingRows = []) {
   const uniqueRiders = buildUniqueOrderRiders(orderRows)
   const mappingIndex = buildClientMappingIndex(mappingRows)
+  const onboardingIndex = buildOnboardingContactIndex(onboardingRows)
 
   const allRows = []
 
@@ -214,12 +246,17 @@ export function buildEv91OnboardingPendingRows(orderRows, mappingRows) {
     if (ev91RiderId) status = 'Mapped with EV91 ID'
     else if (mapping) status = 'Missing EV91 ID'
 
+    const onboarding = status === 'Not in Client Mapping'
+      ? lookupClientMapping(onboardingIndex, rider.clientId)
+      : null
+
     allRows.push({
       clientId: rider.clientId,
-      workerName: rider.workerName || '—',
+      workerName: onboarding?.workerName || rider.workerName || '—',
       city: rider.city || mapping?.city || '—',
       client: rider.client || '—',
-      mobile: rider.mobile || mapping?.phoneNumber || '—',
+      mobile: onboarding?.mobile || rider.mobile || mapping?.phoneNumber || '—',
+      sourceName: onboarding?.sourceName || onboardingContactValue(mapping?.source),
       totalOrders: rider.totalOrders,
       orderDays: rider.orderDays,
       lastOrderDate: rider.lastOrderDate || '—',
@@ -268,6 +305,7 @@ export const EV91_ONBOARDING_PENDING_COLUMNS = [
   { key: 'city', label: 'City' },
   { key: 'client', label: 'Client' },
   { key: 'mobile', label: 'Phone' },
+  { key: 'sourceName', label: 'Source Name' },
   { key: 'totalOrders', label: 'Total Orders' },
   { key: 'orderDays', label: 'Order Days' },
   { key: 'lastOrderDate', label: 'Last Order Date' },

@@ -2,7 +2,8 @@ import { parseFleetDate, vehiclePartitionKey } from './fleetDeployReturnExport'
 import { normalizeSummaryCity } from './citySummaryAliases'
 import { normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
-import { format, getISOWeek, parseISO, startOfWeek, subDays, subMonths } from 'date-fns'
+import { toMetricDateKey } from './mergeRiderMetrics'
+import { format, getISOWeek, parseISO, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns'
 
 function normalizePhone(value) {
   const digits = (value ?? '').toString().replace(/\D/g, '')
@@ -1351,44 +1352,49 @@ export function buildClientPeriodLineSeries(
 ) {
   const clientFilter = (client || 'All').toString().trim()
   const cityFilter = (city || 'All').toString().trim()
-  const contextFrom = dateFrom ? format(subDays(parseISO(dateFrom), 3), 'yyyy-MM-dd') : ''
   const prepared = []
   const clients = new Set()
   const cities = new Set()
 
   for (const row of rows || []) {
-    const rawDate = (row.date_record ?? '').toString().trim()
-    const parsedDate = parseISO(rawDate)
-    if (!rawDate || Number.isNaN(parsedDate.getTime())) continue
-    const date = format(parsedDate, 'yyyy-MM-dd')
-    if (contextFrom && date < contextFrom) continue
-    if (dateTo && date > dateTo) continue
+    const date = toMetricDateKey(row.date_record)
+    if (!date) continue
 
     const clientName = normalizeSummaryClient(pickText(row.client)) || pickText(row.client) || 'Unknown'
     const cityName = normalizeSummaryCity(pickText(row.city)) || pickText(row.city) || 'Unknown'
-    clients.add(clientName)
-    cities.add(cityName)
-    if (clientFilter !== 'All' && clientName !== clientFilter) continue
-    if (cityFilter !== 'All' && cityName !== cityFilter) continue
     const type1 = String(row.type1 || '').toUpperCase()
     const type2 = String(row.type2 || '').toUpperCase()
     const isEv = (type1.includes('EV') && !type1.includes('NON')) || (type2.includes('EV') && !type2.includes('NON'))
-    prepared.push({ date, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders), isEv })
+    prepared.push({ date, clientName, cityName, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders), isEv })
   }
 
   if (!prepared.length) return { series: [], totals: { orders: 0, riders: 0 }, clients: [], cities: [] }
 
   const latestDate = prepared.reduce((latest, row) => (row.date > latest ? row.date : latest), prepared[0].date)
-  const minDate = dateFrom || format(subMonths(parseISO(latestDate), 9), 'yyyy-MM-dd')
+  // Include the latest month plus the preceding eight calendar months. Keep
+  // the same window when changing client/city, even for an inactive client.
+  const maxDate = dateTo || latestDate
+  const minDate = dateFrom || format(startOfMonth(subMonths(parseISO(maxDate), 8)), 'yyyy-MM-dd')
+  const contextFrom = period === 'daily' ? format(subDays(parseISO(minDate), 3), 'yyyy-MM-dd') : minDate
   const byPeriod = new Map()
   const ridersByDate = new Map()
+  const visibleRiders = new Set()
   for (const row of prepared) {
-    if (row.date < minDate) continue
+    if (row.date < contextFrom || row.date > maxDate) continue
+    if (row.date >= minDate) {
+      clients.add(row.clientName)
+      cities.add(row.cityName)
+    }
+    if (clientFilter !== 'All' && row.clientName !== clientFilter) continue
+    if (cityFilter !== 'All' && row.cityName !== cityFilter) continue
     if (!ridersByDate.has(row.date)) ridersByDate.set(row.date, { total: new Set(), ev: new Set(), nonEv: new Set() })
-    if (row.rider) {
+    if (row.rider && row.orders > 0) {
       ridersByDate.get(row.date).total.add(row.rider)
       ridersByDate.get(row.date)[row.isEv ? 'ev' : 'nonEv'].add(row.rider)
     }
+    // Retain preceding days for daily active riders without adding their orders
+    // or chart points to the selected range.
+    if (row.date < minDate) continue
     const parsed = parseISO(row.date)
     const key = period === 'daily'
       ? row.date
@@ -1400,7 +1406,10 @@ export function buildClientPeriodLineSeries(
     bucket.orders += row.orders
     if (row.isEv) bucket.evOrders += row.orders
     else bucket.nonEvOrders += row.orders
+    // Monthly/weekly uniqueness includes zero-order records. Daily active
+    // riders are recalculated from positive-order riders below.
     if (row.rider) {
+      visibleRiders.add(row.rider)
       bucket.riders.add(row.rider)
       bucket[row.isEv ? 'evRiders' : 'nonEvRiders'].add(row.rider)
     }
@@ -1445,7 +1454,7 @@ export function buildClientPeriodLineSeries(
     series,
     totals: {
       orders: series.reduce((sum, row) => sum + row.orders, 0),
-      riders: period === 'daily' ? (series.at(-1)?.riders || 0) : new Set(prepared.filter((row) => row.date >= minDate).map((row) => row.rider).filter(Boolean)).size,
+      riders: period === 'daily' ? (series.at(-1)?.riders || 0) : visibleRiders.size,
     },
     clients: [...clients].sort().map((name) => ({ name })),
     cities: [...cities].sort().map((name) => ({ name })),

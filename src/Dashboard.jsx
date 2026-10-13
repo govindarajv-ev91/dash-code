@@ -832,8 +832,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
     () =>
       buildClientPeriodLineSeries(
         overviewOrderRows
-          .filter((row) => row?._data_source === 'order_upload')
-          .map((row) => ({ ...row })),
+          .filter((row) => row?._data_source === 'order_upload'),
         {
           dateFrom: filterFrom,
           dateTo: filterTo,
@@ -854,14 +853,14 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
 
   useEffect(() => {
     const names = uploadClientMonthLine.clients?.map((c) => c.name) || []
-    if (uploadMonthClient !== 'All' && names.length && !names.includes(uploadMonthClient)) {
+    if (uploadMonthClient !== 'All' && !names.includes(uploadMonthClient)) {
       setUploadMonthClient('All')
     }
   }, [uploadClientMonthLine.clients, uploadMonthClient])
 
   useEffect(() => {
     const names = uploadClientMonthLine.cities?.map((c) => c.name) || []
-    if (uploadMonthCity !== 'All' && names.length && !names.includes(uploadMonthCity)) {
+    if (uploadMonthCity !== 'All' && !names.includes(uploadMonthCity)) {
       setUploadMonthCity('All')
     }
   }, [uploadClientMonthLine.cities, uploadMonthCity])
@@ -1052,48 +1051,54 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
             </p>
           )}
           <div style={{ height: '300px', width: '100%' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={ordersByDate}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip
-                  contentStyle={{
-                    background: '#0f172a',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '8px',
-                  }}
-                />
-                <Legend verticalAlign="top" height={36} />
-                <Line
-                  type="monotone"
-                  name="Total"
-                  dataKey="total"
-                  stroke="#38bdf8"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-                <Line
-                  type="monotone"
-                  name="EV Orders"
-                  dataKey="ev"
-                  stroke="#4ade80"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-                <Line
-                  type="monotone"
-                  name="Non-EV Orders"
-                  dataKey="nonEv"
-                  stroke="#f43f5e"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {ordersByDate.length === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+                {loading ? 'Loading orders…' : 'No orders available for the selected dates.'}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={ordersByDate}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <XAxis dataKey="date" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                  <YAxis stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                  <Tooltip
+                    contentStyle={{
+                      background: '#0f172a',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '8px',
+                    }}
+                  />
+                  <Legend verticalAlign="top" height={36} />
+                  <Line
+                    type="monotone"
+                    name="Total"
+                    dataKey="total"
+                    stroke="#38bdf8"
+                    strokeWidth={2}
+                    dot={ordersByDate.length === 1 ? { r: 4 } : false}
+                    activeDot={{ r: 4 }}
+                  />
+                  <Line
+                    type="monotone"
+                    name="EV Orders"
+                    dataKey="ev"
+                    stroke="#4ade80"
+                    strokeWidth={2}
+                    dot={ordersByDate.length === 1 ? { r: 4 } : false}
+                    activeDot={{ r: 4 }}
+                  />
+                  <Line
+                    type="monotone"
+                    name="Non-EV Orders"
+                    dataKey="nonEv"
+                    stroke="#f43f5e"
+                    strokeWidth={2}
+                    dot={ordersByDate.length === 1 ? { r: 4 } : false}
+                    activeDot={{ r: 4 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -1536,9 +1541,9 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
       <div className="glass" style={{ marginTop: '1.25rem', padding: '1.5rem', minWidth: 0, width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
           <div>
-            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Client-wise · Last 9 months</h4>
+            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Client-wise · {filterFrom || filterTo ? 'Selected dates' : 'Last 9 months'}</h4>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              Order Upload data · {uploadPeriod === 'daily' ? 'Active riders (last 4 days)' : uploadPeriod === 'weekly' ? 'Unique riders across the full week' : 'Unique riders'} · {uploadMetric === 'riders' ? 'Total' : 'Orders'}{' '}
+              Order Upload data · {uploadPeriod === 'daily' ? 'Active riders (last 4 days)' : uploadPeriod === 'weekly' ? 'Unique riders across the full week' : 'Unique riders per month (including zero-order records)'} · {uploadMetric === 'riders' ? 'Total' : 'Orders'}{' '}
               {(uploadMetric === 'riders' ? uploadClientMonthLine.totals.riders : uploadClientMonthLine.totals.orders).toLocaleString('en-IN')}
             </p>
           </div>
@@ -1594,16 +1599,16 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
           </div>
         </div>
         <div style={{ height: '320px', width: '100%' }}>
-          {!(uploadClientMonthLine.clients || []).length ? (
+          {!uploadClientMonthLine.series.length ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
-              No Order Upload data available.
+              {loading ? 'Loading orders…' : 'No Order Upload data available for the selected filters.'}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={uploadClientMonthLine.series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="period" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
+                <YAxis yAxisId="count" stroke={uploadMetric === 'riders' ? CLIENT_LINE_COLORS.riders : CLIENT_LINE_COLORS.orders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip formatter={(value, name) => [Number(value).toLocaleString('en-IN'), name]} contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} />
                 <Legend verticalAlign="top" height={36} />
                 <Line yAxisId="count" type="monotone" dataKey={uploadMetric === 'riders' ? 'evRiders' : 'evOrders'} name="EV" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />

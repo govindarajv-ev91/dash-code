@@ -1,0 +1,36 @@
+.admin-page { max-width: 1200px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+.admin-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 2rem; margin-bottom: 2rem; }
+.admin-header .auth-brand { margin-bottom: 0.8rem; font-size: 1.25rem; }
+.admin-header h1, .admin-panel h2 { display: flex; align-items: center; gap: 0.65rem; }
+.admin-header h1 { font-size: 2rem; }
+.admin-header p, .admin-setting p { color: var(--text-dim); line-height: 1.6; margin-top: 0.4rem; }
+.admin-header .account-menu { min-width: 220px; margin-bottom: 0; }
+.admin-panel { border: 1px solid var(--border-color); border-radius: 1rem; background: var(--bg-card); padding: 1.5rem; margin-top: 1.5rem; }
+.admin-panel h2 { font-size: 1.2rem; }
+.admin-setting { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+.admin-tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.75rem; }
+.admin-tabs button { padding: 0.75rem 1rem; border: 1px solid transparent; border-radius: 0.65rem; background: transparent; color: var(--text-dim); font: inherit; cursor: pointer; }
+.admin-tabs button[aria-selected="true"] { background: var(--primary); color: white; }
+.admin-tabs button:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 3px; }
+.admin-login-explanation { margin-top: 1.25rem; padding: 1rem; border-radius: 0.65rem; background: rgba(15,23,42,0.45); color: var(--text-dim); line-height: 1.7; }
+.admin-button { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0.65rem 1rem; background: var(--primary); border: 1px solid transparent; border-radius: 0.6rem; color: white; font: inherit; cursor: pointer; }
+.admin-button.secondary { background: rgba(255,255,255,0.05); border-color: var(--border-color); }
+.admin-button.danger { background: #be123c; }
+.admin-button:disabled, .admin-delete:disabled { opacity: 0.5; cursor: default; }
+.admin-button:focus-visible, .admin-delete:focus-visible, .admin-create-form input:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 3px; }
+.admin-create-form { display: grid; grid-template-columns: 1fr 1.2fr 1fr auto; gap: 1rem; align-items: end; margin-top: 1.2rem; }
+.admin-create-form label { font-size: 0.9rem; display: grid; gap: 0.5rem; }
+.admin-create-form input { width: 100%; min-width: 0; min-height: 42px; padding: 0.65rem; background: rgba(15,23,42,0.5); border: 1px solid var(--border-color); border-radius: 0.6rem; font: inherit; color: white; }
+.admin-caption { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.75rem; }
+.admin-confirm { padding: 1rem; margin-top: 1rem; border: 1px solid rgba(251,113,133,0.4); border-radius: 0.75rem; background: rgba(190,18,60,0.08); }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.8rem; }
+.admin-notice { padding: 1rem; border: 1px solid rgba(74,222,128,0.3); background: rgba(74,222,128,0.08); border-radius: 0.75rem; color: #86efac; }
+.admin-table-scroll { overflow-x: auto; margin-top: 1rem; }
+.admin-panel table { width: 100%; border-collapse: collapse; text-align: left; }
+.admin-panel th, .admin-panel td { padding: 0.85rem; border-bottom: 1px solid var(--border-color); font-size: 0.9rem; }
+.admin-panel th { color: var(--text-dim); font-weight: 500; }
+.admin-role, .admin-count { display: inline-block; font-size: 0.8rem; padding: 0.2rem 0.6rem; border-radius: 0.4rem; background: rgba(99,102,241,0.15); color: #c7d2fe; }
+.admin-delete { display: flex; align-items: center; gap: 0.4rem; background: transparent; border: none; color: #fda4af; cursor: pointer; font: inherit; padding: 0.3rem; }
+.admin-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-top: 1rem; font-size: 0.85rem; color: var(--text-dim); }
+@media (max-width: 900px) { .admin-create-form { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 580px) { .admin-header { flex-direction: column; } .admin-page { padding: 1.5rem 1rem; } .admin-panel { padding: 1rem; } .admin-create-form { grid-template-columns: 1fr; } .admin-header h1 { font-size: 1.6rem; } }

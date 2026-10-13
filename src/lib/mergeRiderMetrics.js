@@ -3,6 +3,18 @@ import { normalizeRiderIdKey, parseMetricDate } from './riderPerformanceReport'
 
 /** Normalize any date_record to yyyy-MM-dd for filters / charts / merge keys. */
 export function toMetricDateKey(value) {
+  // Both formats exist in order_upload_data. Read calendar parts explicitly
+  // so the switch from day-first uploads to ISO does not affect chart keys.
+  const text = (value ?? '').toString().trim()
+  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s])/)
+  const dayFirst = iso ? null : text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:$|\s)/)
+  if (iso || dayFirst) {
+    const year = Number(iso ? iso[1] : dayFirst[3])
+    const month = Number((iso || dayFirst)[2])
+    const day = Number(iso ? iso[3] : dayFirst[1])
+    if (month < 1 || month > 12 || day < 1 || day > new Date(year, month, 0).getDate()) return ''
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
   const date = parseMetricDate(value)
   if (!date) return ''
   return format(date, 'yyyy-MM-dd')

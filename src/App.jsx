@@ -6,6 +6,7 @@ import DailyMailer from './DailyMailer'
 import RiderDetails from './RiderDetails'
 import IotUploadPasswordDialog from './components/IotUploadPasswordDialog'
 import FullDataPage from './components/FullDataPage'
+import AccountMenu from './components/AccountMenu'
 import { fetchAllData } from './lib/supabaseFetch'
 import { scheduleCacheWrite } from './lib/deferredCache'
 import {
@@ -53,7 +54,7 @@ import { fetchAllOrderUploads, clearOrderUploadCache, patchOrderUploadCache } fr
 import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
-const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v3'
+const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v4'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
 import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard, Leaf, CircleDollarSign } from 'lucide-react'
 import './index.css'
@@ -119,7 +120,7 @@ const getCachedData = async (key) => {
             request.onsuccess = () => resolve(request.result)
             request.onerror = () => reject(request.error)
         })
-    } catch (e) { return null }
+    } catch { return null }
 }
 
 function PageLoading() {
@@ -177,12 +178,15 @@ async function fetchFullFleetTables() {
   return { fleetRes, formFleetRes }
 }
 
-async function fetchCoreDashboardData({ fullFleet = false } = {}) {
+async function fetchCoreDashboardData({ fullFleet = false, onOrdersLoaded } = {}) {
   const [riderRes, uploadRows] = await Promise.all([
     fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', {
       pageSize: FLEET_SLIM_PAGE_SIZE,
     }),
-    fetchAllOrderUploads({ force: true }).catch((err) => {
+    fetchAllOrderUploads({ force: true }).then((rows) => {
+      onOrdersLoaded?.(rows)
+      return rows
+    }).catch((err) => {
       console.warn('order_upload_data load skipped:', err?.message || err)
       return []
     }),
@@ -223,7 +227,7 @@ function getSavedActivePage() {
   }
 }
 
-function App() {
+function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
   const [activePage, setActivePage] = useState(getSavedActivePage)
   const [ev91FolderOpen, setEv91FolderOpen] = useState(false)
   const [iotUploadPasswordOpen, setIotUploadPasswordOpen] = useState(false)
@@ -265,6 +269,15 @@ function App() {
       })
     }
     return mergedFleetRows
+  }, [])
+
+  const applyOrdersToState = useCallback((rows) => {
+    // Let the overview show complete orders while the larger metrics/fleet
+    // requests continue, instead of keeping an old cached date cutoff on screen.
+    startTransition(() => setRiderData((existing) => mergeRiderMetricSources(
+      existing.filter((row) => row?._data_source !== 'order_upload'), rows,
+    )))
+    return rows
   }, [])
 
   const loadFullFleet = useCallback(async () => {
@@ -330,7 +343,7 @@ function App() {
         clearRiderOnboardingMemoryCache()
         clearOrderUploadCache()
         clearIotRiderOrderCache()
-        const { riderRes, uploadRows, fleetRes, formFleetRes } = await fetchCoreDashboardData({ fullFleet })
+        const { riderRes, uploadRows, fleetRes, formFleetRes } = await fetchCoreDashboardData({ fullFleet, onOrdersLoaded: applyOrdersToState })
 
         if (riderRes.data?.length) {
           startTransition(() => setRiderData(riderRes.data))
@@ -403,7 +416,7 @@ function App() {
     try {
       const [riderRes, uploadRows, slimFleet] = await Promise.all([
         fetchAllData('rider_metrics', RIDER_METRIC_COLS, 'id', { pageSize: FLEET_SLIM_PAGE_SIZE }),
-        fetchAllOrderUploads({ force: true }).catch((err) => {
+        fetchAllOrderUploads({ force: true }).then(applyOrdersToState).catch((err) => {
           console.warn('order_upload_data load skipped:', err?.message || err)
           return []
         }),
@@ -436,7 +449,7 @@ function App() {
       setLoading(false)
       setFleetLoading(false)
     }
-  }, [applyFleetToState, loadSecondaryTables])
+  }, [applyFleetToState, applyOrdersToState, loadSecondaryTables])
 
   useEffect(() => {
     fetchData()
@@ -514,6 +527,11 @@ function App() {
     setActivePage(page)
   }
   const openEv91IotUpload = () => {
+    if (user && isAdmin) {
+      setIotUploadPasswordOpen(false)
+      openEv91Page('ev91-iotupload')
+      return
+    }
     setIotUploadPasswordOpen(true)
   }
 
@@ -534,7 +552,10 @@ function App() {
             <Layout className="text-primary" />
             <span>FleetPro</span>
           </div>
+          {user ? <AccountMenu user={user} onSignOut={onSignOut} signingOut={signingOut} signOutError={signOutError} isAdmin={isAdmin} />
+            : <a className="public-admin-link" href="#admin">Admin sign in</a>}
           <nav className="nav-links">
+          {isAdmin && <a className="nav-item" href="#admin"><Shield size={20} />Sign-in settings</a>}
           <button 
             className={`nav-item nav-item-green ${activePage === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActivePage('dashboard')}

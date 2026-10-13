@@ -66,7 +66,10 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
       if (useKeyset) {
         const lastRow = data[data.length - 1]
         const nextCursor = lastRow?.[orderBy]
-        if (nextCursor == null) {
+        if (nextCursor == null || String(nextCursor) === String(cursor)) {
+          if (options.throwOnError) {
+            throw Object.assign(new Error(`Could not read complete ${table}: invalid pagination cursor.`), { code: 'INVALID_CURSOR' })
+          }
           console.warn(`${table}: missing ${orderBy} on last row; stopping pagination.`)
           break
         }
@@ -75,8 +78,11 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
         offset += data.length
       }
 
-      if (data.length < pageSize) break
+      // Some Supabase projects cap responses below the requested page size.
+      // Complete scans must advance the cursor until the server returns no rows.
+      if (!options.untilEmpty && data.length < pageSize) break
     } catch (err) {
+      if (err?.code === 'INVALID_CURSOR') throw err
       const isTimeout = err?.code === '57014'
       const isBadColumn = err?.code === '42703' || err?.message?.includes('does not exist')
       if (isBadColumn) {

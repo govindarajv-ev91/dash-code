@@ -3,3 +3,8 @@ project_id = "arnxvnkednpzyzyfculx"
 
 [functions.rental-pending]
 verify_jwt = false
+
+[functions.dashboard-admin]
+# Supports Supabase's current signing keys; the handler verifies the user token
+# with Auth and checks the database admin role before performing any action.
+verify_jwt = false

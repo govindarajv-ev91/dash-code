@@ -1,4 +1,4 @@
-import { eachMonthOfInterval, format, parseISO } from 'date-fns'
+import { eachMonthOfInterval, parseISO } from 'date-fns'
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
 import {
@@ -361,14 +361,44 @@ export async function fetchAllOrderUploads({ force = false } = {}) {
 
   const gen = ++ordersFetchGeneration
   ordersInflight = (async () => {
-    const probe = await supabase.from(ORDER_UPLOAD_TABLE).select('id').limit(1)
-    if (probe.error) throw probe.error
-    const { data } = await fetchAllData(ORDER_UPLOAD_TABLE, ORDER_UPLOAD_COLUMNS, 'id', {
-      useKeyset: true,
-      maxRetries: 12,
-      pageSize: 500,
-    })
-    const rows = data || []
+    const [first, last] = await Promise.all([
+      supabase.from(ORDER_UPLOAD_TABLE).select('id').order('id', { ascending: true }).limit(1),
+      supabase.from(ORDER_UPLOAD_TABLE).select('id').order('id', { ascending: false }).limit(1),
+    ])
+    if (first.error) throw first.error
+    if (last.error) throw last.error
+
+    const ranges = []
+    if (first.data?.length && last.data?.length) {
+      const firstId = BigInt(first.data[0].id)
+      const lastId = BigInt(last.data[0].id)
+      const size = (lastId - firstId + 8n) / 8n
+      for (let from = firstId; from <= lastId; from += size) {
+        const to = from + size - 1n
+        ranges.push({ from: from.toString(), to: (to > lastId ? lastId : to).toString() })
+      }
+    }
+
+    // Independent ID ranges avoid hundreds of serial requests. Numeric ranges
+    // include legacy dates and blank month labels without relying on metadata.
+    const pages = new Array(ranges.length)
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(4, ranges.length) }, async () => {
+      while (next < ranges.length) {
+        const index = next++
+        const range = ranges[index]
+        const { data } = await fetchAllData(ORDER_UPLOAD_TABLE, ORDER_UPLOAD_COLUMNS, 'id', {
+          useKeyset: true,
+          maxRetries: 2,
+          pageSize: 1000,
+          throwOnError: true,
+          untilEmpty: true,
+          queryModifier: (query) => query.gte('id', range.from).lte('id', range.to),
+        })
+        pages[index] = data || []
+      }
+    }))
+    const rows = pages.flat()
 
     if (gen !== ordersFetchGeneration) return rows
 

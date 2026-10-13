@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [],
+    "paths": {
+      "npm:@supabase/supabase-js@2.102.1": ["../node_modules/@supabase/supabase-js"]
+    }
+  },
+  "include": ["dashboard-admin-editor.ts", "functions/dashboard-admin/**/*", "deno.d.ts"]
+}

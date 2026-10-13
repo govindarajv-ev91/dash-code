@@ -1,5 +1,8 @@
 # React + Vite
 
+FleetPro uses email and password login. See [login setup](docs/login-setup.md)
+for staff accounts, database access prerequisites, and verification.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

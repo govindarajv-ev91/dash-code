@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { SourceTextModule } from 'node:vm'
 import { JSDOM, VirtualConsole } from 'jsdom'
 
-test('production dashboard opens Full Data through its real sidebar and lazy module', async () => {
+test('production login, Full Data, admin settings and IoT upload access work through their real lazy modules', async () => {
   const html = await readFile(new URL('../dist/index.html', import.meta.url), 'utf8')
   const errors = []
   const virtualConsole = new VirtualConsole()
@@ -17,11 +17,33 @@ test('production dashboard opens Full Data through its real sidebar and lazy mod
   window.addEventListener('unhandledrejection', (event) => errors.push(event.reason))
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} })
+  window.HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  window.HTMLDialogElement.prototype.close = function () { this.open = false }
   for (const name of ['Response', 'Request', 'Headers', 'AbortController', 'AbortSignal', 'TextEncoder', 'TextDecoder']) window[name] = globalThis[name]
-  window.fetch = async (input) => {
+  let dashboardRole = 'user'
+  let loginRequired = true
+  window.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === 'string' ? input : input.url, window.location.href)
+    if (url.pathname.endsWith('/auth/v1/token')) {
+      const payload = Buffer.from(JSON.stringify({ sub: 'test-staff', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')
+      return Response.json({ access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.test`, refresh_token: 'test-refresh',
+        token_type: 'bearer', expires_in: 3600, user: { id: 'test-staff', email: 'staff@example.com', role: 'authenticated' } })
+    }
+    if (url.pathname.endsWith('/rpc/dashboard_login_enabled')) return Response.json(loginRequired)
+    if (url.pathname.endsWith('/rpc/set_dashboard_login_enabled')) {
+      if (dashboardRole !== 'admin') return Response.json({ code: '42501', message: 'Administrator access is required.' }, { status: 403 })
+      loginRequired = JSON.parse(init.body).p_enabled
+      return Response.json(loginRequired)
+    }
+    if (url.pathname.endsWith('/dashboard_users')) return Response.json([{ id: 'test-staff', email: 'staff@example.com', role: dashboardRole }])
+    if (url.pathname.endsWith('/functions/v1/dashboard-admin')) {
+      const body = JSON.parse(init.body || '{}')
+      if (body.action === 'set-login-enabled') { loginRequired = body.login_enabled; return Response.json({ login_enabled: loginRequired }) }
+      return Response.json({ users: [{ id: 'test-staff', email: 'staff@example.com', role: 'admin' }], total: 1 })
+    }
     if (url.pathname.includes('distinct_order_upload_months')) return Response.json([{ month: 'Jun-2026' }])
     if (url.pathname.endsWith('/order_upload_data')) {
+      if (url.searchParams.getAll('id').some((filter) => filter.startsWith('gt.'))) return Response.json([])
       return Response.json([{ id: 1, month: 'Jun-2026', date_record: '2026-06-03', worker_code: 'FE1', delivered: 5, city: 'Chennai', client: 'Blinkit', type1: 'EV' }])
     }
     if (url.pathname.includes('/rest/v1/')) return Response.json([])
@@ -39,12 +61,13 @@ test('production dashboard opens Full Data through its real sidebar and lazy mod
   const loading = new Map()
   async function getModule(url) {
     if (!modules.has(url.href)) {
-      const module = new SourceTextModule(await readFile(url, 'utf8'), {
+      // Cache the promise before reading. Concurrent shared-chunk imports must
+      // receive the same module (and the same React instance), as in a browser.
+      modules.set(url.href, (async () => new SourceTextModule(await readFile(url, 'utf8'), {
         context, identifier: url.href,
         initializeImportMeta(meta) { meta.url = new URL(url.pathname.split('/dist/')[1], 'http://localhost/').href },
         importModuleDynamically(specifier, referrer) { return evaluate(new URL(specifier, referrer.identifier)) },
-      })
-      modules.set(url.href, module)
+      }))())
     }
     return modules.get(url.href)
   }
@@ -65,9 +88,28 @@ test('production dashboard opens Full Data through its real sidebar and lazy mod
     }
     assert.ok(predicate(), window.document.body.textContent.slice(-1200))
   }
+  function findButton(text) {
+    return [...window.document.querySelectorAll('button')].find((node) => node.textContent.trim() === text)
+  }
+  async function openIotUpload() {
+    if (!findButton('IoT Data Upload')) {
+      findButton('EV91 DB Data').click()
+      await until(() => findButton('IoT Data Upload'))
+    }
+    findButton('IoT Data Upload').click()
+  }
   try {
     const entry = window.document.querySelector('script[type="module"]').getAttribute('src')
     await evaluate(new URL(`../dist${entry}`, import.meta.url))
+    await until(() => window.document.querySelector('#login-email'))
+    assert.equal(window.document.querySelector('aside'), null, 'Dashboard must be gated before login')
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    for (const [id, value] of [['login-email', 'staff@example.com'], ['login-password', 'test-password']]) {
+      setValue.call(window.document.getElementById(id), value)
+      window.document.getElementById(id).dispatchEvent(new window.Event('input', { bubbles: true }))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    window.document.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
     let button
     await until(() => (button = [...window.document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Full Data')))
     button.click()
@@ -76,6 +118,47 @@ test('production dashboard opens Full Data through its real sidebar and lazy mod
     assert.equal(alert, null, alert?.textContent)
     assert.ok(window.document.querySelector('aside'))
     assert.match(window.document.querySelector('.full-data-sheet').textContent, /FleetPro Full Data/)
+    await openIotUpload()
+    await until(() => window.document.querySelector('#iot-upload-password'))
+    assert.ok(window.document.querySelector('.full-data-sheet'), 'Ordinary users must unlock before navigating')
+    window.document.querySelector('.iot-password-cancel').click()
+    await until(() => !window.document.querySelector('.iot-password-dialog'))
+    window.location.hash = 'admin'
+    await until(() => window.document.querySelector('h1')?.textContent === 'Administrator access required')
+    assert.equal(window.document.querySelector('.admin-page'), null)
+    dashboardRole = 'admin'
+    window.dispatchEvent(new window.Event('focus'))
+    await until(() => window.document.querySelector('.admin-page [role="switch"]'))
+    assert.equal(window.document.querySelector('#login-settings-tab').getAttribute('aria-selected'), 'true')
+    assert.equal(window.document.querySelector('#user-management-panel').hidden, true)
+    assert.equal(window.document.querySelector('[role="switch"]').getAttribute('aria-checked'), 'true')
+    window.location.hash = 'dashboard'
+    await until(() => window.document.querySelector('aside a[href="#admin"]'))
+    await openIotUpload()
+    await until(() => window.document.querySelector('h1')?.textContent === 'IoT Data Upload')
+    assert.equal(window.document.querySelector('.iot-password-dialog'), null, 'Verified admins must skip the upload password')
+    assert.ok(window.document.querySelector('input[type="file"]'), 'The upload form must open directly')
+    window.location.hash = 'admin'
+    await until(() => window.document.querySelector('.admin-page [role="switch"]'))
+    window.document.querySelector('[role="switch"]').click()
+    await until(() => window.document.querySelector('[aria-label="Confirm public dashboard"]'))
+    assert.equal(loginRequired, true, 'Public access requires explicit confirmation')
+    ;[...window.document.querySelectorAll('button')].find((node) => node.textContent === 'Confirm disable login').click()
+    await until(() => window.document.querySelector('[role="switch"]').getAttribute('aria-checked') === 'false')
+    window.document.querySelector('.account-menu button').click()
+    await until(() => window.document.querySelector('#login-email'))
+    assert.match(window.document.body.textContent, /Admin sign in/)
+    window.location.hash = 'dashboard'
+    await until(() => window.document.querySelector('.public-admin-link'))
+    assert.equal(window.document.querySelector('#login-email'), null)
+    await openIotUpload()
+    await until(() => window.document.querySelector('#iot-upload-password'))
+    assert.notEqual(window.document.querySelector('h1')?.textContent, 'IoT Data Upload', 'Signed-out visitors must unlock before navigating')
+    window.document.querySelector('.iot-password-cancel').click()
+    await until(() => !window.document.querySelector('.iot-password-dialog'))
+    window.location.hash = 'admin'
+    await until(() => window.document.querySelector('#login-email'))
+    assert.equal(window.document.querySelector('.admin-page'), null)
     assert.deepEqual(errors, [])
   } finally { observer.disconnect(); dom.window.close() }
 })

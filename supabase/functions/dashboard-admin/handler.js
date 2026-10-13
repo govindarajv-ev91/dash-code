@@ -1,0 +1,105 @@
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info, x-retry-count',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Cache-Control': 'no-store',
+}
+const userColumns = 'id,email,display_name,role,created_at'
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * @param {number} status
+ * @param {unknown} body
+ */
+function reply(status, body) {
+  return new Response(JSON.stringify(body), {
+    status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
+/** @param {import('npm:@supabase/supabase-js@2.102.1').SupabaseClient} client */
+export function createAdminHandler(client) {
+  /** @param {Request} request */
+  return async (request) => {
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders })
+    if (request.method !== 'POST') return reply(405, { error: 'Use POST.' })
+    const token = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]
+    if (!token) return reply(401, { error: 'Sign in as an administrator.' })
+
+    try {
+      // Verify with Auth on every request; never trust a client-supplied role.
+      const { data: identity, error: identityError } = await client.auth.getUser(token)
+      if (identityError || !identity?.user || identity.user.is_anonymous) {
+        return reply(401, { error: 'Your session is invalid. Please sign in again.' })
+      }
+      const caller = identity.user
+      const { data: profile, error: profileError } = await client.from('dashboard_users')
+        .select('role').eq('id', caller.id).maybeSingle()
+      if (profileError) return reply(503, { error: 'Account setup is unavailable. Contact the project administrator.' })
+      if (profile?.role !== 'admin') return reply(403, { error: 'Administrator access is required.' })
+
+      let body
+      try { body = await request.json() } catch { return reply(400, { error: 'Invalid JSON request.' }) }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return reply(400, { error: 'Invalid request.' })
+
+      if (body.action === 'list-users') {
+        const page = body.page ?? 1
+        if (!Number.isInteger(page) || page < 1 || page > 100000) return reply(400, { error: 'Invalid page.' })
+        const size = 50
+        const { data, count, error } = await client.from('dashboard_users')
+          .select(userColumns, { count: 'exact' }).order('created_at', { ascending: false }).order('id')
+          .range((page - 1) * size, page * size - 1)
+        if (error) throw error
+        return reply(200, { users: data, total: count, page, pageSize: size })
+      }
+
+      if (body.action === 'create-user') {
+        const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
+        const password = typeof body.password === 'string' ? body.password : ''
+        const name = typeof body.display_name === 'string' ? body.display_name.trim() : ''
+        if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return reply(400, { error: 'Enter a valid email address.' })
+        if (password.length < 6 || password.length > 128) return reply(400, { error: 'Use a password between 6 and 128 characters.' })
+        if (name.length > 100) return reply(400, { error: 'Name must be 100 characters or fewer.' })
+        // New accounts are always ordinary users. Metadata cannot promote roles.
+        const { data, error } = await client.auth.admin.createUser({
+          email, password, email_confirm: true, user_metadata: { display_name: name },
+        })
+        if (error) {
+          if (['email_exists', 'user_already_exists'].includes(error.code ?? '')) return reply(409, { error: 'An account with this email already exists.' })
+          if (['weak_password', 'validation_failed'].includes(error.code ?? '')) return reply(400, { error: 'The password does not meet the project password policy.' })
+          throw error
+        }
+        // The database trigger creates the matching dashboard_users row.
+        if (!data?.user) throw new Error('Missing created user')
+        return reply(201, { user: { id: data.user.id, email, display_name: name, role: 'user' } })
+      }
+
+      if (body.action === 'delete-user') {
+        if (typeof body.user_id !== 'string' || !uuidPattern.test(body.user_id)) return reply(400, { error: 'Invalid user ID.' })
+        if (body.user_id === caller.id) return reply(409, { error: 'You cannot delete your own account.' })
+        const { data: target, error: targetError } = await client.from('dashboard_users')
+          .select('role').eq('id', body.user_id).maybeSingle()
+        if (targetError) throw targetError
+        if (!target) return reply(404, { error: 'User not found.' })
+        if (target.role === 'admin') return reply(409, { error: 'Administrator accounts are protected from deletion.' })
+        const { error } = await client.auth.admin.deleteUser(body.user_id)
+        if (error) throw error
+        // Auth deletion cascades to the public profile.
+        return reply(200, { deleted: true })
+      }
+
+      if (body.action === 'set-login-enabled') {
+        if (typeof body.login_enabled !== 'boolean') return reply(400, { error: 'Login enabled must be true or false.' })
+        const { data, error } = await client.from('dashboard_settings').update({
+          login_enabled: body.login_enabled, updated_at: new Date().toISOString(), updated_by: caller.id,
+        }).eq('id', true).select('login_enabled').single()
+        if (error) throw error
+        return reply(200, { login_enabled: data.login_enabled })
+      }
+      return reply(400, { error: 'Unknown admin action.' })
+    } catch {
+      // Do not log request bodies, passwords, tokens, or service keys.
+      return reply(500, { error: 'The admin request failed. Check the project setup and try again.' })
+    }
+  }
+}

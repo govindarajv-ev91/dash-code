@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "test:auth": "node --test tests/auth.test.mjs tests/dashboard-admin-api.test.mjs tests/admin-service-error.test.mjs tests/dashboard-admin-deployment.test.mjs",
+    "test:dashboard-data-access": "node --test tests/dashboard-signed-in-reads.test.mjs",
     "setup:admin": "node scripts/setup-dashboard-admin.mjs",
     "deploy:admin": "node scripts/deploy-dashboard-admin.mjs",
     "check:admin": "node scripts/check-dashboard-admin.mjs",
@@ -36,6 +37,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.9",
     "@eslint/js": "^9.39.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

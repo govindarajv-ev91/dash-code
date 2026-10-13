@@ -98,3 +98,5 @@ on conflict (id) do update set email = excluded.email;
 commit;
 
 -- Next: npm run setup:admin (see docs/login-setup.md).
+-- Also run sql/fix_dashboard_signed_in_reads.sql so existing anon-only data
+-- tables remain readable after users sign in.

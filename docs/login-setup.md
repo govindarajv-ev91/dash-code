@@ -30,6 +30,22 @@ HTTP API access. Several existing SQL scripts grant access specifically to
 user signs in, Supabase database requests use the `authenticated` role, so
 policies that only mention `anon` do not apply to them.
 
+### Fix empty data after enabling sign-in
+
+If General Overview shows zero orders/riders and empty database charts after
+sign-in, run `sql/fix_dashboard_signed_in_reads.sql` in the Supabase SQL Editor
+for the app's project, after `sql/create_dashboard_auth.sql`, then refresh the
+dashboard. Enabling sign-in changes database requests from `anon` to
+`authenticated`; an `anon`-only SELECT policy returns no rows to signed-in users.
+
+The fix copies existing anonymous SELECT policies for the dashboard data tables
+to registered dashboard accounts, preserving their row filters and restrictive
+policies. It grants SELECT only, retains existing anonymous access and login
+settings, and leaves upload/delete permissions to their existing policies. It is
+safe to rerun, including after adding tables or changing their source policies.
+Tables that already have policies for `public` or `authenticated` keep those
+policies. Tables without existing anonymous table-level SELECT access are skipped.
+
 Inspect the live project before deploying; repository scripts do not establish
 which policies are currently installed. This read-only SQL lists relevant RLS
 policies:

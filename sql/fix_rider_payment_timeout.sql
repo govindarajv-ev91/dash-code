@@ -5,6 +5,10 @@
 create index if not exists rider_payment_data_month_id_idx
   on public.rider_payment_data (month, id);
 
+-- Client Period Trend pages in date + id order, including its export queries.
+create index if not exists rider_payment_data_period_start_id_idx
+  on public.rider_payment_data (period_start, id);
+
 create index if not exists manual_collation_data_month_id_idx
   on public.manual_collation_data (month, id);
 

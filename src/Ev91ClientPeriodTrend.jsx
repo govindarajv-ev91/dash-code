@@ -8,6 +8,7 @@ import { riderIdLookupKeys } from './lib/riderPerformanceReport'
 import { buildClientSourceReport } from './lib/ev91ClientSourceReport'
 import { attachClientPeriodStickyHeader } from './lib/clientPeriodStickyHeader'
 import { attachClientPeriodHorizontalScroll } from './lib/clientPeriodHorizontalScroll'
+import { clientPeriodValueLevels, TREND_VALUE_COLORS } from './lib/clientPeriodValueColors'
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -35,6 +36,19 @@ const frozenSourceStyle = {
 const EMPTY_ONBOARDING_ROWS = []
 const EMPTY_PERIOD_REPORT = { periods: [], periodStarts: {}, rows: [], totals: {}, grandTotal: 0 }
 const EMPTY_WEEKLY_REPORT = { weeks: [], weekStarts: {}, rows: [], totals: {}, grandTotal: 0 }
+
+function PeriodValueCells({ periods, values, header = false }) {
+  const levels = clientPeriodValueLevels(periods, values)
+  const Cell = header ? 'th' : 'td'
+  return periods.map((period, index) => {
+    const value = values[period] || 0
+    const level = levels[index]
+    return <Cell key={period} style={header ? undefined : { color: TREND_VALUE_COLORS[level] }}
+      title={header ? undefined : `${level === 'mid' ? 'Middle' : level === 'high' ? 'High' : 'Low'} value within this row`}>
+      {value.toLocaleString('en-IN')}
+    </Cell>
+  })
+}
 
 function todayKey() {
   return format(new Date(), 'yyyy-MM-dd')
@@ -372,14 +386,17 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     periodForRow: (row) => periodInfo(row, viewMode).label,
   }), [orderRows, activeReport.periods, filters, onboardingSourceIndex, viewMode])
   const activeSourceRows = sourceReport.riderRows
+  const sourceRiderTotals = Object.fromEntries(activeReport.periods.map((period) =>
+    [period, activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)]
+  ))
 
   const exportReport = async () => {
     if (exporting || loading) return
     setExporting(true)
     setExportError('')
     try {
-      const [XLSX, fullRows] = await Promise.all([
-        import('xlsx'),
+      const [{ downloadClientPeriodExcel }, fullRows] = await Promise.all([
+        import('./lib/clientPeriodExcelExport'),
         fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate }),
       ])
       const filteredRows = normalizeRows(fullRows).filter((row) => rowMatches(row, filters, viewMode)).map((row) => {
@@ -404,13 +421,16 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
           ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])),
         })),
       ]
-      const workbook = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filteredRows), 'Raw Data')
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(matrix(activeReport.rows, activeReport)), `${viewMode} Revenue`)
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(matrix(activeRiderReport.rows, activeRiderReport)), `${viewMode} Riders`)
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sourceExport), `${viewMode} Sources`)
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sourceRevenueExport), `${viewMode} Source Revenue`)
-      XLSX.writeFile(workbook, `ev91-client-trend-${viewMode}-${todayKey()}.xlsx`)
+      await downloadClientPeriodExcel({
+        rawRows: filteredRows,
+        periods,
+        summarySheets: [
+          { name: `${viewMode} Revenue`, rows: matrix(activeReport.rows, activeReport), totalRowIndex: activeReport.rows.length },
+          { name: `${viewMode} Riders`, rows: matrix(activeRiderReport.rows, activeRiderReport), totalRowIndex: activeRiderReport.rows.length },
+          { name: `${viewMode} Sources`, rows: sourceExport, totalRowIndex: 0 },
+          { name: `${viewMode} Source Revenue`, rows: sourceRevenueExport, totalRowIndex: 0 },
+        ],
+      }, `ev91-client-trend-${viewMode}-${todayKey()}.xlsx`)
     } catch (err) {
       setExportError(err?.message || 'Failed to export Rider Payment Data.')
     } finally {
@@ -453,23 +473,31 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         </div>
       </div>
 
+      <div aria-label="Value color legend" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', margin: '0.75rem 0', fontSize: '0.8rem' }}>
+        <span style={{ color: 'var(--text-dim)' }}>Compare period values within each row:</span>
+        <span style={{ color: TREND_VALUE_COLORS.high }}>High</span>
+        <span style={{ color: TREND_VALUE_COLORS.mid }}>Middle</span>
+        <span style={{ color: TREND_VALUE_COLORS.low }}>Low</span>
+        <span style={{ color: 'var(--text-dim)' }}>Equal values are yellow. Total rows and columns are excluded.</span>
+      </div>
+
       <section className="glass" style={{ padding: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><CalendarDays size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} gross payout revenue</h3><span>{city} · {client}</span></div>
         <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 5 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
-          {activeReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeReport.totals[period].toLocaleString('en-IN')}</th>)}<th>{activeReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}<td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No data for the selected filters.</td></tr>}
+          {activeReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={activeReport.totals} header /><th>{activeReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /><td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No data for the selected filters.</td></tr>}
         </tbody></table>
       </section>
 
       <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} client unique rider count</h3><span>Unique riders · same filters</span></div>
         <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 5 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
-          {activeRiderReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeRiderReport.totals[period].toLocaleString('en-IN')}</th>)}<th>{activeRiderReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeRiderReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}<td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No rider data for the selected filters.</td></tr>}
+          {activeRiderReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={activeRiderReport.totals} header /><th>{activeRiderReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeRiderReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /><td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No rider data for the selected filters.</td></tr>}
         </tbody></table>
       </section>
       <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source-wise rider count</h3><span>Unique riders · last column: highest to lowest</span></div>
         <table className="data-table"><thead><tr><th style={{ ...frozenSourceStyle, zIndex: 5 }}>Source</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}</tr></thead><tbody>
-          {activeSourceRows.length ? <><tr><th style={frozenSourceStyle}>Total</th>{activeReport.periods.map((period) => <th key={period}>{activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0).toLocaleString('en-IN')}</th>)}</tr>{activeSourceRows.map((row) => <tr key={row.source}><td style={frozenSourceStyle}>{row.source}</td>{activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}</tr>)}</> : <tr><td colSpan={activeReport.periods.length + 1}>No source-wise data for the selected filters.</td></tr>}
+          {activeSourceRows.length ? <><tr><th style={frozenSourceStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={sourceRiderTotals} header /></tr>{activeSourceRows.map((row) => <tr key={row.source}><td style={frozenSourceStyle}>{row.source}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 1}>No source-wise data for the selected filters.</td></tr>}
         </tbody></table>
       </section>
       <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
@@ -493,11 +521,11 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
             {sourceReport.revenueRows.length ? <>
               <tr>
                 <th style={frozenSourceStyle}>Total</th>
-                {activeReport.periods.map((period) => <th key={period}>{sourceReport.revenueTotals[period].toLocaleString('en-IN')}</th>)}
+                <PeriodValueCells periods={activeReport.periods} values={sourceReport.revenueTotals} header />
               </tr>
               {sourceReport.revenueRows.map((row) => <tr key={row.source}>
                 <td style={frozenSourceStyle}>{row.source}</td>
-                {activeReport.periods.map((period) => <td key={period}>{(row.values[period] || 0).toLocaleString('en-IN')}</td>)}
+                <PeriodValueCells periods={activeReport.periods} values={row.values} />
               </tr>)}
             </> : <tr><td colSpan={activeReport.periods.length + 1}>No source revenue data for the selected filters.</td></tr>}
           </tbody>

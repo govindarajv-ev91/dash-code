@@ -198,6 +198,55 @@ function paymentDateRanges(fromDate, toDate) {
   }
   return ranges
 }
+
+async function fetchPaymentPeriodRange(columns, { fromDate, toDate }) {
+  if (!fromDate && !toDate) {
+    const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, columns, 'id', {
+      useKeyset: true, throwOnError: true, untilEmpty: true, maxRetries: 2,
+    })
+    return data
+  }
+  // Match the (period_start, id) index. Ordering only by id makes PostgreSQL
+  // scan unrelated dates, especially near the end of a month's result set.
+  const rows = []
+  let cursor = null
+  let pageSize = 1000
+  let failures = 0
+  while (true) {
+    let query = supabase.from(RIDER_PAYMENT_TABLE).select(columns)
+      .order('period_start', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(pageSize)
+    if (cursor || fromDate) query = query.gte('period_start', cursor?.period_start || fromDate)
+    if (toDate) query = query.lte('period_start', toDate)
+    if (cursor) {
+      query = query.or(`period_start.gt.${cursor.period_start},and(period_start.eq.${cursor.period_start},id.gt.${cursor.id})`)
+    }
+    const { data, error } = await query
+    if (error) {
+      if (isStatementTimeout(error) && pageSize > 100) {
+        pageSize = Math.max(100, Math.floor(pageSize / 2))
+        continue
+      }
+      if (error.code === '42703' || ++failures > 2) throw error
+      await new Promise((resolve) => setTimeout(resolve, failures * 500))
+      continue
+    }
+    if (!data?.length) return rows
+    const last = data[data.length - 1]
+    const validCursor = /^\d{4}-\d{2}-\d{2}$/.test(last.period_start) && /^\d+$/.test(String(last.id))
+    const advances = validCursor && (!cursor || last.period_start > cursor.period_start ||
+      (last.period_start === cursor.period_start && BigInt(last.id) > BigInt(cursor.id)))
+    if (!validCursor || !advances) {
+      throw new Error('Could not read complete payment history: invalid pagination cursor.')
+    }
+    rows.push(...data)
+    cursor = last
+    failures = 0
+    // Continue even after a short page: production can cap API responses below
+    // our requested limit. Only an empty response proves the range is complete.
+  }
+}
 /** Slim revenue/overview cache for General Overview. */
 let cachedRevenue = null
 let revenueInflight = null
@@ -220,6 +269,8 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
     const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_COLUMNS, 'id', {
       useKeyset: true,
       maxRetries: 10,
+      throwOnError: true,
+      untilEmpty: true,
     })
     cachedPayments = data || []
     cachedPaymentsVersion = PAYMENT_FETCH_CACHE_VERSION
@@ -256,19 +307,7 @@ export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', 
       while (next < ranges.length) {
         const index = next++
         const range = ranges[index]
-        const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, columns, 'id', {
-          useKeyset: true,
-          pageSize: 1000,
-          maxRetries: 2,
-          throwOnError: true,
-          queryModifier: (query) => {
-            let filtered = query
-            if (range.fromDate) filtered = filtered.gte('period_start', range.fromDate)
-            if (range.toDate) filtered = filtered.lte('period_start', range.toDate)
-            return filtered
-          },
-        })
-        pages[index] = data || []
+        pages[index] = await fetchPaymentPeriodRange(columns, range)
       }
     }))
     let rows = pages.flat().sort((a, b) => Number(a.id) - Number(b.id))

@@ -3,6 +3,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { act, createElement } from 'react'
 import { createServer } from 'vite'
+import * as XLSX from 'xlsx'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' })
 for (const name of ['window', 'document', 'HTMLElement', 'Element', 'Node', 'MouseEvent', 'Event']) {
@@ -62,6 +63,7 @@ const server = await createServer({
 const { buildClientPeriodLineSeries } = await server.ssrLoadModule('/src/lib/paymentHistoryReport.js')
 const { mergeRiderMetricSources } = await server.ssrLoadModule('/src/lib/mergeRiderMetrics.js')
 const { default: Dashboard } = await server.ssrLoadModule('/src/Dashboard.jsx')
+const { default: RiderAttritionTooltip } = await server.ssrLoadModule('/src/components/RiderAttritionTooltip.jsx')
 after(async () => {
   await server.close()
   dom.window.close()
@@ -253,5 +255,110 @@ test('empty Orders Performance shows a useful message instead of an empty chart'
   const { container, root, errors } = mount(t)
   await act(async () => root.render(createElement(Dashboard, { loading: false, riderData: [] })))
   assert.match(card(container, 'Orders Performance').textContent, /No orders available for the selected dates/)
+  assert.deepEqual(errors, [])
+})
+
+test('Rider Attrition renders EV, Non-EV and Total lines with independent client, city and period controls', async (t) => {
+  const { container, root, errors } = mount(t)
+  await act(async () => root.render(createElement(Dashboard, { loading: false, riderData: [
+    order('2026-09-29', 'r1', 10),
+    order('2026-09-30', 'r2', 10, { type1: 'NON-EV', client: 'Beta', city: 'Bengaluru' }),
+    order('2026-10-01', 'returned-rider', 10),
+    order('2026-10-06', 'returned-rider', 10, { type1: 'NON-EV', client: 'Beta', city: 'Bengaluru' }),
+    order('2026-10-06', 'coverage', 0),
+    order('2026-10-01', 'mirror', 9999, { _data_source: 'rider_metrics' }),
+  ] })))
+  const chart = container.querySelector('[aria-label="Rider attrition chart"]')
+  assert.match(chart.textContent, /Rider Attrition · Last 9 months/)
+  assert.match(chart.textContent, /previous calendar month/)
+  assert.match(chart.textContent, /EV 1 · Non-EV 1 · Total 2/)
+  await waitFor(() => chart.querySelectorAll('.recharts-line-curve').length === 3)
+  const [client, city] = chart.querySelectorAll('select')
+  await act(async () => { client.value = 'Alpha'; client.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.match(chart.textContent, /EV 1 · Non-EV 0 · Total 1/)
+  assert.equal(container.querySelector('input[name="upload-chart-period"][value="monthly"]').checked, true)
+  for (const period of ['weekly', 'daily']) {
+    const radio = chart.querySelector(`input[value="${period}"]`)
+    await act(async () => radio.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    assert.equal(radio.checked, true)
+    assert.match(chart.textContent, period === 'weekly' ? /previous calendar week/ : /no later return to work/)
+    await waitFor(() => chart.querySelectorAll('.recharts-line-curve').length === 3)
+  }
+  assert.match(chart.textContent, /Oct 2026/)
+  await act(async () => { city.value = 'Bengaluru'; city.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.match(chart.textContent, /No rider activity available for the selected filters/)
+  assert.equal(chart.querySelector('button').disabled, true)
+  assert.equal(client.value, 'Alpha')
+  assert.equal(city.value, 'Bengaluru')
+  await act(async () => { client.value = 'Beta'; client.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.match(chart.textContent, /EV 0 · Non-EV 1 · Total 1/)
+  const exportButton = chart.querySelector('button')
+  assert.match(exportButton.textContent, /Export Details/)
+  assert.equal(exportButton.disabled, false)
+  let downloadedBlob, filename
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click
+  URL.createObjectURL = (blob) => { downloadedBlob = blob; return 'blob:attrition-export' }
+  URL.revokeObjectURL = () => {}
+  dom.window.HTMLAnchorElement.prototype.click = function () { filename = this.download }
+  t.after(() => {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    dom.window.HTMLAnchorElement.prototype.click = originalClick
+  })
+  await act(async () => exportButton.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await waitFor(() => filename)
+  assert.match(filename, /Rider_Attrition_Details_daily_Beta_Bengaluru.*\.xlsx$/)
+  const workbook = XLSX.read(await downloadedBlob.arrayBuffer(), { type: 'array' })
+  const details = XLSX.utils.sheet_to_json(workbook.Sheets['Rider Details'])
+  assert.equal(details.length, 1)
+  assert.equal(details[0]['Rider ID'], 'r2')
+  assert.equal(details[0]['Work Started Date'], '2026-09-30')
+  assert.equal(details[0]['Attrition Date'], '2026-10-04')
+  assert.equal(details[0]['EV / Non-EV'], 'Non-EV')
+  assert.deepEqual(errors, [])
+})
+
+test('Rider Attrition handles empty data and rider-metrics fallback', async (t) => {
+  const { container, root, errors } = mount(t)
+  await act(async () => root.render(createElement(Dashboard, { loading: false, riderData: [] })))
+  assert.match(container.querySelector('[aria-label="Rider attrition chart"]').textContent, /No rider activity available/)
+  assert.equal(container.querySelector('[aria-label="Rider attrition chart"] button').disabled, true)
+  await act(async () => root.render(createElement(Dashboard, { loading: false, riderData: [
+    order('2026-09-30', 'r1', 1, { _data_source: 'rider_metrics' }),
+    order('2026-10-05', 'coverage', 0, { _data_source: 'rider_metrics' }),
+  ] })))
+  const chart = container.querySelector('[aria-label="Rider attrition chart"]')
+  assert.match(chart.textContent, /Rider metrics/)
+  assert.match(chart.textContent, /EV 1 · Non-EV 0 · Total 1/)
+  await waitFor(() => chart.querySelectorAll('.recharts-line-curve').length === 3)
+  assert.deepEqual(errors, [])
+})
+
+test('attrition hover content shows counts with bracketed percentages and their base', async (t) => {
+  const { container, root, errors } = mount(t)
+  const point = {
+    ev: 20, nonEv: 5, total: 25,
+    evRiderBase: 200, nonEvRiderBase: 50, totalRiderBase: 250,
+    evAttritionPercent: 10, nonEvAttritionPercent: 10, totalAttritionPercent: 10,
+    basePeriod: 'Aug 2026', periodStatus: 'In progress',
+  }
+  const payload = [['ev', 'EV'], ['nonEv', 'Non-EV'], ['total', 'Total']].map(([dataKey, name]) => ({
+    dataKey, name, value: point[dataKey], color: '#38bdf8', payload: point,
+  }))
+  await act(async () => root.render(createElement(RiderAttritionTooltip, { active: true, payload, label: 'Sep 2026' })))
+  assert.match(container.textContent, /Sep 2026 · In progress/)
+  assert.match(container.textContent, /EV: 20 \(10\.00%\)/)
+  assert.match(container.textContent, /Non-EV: 5 \(10\.00%\)/)
+  assert.match(container.textContent, /Total: 25 \(10\.00%\)/)
+  assert.match(container.textContent, /Base: Aug 2026 working riders/)
+  point.nonEvAttritionPercent = null
+  point.nonEv = 0
+  payload[1].value = 0
+  await act(async () => root.render(createElement(RiderAttritionTooltip, { active: true, payload, label: 'Sep 2026' })))
+  assert.match(container.textContent, /Non-EV: 0 \(N\/A\)/)
+  await act(async () => root.render(createElement(RiderAttritionTooltip, { active: false, payload, label: 'Sep 2026' })))
+  assert.equal(container.textContent, '')
   assert.deepEqual(errors, [])
 })

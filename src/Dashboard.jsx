@@ -50,6 +50,8 @@ import {
   currentIndianFinancialYearLabel,
 } from './lib/paymentHistoryReport'
 import { fetchIotDataInRange } from './lib/iotDataDb'
+import { buildOverviewAttritionIndex, buildOverviewAttritionSeries } from './lib/overviewRiderAttrition'
+import RiderAttritionTooltip from './components/RiderAttritionTooltip'
 import {
   KM_PRODUCTIVITY_BUCKETS,
   buildVehicleKmProductivityTable,
@@ -516,6 +518,11 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [uploadPeriod, setUploadPeriod] = useState('monthly')
   const [uploadMetric, setUploadMetric] = useState('riders')
   const [uploadMonthCity, setUploadMonthCity] = useState('All')
+  const [attritionClient, setAttritionClient] = useState('All')
+  const [attritionCity, setAttritionCity] = useState('All')
+  const [attritionPeriod, setAttritionPeriod] = useState('monthly')
+  const [attritionExporting, setAttritionExporting] = useState(false)
+  const [attritionExportError, setAttritionExportError] = useState('')
   const [kmPreset, setKmPreset] = useState('yesterday')
   const [kmCustomFrom, setKmCustomFrom] = useState('')
   const [kmCustomTo, setKmCustomTo] = useState('')
@@ -843,6 +850,33 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
       ),
     [overviewOrderRows, filterFrom, filterTo, uploadMonthClient, uploadMonthCity, uploadPeriod]
   )
+
+  const attritionIndex = useMemo(() => buildOverviewAttritionIndex(overviewOrderRows), [overviewOrderRows])
+  const attritionTrend = useMemo(() => buildOverviewAttritionSeries(attritionIndex, {
+    dateFrom: filterFrom, dateTo: filterTo, client: attritionClient, city: attritionCity, period: attritionPeriod,
+  }), [attritionIndex, filterFrom, filterTo, attritionClient, attritionCity, attritionPeriod])
+
+  const exportAttritionDetails = async () => {
+    setAttritionExporting(true)
+    setAttritionExportError('')
+    try {
+      const { downloadOverviewAttritionExcel } = await import('./lib/overviewRiderAttritionExcelExport.js')
+      downloadOverviewAttritionExcel(attritionTrend, {
+        client: attritionClient, city: attritionCity, period: attritionPeriod,
+        source: overviewOrdersFromUpload ? 'Order Upload data' : 'Rider metrics',
+      })
+    } catch (error) {
+      console.error('Rider attrition export failed', error)
+      setAttritionExportError('Could not export rider details. Please try again.')
+    } finally {
+      setAttritionExporting(false)
+    }
+  }
+
+  useEffect(() => {
+    if (attritionClient !== 'All' && !attritionTrend.clients.some((option) => option.name === attritionClient)) setAttritionClient('All')
+    if (attritionCity !== 'All' && !attritionTrend.cities.some((option) => option.name === attritionCity)) setAttritionCity('All')
+  }, [attritionTrend.clients, attritionTrend.cities, attritionClient, attritionCity])
 
   useEffect(() => {
     const names = clientMonthLine.clients?.map((c) => c.name) || []
@@ -1619,6 +1653,80 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
           )}
         </div>
       </div>
+
+      <section className="glass" aria-label="Rider attrition chart" style={{ marginTop: '1.25rem', padding: '1.5rem', minWidth: 0, width: '100%' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Rider Attrition · {filterFrom || filterTo ? 'Selected dates' : 'Last 9 months'}</h4>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              {overviewOrdersFromUpload ? 'Order Upload data' : 'Rider metrics'} · {attritionTrend.rule}
+              {' '}Each rider counts once per {attritionPeriod === 'monthly' ? 'month' : attritionPeriod === 'weekly' ? 'week' : 'day'}, using their last working client, city and EV type.
+              {attritionPeriod !== 'daily' ? ' Current month/week is in progress through the latest loaded date.' : ''}
+              {' '}{attritionTrend.percentageRule}
+              {attritionTrend.asOfDate ? ` · Data through ${attritionTrend.asOfDate}` : ''}
+              {attritionTrend.returnCheckThrough && attritionTrend.returnCheckThrough !== attritionTrend.asOfDate ? ` · Activity checked through ${attritionTrend.returnCheckThrough}` : ''}
+            </p>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              EV {attritionTrend.totals.ev.toLocaleString('en-IN')} · Non-EV {attritionTrend.totals.nonEv.toLocaleString('en-IN')} · Total {attritionTrend.totals.total.toLocaleString('en-IN')}
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+              Client
+              <select value={attritionClient} onChange={(e) => setAttritionClient(e.target.value)} className="fsr-select" style={{ padding: '0.35rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '160px' }}>
+                <option value="All">All clients</option>
+                {attritionTrend.clients.map(({ name }) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+              City
+              <select value={attritionCity} onChange={(e) => setAttritionCity(e.target.value)} className="fsr-select" style={{ padding: '0.35rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '140px' }}>
+                <option value="All">All cities</option>
+                {attritionTrend.cities.map(({ name }) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </label>
+            <div role="radiogroup" aria-label="Rider attrition chart period" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}>
+              {[[ 'monthly', 'Month' ], [ 'weekly', 'Week' ], [ 'daily', 'Days' ]].map(([value, label]) => (
+                <label key={value} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-dim)' }}>
+                  <input type="radio" name="attrition-chart-period" value={value} checked={attritionPeriod === value} onChange={(e) => setAttritionPeriod(e.target.value)} />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="glass"
+              onClick={exportAttritionDetails}
+              disabled={loading || attritionExporting || !attritionTrend.details.length}
+              title="Download the rider details and summary for the current chart filters as Excel"
+              style={{ padding: '0.5rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#fff', cursor: loading || attritionExporting || !attritionTrend.details.length ? 'not-allowed' : 'pointer', opacity: loading || attritionExporting || !attritionTrend.details.length ? 0.5 : 1 }}
+            >
+              <Download size={16} /> {attritionExporting ? 'Exporting…' : 'Export Details'}
+            </button>
+          </div>
+        </div>
+        {attritionExportError && <p role="alert" style={{ color: 'var(--accent-red)', fontSize: '0.8rem' }}>{attritionExportError}</p>}
+        <div style={{ height: '320px', width: '100%' }}>
+          {!attritionTrend.series.length ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
+              {loading ? 'Loading rider activity…' : 'No rider activity available for the selected filters.'}
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={attritionTrend.series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="period" stroke="var(--text-dim)" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke={CLIENT_LINE_COLORS.riders} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
+                <Tooltip content={<RiderAttritionTooltip />} />
+                <Legend verticalAlign="top" height={36} />
+                <Line type="monotone" dataKey="ev" name="EV" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="nonEv" name="Non-EV" stroke="#fb923c" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="total" name="Total" stroke={CLIENT_LINE_COLORS.riders} strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </section>
 
       <div
         className="glass"

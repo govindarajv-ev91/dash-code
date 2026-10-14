@@ -13,7 +13,7 @@
     "deploy:admin": "node scripts/deploy-dashboard-admin.mjs",
     "check:admin": "node scripts/check-dashboard-admin.mjs",
     "prepare:admin": "node scripts/prepare-dashboard-admin.mjs",
-    "test:overview": "node --test tests/dashboard-overview.test.mjs tests/overview-order-loading.test.mjs",
+    "test:overview": "node --test tests/dashboard-overview.test.mjs tests/overview-order-loading.test.mjs tests/overview-rider-attrition.test.mjs",
     "test:payment-trend": "node --test tests/rider-payment-period.test.mjs tests/ev91-client-source-report.test.mjs tests/client-period-excel-export.test.mjs",
     "test:onboarding-pending": "node --test tests/ev91-onboarding-pending.test.mjs",
     "test:full-data": "node --test tests/full-data-performance.test.mjs tests/full-data-page.test.mjs",

@@ -38,6 +38,7 @@ const iot = await server.ssrLoadModule('/src/lib/iotDataDb.js')
 const orders = await server.ssrLoadModule('/src/lib/orderUploadDb.js')
 const api = await server.ssrLoadModule('/src/lib/ev91MisApi.js')
 const report = await server.ssrLoadModule('/src/lib/fullDataMonthReport.js')
+const rates = await server.ssrLoadModule('/src/lib/fullDataCommercialRates.js')
 const zeroOrder = await server.ssrLoadModule('/src/lib/fullDataZeroOrder.js')
 const riderPerformance = await server.ssrLoadModule('/src/lib/riderPerformanceReport.js')
 const ev91Performance = await server.ssrLoadModule('/src/lib/ev91RiderPerformance.js')
@@ -54,6 +55,51 @@ test('Full Data renders its header and filters before month data loads', () => {
   assert.match(html, /Full Data/)
   assert.match(html, /Refresh/)
   assert.match(html, /Loading months/)
+})
+
+test('Zomato uses 56 per order and 7% MF across Full Data, source reports and exports', async () => {
+  for (const client of ['Zomato', 'zomato', ' ZOMATO ']) {
+    for (const city of ['Chennai', 'Bengaluru', 'Hyderabad', 'Mumbai', 'Delhi', '']) {
+      assert.equal(rates.getClientMfMargin(client, city), 0.07)
+      assert.equal(rates.getClientPerOrderRate(client), 56)
+      assert.equal(rates.calcOrderEarningAndMf(client, city, 10).margin, 0.07)
+      assert.equal(rates.calcOrderEarningAndMf(client, city, 10).earning, 560)
+      assert.equal(rates.calcOrderEarningAndMf(client, city, 10).mf, 39.2)
+      assert.equal(rates.calcOrderEarningAndMf(client, city, 0).margin, 0.07)
+    }
+  }
+  assert.equal(rates.FULL_DATA_RATE_INFO.mfMargins.find((row) => row.client === 'Zomato').marginPct, 7)
+  assert.equal(rates.FULL_DATA_RATE_INFO.perOrderRates.find((row) => row.client === 'Zomato').rate, 56)
+  const rows = [{ worker_code: 'FE123456', client: 'Zomato', city: 'Chennai',
+    date_record: '2026-06-05', delivered: 10, type1: 'EV' }]
+  const summaryRows = report.buildFullDataSourceMonthRows(rows, [], [], [], [], {
+    fromKey: '2026-06-01', toKey: '2026-06-30',
+  }).month
+  const raw = report.buildFullDataSourceRawOrderRows(rows, [], [], [], [], { summaryRows })
+  assert.equal(raw[0]['MF %'], 7)
+  assert.equal(raw[0]['Per-order Rate'], 56)
+  for (const row of [summaryRows[0], raw[0]]) {
+    assert.equal(row.Earning, 560)
+    assert.equal(row['MF Amount'], 39.2)
+  }
+  const sourceReport = report.buildFullDataSourceWiseDailyRows(rows, [], [], [], [], [], {
+    fromKey: '2026-06-01', toKey: '2026-06-30',
+  })
+  for (const row of [sourceReport.daily[0], sourceReport.month[0], sourceReport.riders[0]]) {
+    assert.equal(row.Earning, 560)
+    assert.equal(row['MF Amount'], 39.2)
+  }
+  const fullData = report.materializeFullDataReport(await report.buildFullDataMonthBaseAsync({
+    monthLabel: 'Jun-2026', orderRows: rows,
+  }))
+  assert.equal(fullData.byDate['2026-06-05'].totalEarning, 560)
+  assert.equal(fullData.totals.mfAmount, 39.2)
+  assert.equal(fullData.totals.totalRevenue, 599.2)
+  const exportRows = report.buildFullDataSummaryExportRows(fullData)
+  assert.equal(exportRows.find((row) => row.List === 'MF Amount').Total, 39.2)
+  // A missing per-order earning rate must not invent an earning or fee.
+  assert.equal(rates.calcOrderEarningAndMf('Unknown Client', 'Chennai', 10).earning, 0)
+  assert.equal(rates.calcOrderEarningAndMf('Unknown Client', 'Chennai', 10).mf, 0)
 })
 
 test('IoT uses a date/id cursor across dates without OFFSET or losing large IDs', async () => {
@@ -250,6 +296,41 @@ test('daily on-road vehicles handle returns, redeployments, duplicate live rows,
 })
 
 const asOfDate = new Date(2026, 9, 10)
+
+test('Source Wise raw orders reconcile filtered summaries and retain zero and negative rows within the report dates', () => {
+  const order = (id, date, delivered, extra = {}) => ({ id, worker_code: '963117', date_record: date, delivered,
+    city: 'CHN', client: 'Blinkit', type1: 'EV', ...extra })
+  const orderRows = [
+    order(1, '2026-06-01', 99), // activity lookback, outside the report
+    order(2, '2026-06-05', 5), order(3, '2026-06-05', 2),
+    order(4, '2026-06-06', -1), order(5, '2026-06-07', 0),
+    order(6, '2026-06-07', 3, { client: 'Zepto', type1: 'NON-EV' }),
+    order(7, '2026-06-07', 8, { city: 'Bengaluru' }),
+    order(8, '2026-06-07', 4, { worker_code: 'OTHER' }),
+    order(9, '2026-06-11', 77), order(10, 'invalid', 77),
+  ]
+  const onboarding = [{ rider_id: 'FE963117', source_name: ' Team Alpha ', rider_name: 'Test Rider', rider_mobile_number: '9876543210' }]
+  const mapping = [{ clientId: 'FE963117', ev91RiderId: 'EV-963117' }]
+  for (const byClient of [true, false]) {
+    const summary = report.buildFullDataSourceMonthRows(orderRows, onboarding, [], mapping, [],
+      { fromKey: '2026-06-05', toKey: '2026-06-10', byClient }).month
+    // The visible groups model city/source/search filters; the raw sheet must match them exactly.
+    const visible = summary.filter((row) => row.City === 'Chennai' && row.Source === 'Team Alpha'
+      && (!byClient || row.Client === 'Blinkit'))
+    const raw = report.buildFullDataSourceRawOrderRows(orderRows, onboarding, [], mapping, [], {
+      fromKey: '2026-06-05', toKey: '2026-06-10', byClient, summaryRows: visible,
+    })
+    assert.deepEqual(raw.map((row) => row['Order Row ID']), byClient ? [2, 3, 4, 5] : [2, 3, 4, 5, 6])
+    assert.ok(raw.every((row) => row['Rider Name'] === 'Test Rider' && row['EV91 ID'] === 'EV-963117' && row.Phone === '9876543210'))
+    for (const column of ['Total Order', 'EV Order', 'Non-EV Order', 'Earning', 'EV Earning', 'Non Earning', 'MF Amount']) {
+      const sum = (rows) => Math.round(rows.reduce((value, row) => value + row[column], 0) * 100) / 100
+      assert.equal(sum(raw), sum(visible), `${byClient ? 'byClient' : 'bySource'} ${column}`)
+    }
+    assert.deepEqual(Object.keys(raw[0]), report.SOURCE_RAW_ORDER_COLUMNS)
+  }
+  assert.deepEqual(report.buildFullDataSourceRawOrderRows(orderRows), [])
+})
+
 const deployed = (id, extra = {}) => ({ currentStatus: 'Deployed', clientRiderId: id,
   vehicleNumber: 'TN-' + id, city: 'Chennai', clientName: 'Blinkit', lastStatusDate: '2026-09-01', ...extra })
 

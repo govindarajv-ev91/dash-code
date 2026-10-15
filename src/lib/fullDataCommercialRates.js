@@ -28,6 +28,7 @@ const PER_ORDER_RATE_BY_KEY = {
   'rapido ownly': 90,
   rsm: 64,
   zepto: 43,
+  zomato: 56,
 }
 
 /** Default MF margin as fraction (e.g. 0.08 = 8%). */
@@ -51,6 +52,7 @@ const MF_MARGIN_BY_KEY = {
   licious: 0.06,
   rsm: 0.06,
   zepto: 0.04,
+  zomato: 0.07,
   'rapido ownly': 0.05,
   inamo: 0.06,
   swiggy: 0.08,
@@ -98,6 +100,7 @@ export const FULL_DATA_RATE_INFO = {
     { client: 'Rapido Ownly', rate: 90 },
     { client: 'RSM', rate: 64 },
     { client: 'Zepto', rate: 43 },
+    { client: 'Zomato', rate: 56 },
   ],
   mfMargins: [
     { client: 'Amazon', marginPct: 8 },
@@ -112,6 +115,7 @@ export const FULL_DATA_RATE_INFO = {
     { client: 'Licious', marginPct: 6 },
     { client: 'RSM', marginPct: 6 },
     { client: 'Zepto', marginPct: 4 },
+    { client: 'Zomato', marginPct: 7 },
     { client: 'Rapido Ownly', marginPct: 5 },
     { client: 'Inamo', marginPct: 6 },
     { client: 'Swiggy / Instamart', marginPct: 8 },
@@ -156,11 +160,11 @@ export function getClientMfMargin(clientName, cityName) {
  */
 export function calcOrderEarningAndMf(clientName, cityName, delivered) {
   const qty = Number(delivered) || 0
-  if (qty <= 0) return { earning: 0, mf: 0, rate: 0, margin: 0 }
-  const rate = getClientPerOrderRate(clientName)
-  if (rate == null) return { earning: 0, mf: 0, rate: 0, margin: 0 }
-  const earning = qty * rate
   const margin = getClientMfMargin(clientName, cityName)
+  if (qty <= 0) return { earning: 0, mf: 0, rate: 0, margin }
+  const rate = getClientPerOrderRate(clientName)
+  if (rate == null) return { earning: 0, mf: 0, rate: 0, margin }
+  const earning = qty * rate
   const mf = earning * margin
   return { earning, mf, rate, margin }
 }

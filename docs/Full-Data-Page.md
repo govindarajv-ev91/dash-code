@@ -56,11 +56,13 @@ You can scroll right to see later dates. List and Total stay on the left so you 
 | **Total Order** | Orders delivered (from the order upload) |
 | **0 order Rider count** | Riders on a vehicle who had no orders in the recent window |
 | **Total Earing** | Order money = orders × the client’s per-order rate |
-| **MF Amount** | Margin on that earning (client %; BB is 6% in Bengaluru, Chennai, Hyderabad, Mumbai) |
+| **MF Amount** | Margin on that earning (client %; Zomato is 7%; BB is 6% in Bengaluru, Chennai, Hyderabad, Mumbai) |
 | **Rent** | On-road EV vehicles × ₹230 per vehicle per day |
 | **Total Revnue** | Earning + MF + Rent |
 
 Tap **Rates** on the page to see the client-wise order rate and MF %.
+
+Zomato earning is ₹56 per order, with MF at 7% of that earning.
 
 ### Ev
 

@@ -18,6 +18,8 @@ import { fetchOrderUploadMonths, fetchOrderUploadsForDateRange } from './lib/ord
 import { fetchEv91OverallStatusAll, fetchEv91CurrentStatusAll } from './lib/ev91EvLookup'
 import {
   buildFullDataSourceMonthRows,
+  buildFullDataSourceRawOrderRows,
+  SOURCE_RAW_ORDER_COLUMNS,
   filterSourceMonthRows,
   summarizeSourceMonthRows,
   collectFullDataFilterOptions,
@@ -363,6 +365,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
   const [sourceFilter, setSourceFilter] = useState('All')
   const [searchTerm, setSearchTerm] = useState('')
   const [viewTab, setViewTab] = useState('byClient')
+  const [showSummaryCards, setShowSummaryCards] = useState(false)
   const [sortKey, setSortKey] = useState(DEFAULT_SORT_KEY)
   const [sortDir, setSortDir] = useState('desc')
 
@@ -616,6 +619,10 @@ export default function SourceWiseData({ onboardingData = [] }) {
       const wb = XLSX.utils.book_new()
       const sheetName = viewTab === 'byClient' ? 'Source by Client' : 'Source Total'
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sortedRows), sheetName)
+      const rawRows = buildFullDataSourceRawOrderRows(orderRows, onboardingRows, overallRows, mappingRows, currentRows, {
+        fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient', summaryRows: sortedRows,
+      })
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rawRows, { header: SOURCE_RAW_ORDER_COLUMNS }), 'Raw Orders')
       if (baseReport.activeSummary?.length) {
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(baseReport.activeSummary), 'Active Summary')
       }
@@ -663,7 +670,8 @@ export default function SourceWiseData({ onboardingData = [] }) {
               type="button"
               className="glass"
               onClick={exportExcel}
-              disabled={exporting || loading || !sortedRows.length}
+              disabled={exporting || loading || filtersPending || !sortedRows.length}
+              title="Download source summary, detailed raw orders and active summary"
               style={{ padding: '0.45rem 0.75rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             >
               {exporting ? <Loader size={14} className="spin" /> : <Download size={14} />}
@@ -777,6 +785,18 @@ export default function SourceWiseData({ onboardingData = [] }) {
 
       {!loading && sortedRows.length > 0 && (
         <>
+          <button
+            type="button"
+            className="glass"
+            aria-expanded={showSummaryCards}
+            aria-controls="source-wise-summary-cards"
+            onClick={() => setShowSummaryCards((visible) => !visible)}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem', padding: '0.5rem 0.75rem', color: '#fff', cursor: 'pointer' }}
+          >
+            <ChevronDown size={16} aria-hidden="true" style={{ transform: showSummaryCards ? 'rotate(180deg)' : undefined }} />
+            {showSummaryCards ? 'Hide summary cards' : 'Show summary cards'}
+          </button>
+          <div id="source-wise-summary-cards" hidden={!showSummaryCards}>
           {stats.windowEnd && stats.windowDates?.length > 0 && (
             <div
               className="glass"
@@ -844,6 +864,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
               <span className="label">MF Amount (filtered)</span>
               <span className="value" style={{ color: '#93c5fd' }}>₹{formatMoney(stats.mfAmount)}</span>
             </div>
+          </div>
           </div>
         </>
       )}

@@ -74,7 +74,7 @@ function buildSummarySheetAoA(clients = []) {
   const clientCols = sorted.map((c) => c.client)
   const rows = [['Metric', ...clientCols, 'Total']]
 
-  rows.push(['Target EV', ...sorted.map((c) => c.targetEv || 0), totals.targetEv || 0])
+  rows.push(['Target', ...sorted.map((c) => c.targetEv || 0), totals.targetEv || 0])
   for (const metric of SUMMARY_METRICS) {
     rows.push([metric.label, ...sorted.map((c) => c[metric.key] || 0), totals[metric.key] || 0])
   }
@@ -832,7 +832,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
               ) : (
                 <>
                   {renderMetricRow(
-                    'Target EV',
+                    'Target',
                     'fsr-metric-target fsr-metric-target-ev',
                     (c) => (c.targetEv ? c.targetEv : '—'),
                     tableTotals.targetEv || '—'

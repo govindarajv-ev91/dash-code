@@ -32,6 +32,7 @@ import {
   lookupOnboardingSource,
   canonicalSourceName,
   sourceNameGroupKey,
+  isMissingSourceName,
 } from './onboardingSourceLookup'
 import {
   buildEv91PublicRiderIndex,
@@ -1517,6 +1518,81 @@ export function filterSourceMonthRows(rows = [], { cityFilter = 'All', clientFil
     out = out.filter((r) => clientSet.has(normalizeSummaryClient(r.Client)))
   }
   return out
+}
+
+export const SOURCE_RAW_ORDER_COLUMNS = [
+  'Order Row ID', 'Date', 'Rider ID', 'EV91 ID', 'Rider Name', 'Phone', 'Source', 'City', 'Client',
+  'Type (Order)', 'EV / Non-EV', 'Total Order', 'EV Order', 'Non-EV Order',
+  'Per-order Rate', 'MF %', 'Earning', 'EV Earning', 'Non Earning', 'MF Amount',
+]
+
+/** Order-level audit rows for exactly the source groups visible in the summary. */
+export function buildFullDataSourceRawOrderRows(
+  orderRows = [], onboardingRows = [], overallRows = [], mappingRows = [], currentRows = [],
+  { fromKey = '', toKey = '', byClient = true, summaryRows = [] } = {}
+) {
+  const groupKey = (source, city, client) => JSON.stringify([
+    sourceNameGroupKey(source), normalizeSummaryCity(city), ...(byClient ? [normalizeSummaryClient(client)] : []),
+  ])
+  const selectedGroups = new Set(summaryRows.map((row) => groupKey(row.Source, row.City, row.Client)))
+  const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
+  const ev91Index = buildEv91PublicRiderIndex([...overallRows, ...currentRows], mappingRows)
+  const contacts = new Map()
+  const pickContact = (...values) => values.map((value) => String(value ?? '').trim()).find((value) => !isMissingSourceName(value)) || ''
+  const addContact = (ids, name, phone) => {
+    for (const id of ids) {
+      for (const alias of riderIdLookupKeys(id)) {
+        const prev = contacts.get(alias)
+        contacts.set(alias, { name: prev?.name || name, phone: prev?.phone || phone })
+      }
+    }
+  }
+  for (const row of onboardingRows) {
+    addContact([row.rider_id_details, row.rider_id, row.worker_code, row.client_rider_id, row.merge],
+      pickContact(row.rider_name, row.worker_name, row.name), pickContact(row.rider_mobile_number, row.mobile, row.phone))
+  }
+  for (const row of [...overallRows, ...currentRows]) {
+    addContact([row.clientId, row.clientRiderId, row.ev91RiderId], pickContact(row.riderName), pickContact(row.riderContact))
+  }
+  const rows = []
+  for (const row of orderRows) {
+    const date = toMetricDateKey(row.date_record)
+    if (!date || (fromKey && date < fromKey) || (toKey && date > toKey)) continue
+    const worker = String(row.worker_code || '').trim().toUpperCase()
+    const city = normalizeSummaryCity(row.city)
+    const client = normalizeSummaryClient(row.client)
+    const source = canonicalSourceName(lookupOnboardingSource(sourceIndex,
+      { riderIds: [worker, row.worker_code, row.rider_id] }) || 'Unknown') || 'Unknown'
+    if (!selectedGroups.has(groupKey(source, city, client))) continue
+    const matches = [...riderIdLookupKeys(worker)].map((alias) => contacts.get(alias)).filter(Boolean)
+    const orders = Number(row.delivered) || 0
+    const ev = isEvType(row.type1)
+    const { earning, mf, rate, margin } = calcOrderEarningAndMf(client, city, orders)
+    rows.push({
+      'Order Row ID': row.id ?? '',
+      Date: date,
+      'Rider ID': worker,
+      'EV91 ID': lookupEv91PublicRiderId(ev91Index, worker),
+      'Rider Name': matches.find((contact) => contact.name)?.name || pickContact(row.worker_name),
+      Phone: matches.find((contact) => contact.phone)?.phone || pickContact(row.mob_number),
+      Source: source,
+      City: city,
+      Client: client,
+      'Type (Order)': row.type1 || '',
+      'EV / Non-EV': ev ? 'EV' : 'Non-EV',
+      'Total Order': orders,
+      'EV Order': ev ? orders : 0,
+      'Non-EV Order': ev ? 0 : orders,
+      'Per-order Rate': rate,
+      'MF %': Math.round(margin * 10000) / 100,
+      Earning: earning,
+      'EV Earning': ev ? earning : 0,
+      'Non Earning': ev ? 0 : earning,
+      'MF Amount': mf,
+    })
+  }
+  return rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Source.localeCompare(b.Source)
+    || a.City.localeCompare(b.City) || a.Client.localeCompare(b.Client) || a['Rider ID'].localeCompare(b['Rider ID']))
 }
 
 /**

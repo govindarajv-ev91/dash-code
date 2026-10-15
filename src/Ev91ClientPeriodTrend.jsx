@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { CalendarDays, Download, Loader, RefreshCw, Table2, Users } from 'lucide-react'
+import { CalendarDays, Download, Loader, RefreshCw, Search, Table2, Users, X } from 'lucide-react'
 import { addDays, endOfMonth, format, getISOWeek, parseISO, startOfMonth, startOfWeek } from 'date-fns'
 import { fetchRiderPaymentsForPeriod } from './lib/riderPaymentDb'
 import { normalizeSummaryCity } from './lib/citySummaryAliases'
@@ -36,6 +36,28 @@ const frozenSourceStyle = {
 const EMPTY_ONBOARDING_ROWS = []
 const EMPTY_PERIOD_REPORT = { periods: [], periodStarts: {}, rows: [], totals: {}, grandTotal: 0 }
 const EMPTY_WEEKLY_REPORT = { weeks: [], weekStarts: {}, rows: [], totals: {}, grandTotal: 0 }
+const TABLE_OPTIONS = [
+  { value: 'all', label: 'All tables' },
+  { value: 'client-revenue', label: 'Client payout revenue' },
+  { value: 'client-riders', label: 'Client rider count' },
+  { value: 'source-riders', label: 'Source rider count' },
+  { value: 'source-revenue', label: 'Source payout revenue' },
+]
+
+function SourceSearch({ label, value, onChange }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-dim)' }}>
+        <Search size={16} aria-hidden="true" />
+        <input type="search" aria-label={label} placeholder="Search source name…" value={value}
+          onChange={(event) => onChange(event.target.value)} style={{ ...selectStyle, width: 'min(280px, 60vw)' }} />
+      </label>
+      {value && <button type="button" className="fsr-export-btn" aria-label={`Clear ${label.toLowerCase()}`} onClick={() => onChange('')}>
+        <X size={14} /> Clear
+      </button>}
+    </div>
+  )
+}
 
 function PeriodValueCells({ periods, values, header = false }) {
   const levels = clientPeriodValueLevels(periods, values)
@@ -239,6 +261,9 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
   const [city, setCity] = useState('All')
   const [client, setClient] = useState('All')
   const [viewMode, setViewMode] = useState('weekly')
+  const [selectedTable, setSelectedTable] = useState('all')
+  const [sourceRiderSearch, setSourceRiderSearch] = useState('')
+  const [sourceRevenueSearch, setSourceRevenueSearch] = useState('')
 
   useLayoutEffect(() => {
     const stopHorizontalScroll = attachClientPeriodHorizontalScroll(pageRef.current)
@@ -247,7 +272,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
       stopHorizontalScroll()
       stopStickyHeader()
     }
-  }, [])
+  }, [selectedTable])
 
   const from = parseISO(fromDate)
   const to = parseISO(toDate)
@@ -386,8 +411,17 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     periodForRow: (row) => periodInfo(row, viewMode).label,
   }), [orderRows, activeReport.periods, filters, onboardingSourceIndex, viewMode])
   const activeSourceRows = sourceReport.riderRows
+  const visibleSourceRiderRows = useMemo(() => sourceReport.riderRows.filter((row) =>
+    comparable(row.source).includes(comparable(sourceRiderSearch))
+  ), [sourceReport.riderRows, sourceRiderSearch])
+  const visibleSourceRevenueRows = useMemo(() => sourceReport.revenueRows.filter((row) =>
+    comparable(row.source).includes(comparable(sourceRevenueSearch))
+  ), [sourceReport.revenueRows, sourceRevenueSearch])
   const sourceRiderTotals = Object.fromEntries(activeReport.periods.map((period) =>
-    [period, activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)]
+    [period, visibleSourceRiderRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)]
+  ))
+  const sourceRevenueTotals = Object.fromEntries(activeReport.periods.map((period) =>
+    [period, visibleSourceRevenueRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)]
   ))
 
   const exportReport = async () => {
@@ -443,6 +477,13 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     setToDate(todayKey())
     setCity('All')
     setClient('All')
+    setSourceRiderSearch('')
+    setSourceRevenueSearch('')
+  }
+
+  const selectTable = (value) => {
+    setSelectedTable(value)
+    pageRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
   }
 
   return (
@@ -471,6 +512,12 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
           <label><input type="radio" name="trend-period" value="weekly" checked={viewMode === 'weekly'} onChange={() => setViewMode('weekly')} /> Weekly</label>
           <label><input type="radio" name="trend-period" value="monthly" checked={viewMode === 'monthly'} onChange={() => setViewMode('monthly')} /> Monthly</label>
         </div>
+        <div role="radiogroup" aria-label="Table selection" style={{ display: 'flex', flexWrap: 'wrap', flexBasis: '100%', gap: '0.75rem', alignItems: 'center', color: 'var(--text-dim)', fontSize: '0.85rem' }}>
+          <strong>Show table:</strong>
+          {TABLE_OPTIONS.map(({ value, label }) => <label key={value} style={{ cursor: 'pointer' }}>
+            <input type="radio" name="trend-table" value={value} checked={selectedTable === value} onChange={() => selectTable(value)} /> {label}
+          </label>)}
+        </div>
       </div>
 
       <div aria-label="Value color legend" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', margin: '0.75rem 0', fontSize: '0.8rem' }}>
@@ -481,30 +528,32 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         <span style={{ color: 'var(--text-dim)' }}>Equal values are yellow. Total rows and columns are excluded.</span>
       </div>
 
-      <section className="glass" style={{ padding: '1rem', overflowX: 'auto' }}>
+      {(selectedTable === 'all' || selectedTable === 'client-revenue') && <section className="glass" style={{ padding: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><CalendarDays size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} gross payout revenue</h3><span>{city} · {client}</span></div>
         <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 5 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
           {activeReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={activeReport.totals} header /><th>{activeReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /><td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No data for the selected filters.</td></tr>}
         </tbody></table>
-      </section>
+      </section>}
 
-      <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
+      {(selectedTable === 'all' || selectedTable === 'client-riders') && <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} client unique rider count</h3><span>Unique riders · same filters</span></div>
         <table className="data-table"><thead><tr><th style={{ ...frozenClientStyle, zIndex: 5 }}>Client</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}<th>Total</th></tr></thead><tbody>
           {activeRiderReport.rows.length ? <><tr><th style={frozenClientStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={activeRiderReport.totals} header /><th>{activeRiderReport.grandTotal.toLocaleString('en-IN')}</th></tr>{activeRiderReport.rows.map((row) => <tr key={row.name}><td style={frozenClientStyle}>{row.name}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /><td>{row.total.toLocaleString('en-IN')}</td></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 2}>No rider data for the selected filters.</td></tr>}
         </tbody></table>
-      </section>
-      <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
+      </section>}
+      {(selectedTable === 'all' || selectedTable === 'source-riders') && <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header"><h3><Users size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source-wise rider count</h3><span>Unique riders · last column: highest to lowest</span></div>
+        <SourceSearch label="Search sources in rider count" value={sourceRiderSearch} onChange={setSourceRiderSearch} />
         <table className="data-table"><thead><tr><th style={{ ...frozenSourceStyle, zIndex: 5 }}>Source</th>{activeReport.periods.map((period) => <th key={period}>{viewMode === 'weekly' ? <><div>{weekHeader(period, activeReport.periodStarts[period]).weekNumber}</div><small style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{weekHeader(period, activeReport.periodStarts[period]).range}</small></> : period}</th>)}</tr></thead><tbody>
-          {activeSourceRows.length ? <><tr><th style={frozenSourceStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={sourceRiderTotals} header /></tr>{activeSourceRows.map((row) => <tr key={row.source}><td style={frozenSourceStyle}>{row.source}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 1}>No source-wise data for the selected filters.</td></tr>}
+          {visibleSourceRiderRows.length ? <><tr><th style={frozenSourceStyle}>Total</th><PeriodValueCells periods={activeReport.periods} values={sourceRiderTotals} header /></tr>{visibleSourceRiderRows.map((row) => <tr key={row.source}><td style={frozenSourceStyle}>{row.source}</td><PeriodValueCells periods={activeReport.periods} values={row.values} /></tr>)}</> : <tr><td colSpan={activeReport.periods.length + 1}>{sourceRiderSearch.trim() ? 'No sources match your search.' : 'No source-wise data for the selected filters.'}</td></tr>}
         </tbody></table>
-      </section>
-      <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
+      </section>}
+      {(selectedTable === 'all' || selectedTable === 'source-revenue') && <section className="glass" style={{ padding: '1rem', marginTop: '1rem', overflowX: 'auto' }}>
         <div className="table-header">
           <h3><CalendarDays size={16} /> {viewMode === 'monthly' ? 'Monthly' : 'Weekly'} source gross payout revenue</h3>
           <span>Gross payout · last column: highest to lowest</span>
         </div>
+        <SourceSearch label="Search sources in payout revenue" value={sourceRevenueSearch} onChange={setSourceRevenueSearch} />
         <table className="data-table">
           <thead>
             <tr>
@@ -518,19 +567,19 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
             </tr>
           </thead>
           <tbody>
-            {sourceReport.revenueRows.length ? <>
+            {visibleSourceRevenueRows.length ? <>
               <tr>
                 <th style={frozenSourceStyle}>Total</th>
-                <PeriodValueCells periods={activeReport.periods} values={sourceReport.revenueTotals} header />
+                <PeriodValueCells periods={activeReport.periods} values={sourceRevenueTotals} header />
               </tr>
-              {sourceReport.revenueRows.map((row) => <tr key={row.source}>
+              {visibleSourceRevenueRows.map((row) => <tr key={row.source}>
                 <td style={frozenSourceStyle}>{row.source}</td>
                 <PeriodValueCells periods={activeReport.periods} values={row.values} />
               </tr>)}
-            </> : <tr><td colSpan={activeReport.periods.length + 1}>No source revenue data for the selected filters.</td></tr>}
+            </> : <tr><td colSpan={activeReport.periods.length + 1}>{sourceRevenueSearch.trim() ? 'No sources match your search.' : 'No source revenue data for the selected filters.'}</td></tr>}
           </tbody>
         </table>
-      </section>
+      </section>}
       {loading ? <div className="page-loading"><Loader className="spin" size={18} /> Loading Rider Payment Data...</div> : null}
       {error ? <div className="glass" style={{ marginTop: '1rem', padding: '1rem', color: '#f87171' }}>{error}</div> : null}
     </div>

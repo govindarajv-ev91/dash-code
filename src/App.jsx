@@ -33,6 +33,7 @@ const EvEnvironmentalImpact = lazy(() => import('./EvEnvironmentalImpact'))
 const Ev91DbData = lazy(() => import('./Ev91DbData'))
 const Ev91RiderPerformance = lazy(() => import('./Ev91RiderPerformance'))
 const Ev91OnboardingPending = lazy(() => import('./Ev91OnboardingPending'))
+const Ev91FlPending = lazy(() => import('./Ev91FlPending'))
 const Ev91EvLookup = lazy(() => import('./Ev91EvLookup'))
 const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
 const Ev91OperationalStatus = lazy(() => import('./Ev91OperationalStatus'))
@@ -67,6 +68,7 @@ const EV91_PAGES = new Set([
   'ev91-insight',
   'ev91-performance',
   'ev91-onboarding',
+  'ev91-fl-pending',
   'ev91-evlookup',
   'ev91-summary',
   'ev91-operational',
@@ -786,6 +788,14 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-fl-pending' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-fl-pending')}
+                >
+                  <ClipboardList size={18} />
+                  FL Pending
+                </button>
+                <button
+                  type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-evlookup' ? 'active' : ''}`}
                   onClick={() => openEv91Page('ev91-evlookup')}
                 >
@@ -1036,6 +1046,8 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
             dataUpdatedAt={dataUpdatedAt}
             refreshData={() => fetchData({ bypassCache: true })}
           />
+        ) : activePage === 'ev91-fl-pending' ? (
+          <Ev91FlPending />
         ) : activePage === 'ev91-evlookup' ? (
           <Ev91EvLookup
             riderData={riderData}

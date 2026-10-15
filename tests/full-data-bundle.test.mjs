@@ -123,6 +123,13 @@ test('production login, Full Data, admin settings and IoT upload access work thr
     assert.ok(window.document.querySelector('.full-data-sheet'), 'Ordinary users must unlock before navigating')
     window.document.querySelector('.iot-password-cancel').click()
     await until(() => !window.document.querySelector('.iot-password-dialog'))
+    const ev91Items = [...window.document.querySelectorAll('aside button')].map((node) => node.textContent.trim())
+    assert.equal(ev91Items[ev91Items.indexOf('Onboarding Pending') + 1], 'FL Pending')
+    findButton('FL Pending').click()
+    await until(() => window.document.querySelector('[aria-label="FL rider details"]'))
+    assert.match(window.document.querySelector('h1').textContent, /FL Pending/)
+    assert.match(window.document.querySelector('[aria-label="FL rider details"]').textContent, /Client ID not in onboarding/)
+    assert.equal(window.document.querySelector('[role="alert"]'), null)
     window.location.hash = 'admin'
     await until(() => window.document.querySelector('h1')?.textContent === 'Administrator access required')
     assert.equal(window.document.querySelector('.admin-page'), null)

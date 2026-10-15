@@ -187,6 +187,68 @@ test('report build finishes when a hidden browser does not fire animation frames
   } finally { delete globalThis.window }
 })
 
+test('daily on-road vehicles handle returns, redeployments, duplicate live rows, filters and exports', async () => {
+  const event = (vehicleNumber, vehicleStatus, statusDate, cityName = 'Chennai', clientName = 'Blinkit') => ({
+    vehicleNumber, vehicleStatus, statusDate, cityName, clientName, clientId: vehicleNumber,
+  })
+  const live = { vehicleNumber: 'TN-LIVE', currentStatus: 'Deployed', lastStatusDate: '2026-06-02',
+    city: 'Chennai', clientName: 'Zepto', clientRiderId: 'LIVE' }
+  const base = await report.buildFullDataMonthBaseAsync({
+    monthLabel: 'Jun-2026',
+    overallRows: [
+      event('TN-A', 'Deployed', '2026-05-30'),
+      event('TN-A', 'Returned', '2026-06-04'),
+      event('TN-A', 'Deployed', '2026-06-06'),
+      event('TN-A', 'Returned', '2026-06-08'),
+      event('KA-B', 'Deployed', '2026-06-03', 'Bengaluru', 'Zepto'),
+      event('KA-B', 'Returned', '2026-06-05', 'Bengaluru', 'Zepto'),
+    ],
+    currentRows: [live, { ...live },
+      { ...live, vehicleNumber: 'TN-RETURNED', currentStatus: 'Returned' },
+      { ...live, vehicleNumber: 'TN-IDLE', currentStatus: 'Yet not deployed' }],
+  })
+  const result = report.materializeFullDataReport(base)
+  const counts = Array.from({ length: 8 }, (_, i) => result.byDate[`2026-06-0${i + 1}`].onRoadVehicleCount)
+  assert.deepEqual(counts, [1, 2, 3, 2, 1, 2, 2, 1])
+  assert.equal(result.totals.onRoadVehicleCount, 36)
+  assert.equal(report.materializeFullDataReport(base, 'Chennai').totals.onRoadVehicleCount, 34)
+  assert.equal(report.materializeFullDataReport(base, 'All', ['Blinkit']).totals.onRoadVehicleCount, 5)
+  assert.equal(report.materializeFullDataReport(base, 'Chennai', ['Zepto']).totals.onRoadVehicleCount, 29)
+  assert.equal(report.materializeFullDataReport(base, 'All', ['Missing']).totals.onRoadVehicleCount, 0)
+  const exportRow = report.buildFullDataSummaryExportRows(result).find((row) => row.List === 'On-road Vehicle Count')
+  assert.equal(exportRow.Section, 'Supply')
+  assert.equal(exportRow.Total, 36)
+  assert.equal(exportRow[result.days[3].label], 2)
+  const shared = report.sliceFullDataReportThroughYesterday(result, new Date(2026, 5, 7))
+  assert.equal(shared.totals.onRoadVehicleCount, 11)
+  for (const [cityFilter, clientFilter] of [
+    ['All', 'All'], ['Chennai', 'All'], ['All', ['Blinkit']], ['Chennai', ['Zepto']], ['All', ['Missing']],
+  ]) {
+    const filtered = report.materializeFullDataReport(base, cityFilter, clientFilter)
+    const details = report.buildFullDataOnRoadDetailRows({
+      days: base.days, flatIntervals: base._flatIntervals, cityFilter, clientFilter,
+    })
+    assert.equal(details.length, filtered.totals.onRoadVehicleCount)
+    assert.equal(new Set(details.map((row) => `${row.Date}|${row.Vehicle}`)).size, details.length)
+    for (const { dateKey } of base.days) {
+      assert.equal(details.filter((row) => row.Date === dateKey).length, filtered.byDate[dateKey].onRoadVehicleCount)
+    }
+  }
+  const details = report.buildFullDataOnRoadDetailRows({
+    days: base.days, flatIntervals: [...base._flatIntervals, ...base._flatIntervals],
+    fromKey: '2026-06-03', toKey: '2026-06-04',
+  })
+  assert.equal(details.length, 5)
+  const returnedVehicle = details.find((row) => row.Vehicle === 'TN-A')
+  assert.equal(returnedVehicle.Date, '2026-06-03')
+  assert.equal(returnedVehicle['Rider ID'], 'TN-A')
+  assert.equal(returnedVehicle['Deployment Date'], '2026-05-30')
+  assert.equal(returnedVehicle['Return Date'], '2026-06-04')
+  assert.equal(returnedVehicle['On-road Vehicle Count'], 1)
+  assert.deepEqual(Object.keys(returnedVehicle), report.FULL_DATA_ON_ROAD_DETAIL_COLUMNS)
+  assert.deepEqual(report.buildFullDataOnRoadDetailRows(), [])
+})
+
 const asOfDate = new Date(2026, 9, 10)
 const deployed = (id, extra = {}) => ({ currentStatus: 'Deployed', clientRiderId: id,
   vehicleNumber: 'TN-' + id, city: 'Chennai', clientName: 'Blinkit', lastStatusDate: '2026-09-01', ...extra })

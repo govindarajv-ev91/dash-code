@@ -24,6 +24,8 @@ import {
   buildFullDataOrderRiderDetailRows,
   buildFullDataZeroOrderDetailRows,
   buildFullDataDeployDetailRows,
+  buildFullDataOnRoadDetailRows,
+  FULL_DATA_ON_ROAD_DETAIL_COLUMNS,
   buildFullDataIotDetailRows,
   buildFullDataSourceWiseDailyRows,
   formatClientFilterLabel,
@@ -689,6 +691,11 @@ export default function FullData({ onboardingData = EMPTY_ROWS, riderData = EMPT
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildFullDataSummaryExportRows(report)), 'Summary')
     XLSX.utils.book_append_sheet(
       wb,
+      XLSX.utils.json_to_sheet(buildFullDataOnRoadDetailRows(filters), { header: FULL_DATA_ON_ROAD_DETAIL_COLUMNS }),
+      'On-road Vehicles'
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
       XLSX.utils.json_to_sheet(buildFullDataOrderDetailRows(orderRows, filters)),
       'Orders'
     )
@@ -931,7 +938,7 @@ export default function FullData({ onboardingData = EMPTY_ROWS, riderData = EMPT
               className="glass"
               onClick={exportDetailExcel}
               disabled={!report.days.length || loading || building || zeroOrderPending}
-              title="Download raw detail: orders, deploy/return, IoT KM"
+              title="Download raw detail: on-road vehicles, orders, deploy/return, IoT KM"
               style={{
                 padding: '0.55rem 0.9rem',
                 display: 'flex',

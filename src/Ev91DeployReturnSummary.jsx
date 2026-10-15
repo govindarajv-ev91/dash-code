@@ -17,10 +17,11 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import * as XLSX from 'xlsx'
-import { fetchEv91OverallStatusAll, fetchEv91CurrentStatusAll } from './lib/ev91EvLookup'
+import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
+import { fetchAllEv91Vehicles } from './lib/ev91VehiclesApi'
 import { EV91_CITIES } from './lib/ev91MisApi'
 import {
-  buildCityOperationalStatusCounts,
+  buildVehicleInventoryOperationalStatusCounts,
   cityOperationalCountsToSortedRows,
   getCityRtdAvailableCount,
 } from './lib/ev91OperationalSummary'
@@ -115,7 +116,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const [selectedCity, setSelectedCity] = useState('All')
   const [selectedWeek, setSelectedWeek] = useState(initialWeek)
   const [rows, setRows] = useState([])
-  const [currentStatusRows, setCurrentStatusRows] = useState([])
+  const [vehicleRows, setVehicleRows] = useState([])
+  const [rtdError, setRtdError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [allTargets, setAllTargets] = useState({})
@@ -132,21 +134,22 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const load = useCallback((force = false) => {
     setLoading(true)
     setError('')
+    setRtdError('')
     return Promise.all([
       fetchEv91OverallStatusAll({ force }),
-      fetchEv91CurrentStatusAll({ force }).catch((err) => {
-        console.warn('EV91 current-status for RTD failed:', err)
+      fetchAllEv91Vehicles({ force }).then((data) => ({ data })).catch((err) => {
+        setRtdError(`Could not load RTD from EV91 Vehicles: ${err?.message || 'Vehicle inventory unavailable'}`)
         return { data: [] }
       }),
     ])
-      .then(([overall, current]) => {
+      .then(([overall, inventory]) => {
         setRows(overall.data || [])
-        setCurrentStatusRows(current.data || [])
+        setVehicleRows(inventory.data || [])
       })
       .catch((err) => {
         console.warn('EV91 summary load failed:', err)
         setRows([])
-        setCurrentStatusRows([])
+        setVehicleRows([])
         setError(err?.message || 'Failed to load Overall Vehicle Status')
       })
       .finally(() => setLoading(false))
@@ -202,10 +205,15 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const deferredEnd = useDeferredValue(endDate)
   const deferredEvSource = useDeferredValue(evDeployedSource)
 
+  const cityOperationalCounts = useMemo(
+    () => buildVehicleInventoryOperationalStatusCounts(vehicleRows),
+    [vehicleRows]
+  )
+
   const cities = useMemo(() => {
-    const fromApi = getCitiesFromEv91Rows(rows)
+    const fromApi = [...new Set([...getCitiesFromEv91Rows(rows), ...cityOperationalCounts.keys()])].sort()
     return fromApi.length ? fromApi : [...EV91_CITIES]
-  }, [rows])
+  }, [rows, cityOperationalCounts])
 
   const weekOptions = useMemo(
     () => buildWeekOptions({ storedWeekKeys, anchorDate: new Date() }),
@@ -263,11 +271,6 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
     const list = showHiddenClients ? [...visible, ...hidden] : [...visible]
     return list.sort(compareEv91SummaryClients)
   }, [visibleClients, hiddenClients, showHiddenClients])
-
-  const cityOperationalCounts = useMemo(
-    () => buildCityOperationalStatusCounts(currentStatusRows),
-    [currentStatusRows]
-  )
 
   const cityRtdRows = useMemo(
     () => cityOperationalCountsToSortedRows(cityOperationalCounts),
@@ -560,6 +563,13 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         </div>
       )}
 
+      {rtdError && (
+        <div className="ev91-error glass" role="alert" style={{ marginBottom: '1rem' }}>
+          <AlertTriangle size={18} />
+          <span>{rtdError}</span>
+        </div>
+      )}
+
       <div className="fdv-summary-target-upload glass">
         <div className="fdv-summary-target-upload-info">
           <Target size={18} style={{ color: '#c084fc' }} />
@@ -695,8 +705,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
         <span>
           <strong>{rows.length.toLocaleString()}</strong> overall rows loaded
         </span>
-        <span>
-          RTD (Available): <strong>{rtdAvailableTotal.toLocaleString()}</strong>
+        <span title="Current Available vehicles from EV91 Vehicles inventory; independent of the event date range">
+          RTD (Available): <strong>{loading ? '…' : rtdError ? 'Unavailable' : rtdAvailableTotal.toLocaleString()}</strong>
           {selectedCity !== 'All' ? ` · ${selectedCity}` : ' · all cities'}
         </span>
       </div>
@@ -719,7 +729,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
       ) : null}
 
       <div className="fdv-summary-pivot-wrap glass">
-        {(hiddenClients.length > 0 || cityRtdRows.length > 0) && (
+        {(hiddenClients.length > 0 || (!loading && !rtdError && cityRtdRows.length > 0)) && (
           <div className="fdv-summary-hidden-bar">
             {hiddenClients.length > 0 && (
               <>
@@ -738,7 +748,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                 <span className="fdv-summary-hidden-hint">{hiddenClients.map((c) => c.client).join(', ')}</span>
               </>
             )}
-            {cityRtdRows.length > 0 && (
+            {!loading && !rtdError && cityRtdRows.length > 0 && (
               <div
                 className="fdv-summary-rtd-cities"
                 style={{
@@ -751,7 +761,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                   borderLeft: hiddenClients.length > 0 ? '1px solid var(--border-color)' : 'none',
                 }}
               >
-                <strong style={{ fontSize: '0.8rem', color: 'var(--accent-green)' }}>RTD (Available)</strong>
+                <strong title="From EV91 Vehicles inventory" style={{ fontSize: '0.8rem', color: 'var(--accent-green)' }}>RTD (Available)</strong>
                 {(selectedCity === 'All' ? cityRtdRows : cityRtdRows.filter((r) => r.city === selectedCity)).map(
                   (r) => (
                     <span key={r.city} style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>

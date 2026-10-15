@@ -43,6 +43,12 @@ const PART_SEP = '\x1f'
 const OVERALL_HISTORY_DAYS = 180
 
 export const FULL_DATA_METRICS = [
+  {
+    key: 'onRoadVehicleCount',
+    label: 'On-road Vehicle Count',
+    section: 'Supply',
+    hint: 'Unique vehicles deployed on each date; includes deployment day and excludes return day. Total = sum of daily counts (vehicle-days).',
+  },
   { key: 'deployCount', label: 'Deployee Count', section: 'Supply' },
   { key: 'newRiderDeployCount', label: 'Deployee Count (NEW_RIDER)', section: 'Supply' },
   { key: 'returnCount', label: 'Return Count', section: 'Supply' },
@@ -141,6 +147,7 @@ function isEvType(type1) {
 
 function emptyDayMetrics() {
   const o = {
+    onRoadVehicleCount: 0,
     deployCount: 0,
     newRiderDeployCount: 0,
     returnCount: 0,
@@ -516,6 +523,17 @@ function flattenDeployIntervals(vehicleIntervals) {
   return list
 }
 
+function* onRoadIntervalsForDate(flatIntervals, dateKey) {
+  const seenVehicle = new Set()
+  for (const iv of flatIntervals || []) {
+    if (iv.fromKey > dateKey) continue
+    if (iv.toKey != null && iv.toKey <= dateKey) continue
+    if (!iv.vKey || seenVehicle.has(iv.vKey)) continue
+    seenVehicle.add(iv.vKey)
+    yield iv
+  }
+}
+
 function emptyBase(monthLabel) {
   return {
     monthLabel,
@@ -754,18 +772,14 @@ export async function buildFullDataMonthBaseAsync(
   for (let di = 0; di < days.length; di++) {
     const dateKey = days[di].dateKey
     const countByPart = new Map()
-    const seenVehicle = new Set()
-    for (const iv of flatIntervals) {
-      if (iv.fromKey > dateKey) continue
-      if (iv.toKey != null && iv.toKey <= dateKey) continue
-      if (!iv.vKey || seenVehicle.has(iv.vKey)) continue
-      seenVehicle.add(iv.vKey)
+    for (const iv of onRoadIntervalsForDate(flatIntervals, dateKey)) {
       const pKey = partKey(iv.city, iv.client)
       countByPart.set(pKey, (countByPart.get(pKey) || 0) + 1)
     }
     for (const [pKey, count] of countByPart) {
       const { city, client } = parsePartKey(pKey)
       const m = ensureSlice(slices, dateKey, city, client)
+      m.onRoadVehicleCount += count
       m.rent += count * EV_DAILY_RENT
     }
     if (di % 3 === 2) {
@@ -1311,6 +1325,40 @@ export function buildFullDataZeroOrderDetailRows(
       String(a.Client).localeCompare(String(b.Client)) ||
       String(a['Worker Code']).localeCompare(String(b['Worker Code']))
   )
+  return rows
+}
+
+export const FULL_DATA_ON_ROAD_DETAIL_COLUMNS = [
+  'Date', 'Vehicle', 'Rider ID', 'EV91 ID', 'Rider Name', 'Mobile',
+  'City', 'Client', 'Source Name', 'Deployment Date', 'Return Date', 'On-road Vehicle Count',
+]
+
+/** One vehicle per date, using the same selection and partitions as the Supply count. */
+export function buildFullDataOnRoadDetailRows({
+  days = [], flatIntervals = [], fromKey = '', toKey = '', cityFilter = 'All', clientFilter = 'All',
+} = {}) {
+  const rows = []
+  for (const { dateKey } of days || []) {
+    if (!dateKey || (fromKey && dateKey < fromKey) || (toKey && dateKey > toKey)) continue
+    for (const iv of onRoadIntervalsForDate(flatIntervals, dateKey)) {
+      if (!matchesCityClientFilter(iv.city, iv.client, cityFilter, clientFilter)) continue
+      rows.push({
+        Date: dateKey,
+        Vehicle: iv.vehicleNumber || iv.vKey,
+        'Rider ID': iv.clientRiderId || iv.riderId || '',
+        'EV91 ID': iv.ev91RiderId || '',
+        'Rider Name': iv.riderName || '',
+        Mobile: iv.mobile || '',
+        City: normalizeSummaryCity(iv.city),
+        Client: normalizeSummaryClient(iv.client),
+        'Source Name': iv.sourceName || '',
+        'Deployment Date': iv.fromKey || '',
+        'Return Date': iv.toKey || '',
+        'On-road Vehicle Count': 1,
+      })
+    }
+  }
+  rows.sort((a, b) => a.Date.localeCompare(b.Date) || a.Vehicle.localeCompare(b.Vehicle))
   return rows
 }
 

@@ -93,6 +93,15 @@ export function buildCityOperationalStatusCounts(currentStatusRows = []) {
   return byCity
 }
 
+/** Use the inventory fields displayed on EV91 Vehicles, including its hub city. */
+export function buildVehicleInventoryOperationalStatusCounts(vehicles = []) {
+  return buildCityOperationalStatusCounts((vehicles || []).map((vehicle) => ({
+    vehicleNumber: vehicle.registrationNumber || (vehicle.id != null ? `inventory:${vehicle.id}` : ''),
+    city: vehicle.hub?.city?.displayName || vehicle.hub?.city?.name || '',
+    operationalStatus: vehicle.operationalStatus,
+  })))
+}
+
 export function cityOperationalCountsToSortedRows(byCity) {
   return [...(byCity || new Map()).values()].sort((a, b) =>
     String(a.city || '').localeCompare(String(b.city || ''))

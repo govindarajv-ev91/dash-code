@@ -48,6 +48,7 @@ You can scroll right to see later dates. List and Total stay on the left so you 
 
 | Line | Meaning |
 |------|--------|
+| **On-road Vehicle Count** | Unique deployed vehicles on each date, including deployment day and excluding return day. Uses the same daily deployment intervals as Performance. City and client filters apply; Total is the sum of daily counts (vehicle-days). |
 | **Deployee Count** | How many vehicles were deployed that day |
 | **Return Count** | How many vehicles came back that day |
 | **Rider Count** | Riders active that day |
@@ -95,6 +96,7 @@ Typical uses:
 | Button | What it does |
 |--------|----------------|
 | **Export** | Excel of what you see on the page (including **today**) |
+| **Export Detail** | Detailed workbook with an **On-road Vehicles** sheet: one row per vehicle per date, with rider, city, client, source and deployment/return dates. Uses the selected month and city/client filters; daily row counts match Supply. |
 | **Share WhatsApp** | Picture of the table for WhatsApp |
 
 **Share is through yesterday only.**  

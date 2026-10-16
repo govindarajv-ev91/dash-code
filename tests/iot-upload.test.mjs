@@ -142,21 +142,69 @@ test('older dates are read from the existing iot_data table and cached', async (
 
 test('catch-up reads fresh Opspod vehicle/day keys across every history page', async () => {
   queries.length = 0
-  reply = (query) => ({ data: query.gt
-    ? [{ id: 1001, vehicle_number: 'TN22EB2091', run_date: '2026-10-10' }]
-    : Array.from({ length: 1000 }, (_, index) => ({ id: index + 1, vehicle_number: `VEHICLE${index}`, run_date: '2026-10-08' })), error: null })
-  const history = await db.fetchExistingOpspodVehicleDays('2026-10-01', '2026-10-10')
-  assert.equal(history.length, 1001)
-  assert.equal(queries.length, 2)
+  reply = (query) => ({ data: query.eq[1] === '2026-10-09'
+    ? [{ id: 20, vehicle_number: 'OLDER-ID', run_date: '2026-10-09' }]
+    : query.gt ? [{ id: 501, vehicle_number: 'TN22EB2091', run_date: '2026-10-08' }]
+      : Array.from({ length: 500 }, (_, index) => ({ id: index + 1, vehicle_number: `VEHICLE${index}`, run_date: '2026-10-08' })), error: null })
+  const history = await db.fetchExistingOpspodVehicleDays('2026-10-08', '2026-10-09')
+  assert.equal(history.length, 502)
+  assert.equal(queries.length, 3)
   assert.equal(queries[0].table, 'iot_data')
-  assert.deepEqual(queries[0].eq, ['data_source', 'opspod_ev91'])
-  assert.deepEqual(queries[0].gte, ['run_date', '2026-10-01'])
-  assert.deepEqual(queries[0].lte, ['run_date', '2026-10-10'])
-  assert.deepEqual(queries[1].gt, ['id', 1000])
+  assert.deepEqual(queries[0].eqFilters, [['data_source', 'opspod_ev91'], ['run_date', '2026-10-08']])
+  assert.deepEqual(queries[1].gt, ['id', '500'])
+  assert.equal(queries[2].gt, undefined, 'the ID cursor resets for the next date')
+  assert.deepEqual(queries[2].eq, ['run_date', '2026-10-09'])
+  assert.ok(queries.every((query) => !query.gte && !query.lte && !query.range))
   assert.deepEqual(queries[0].select, ['id,vehicle_number,raw_vehicle_id,run_date'])
   reply = () => ({ data: [{ id: 1002, vehicle_number: 'TN22EB2023', run_date: '2026-10-09' }], error: null })
-  assert.equal((await db.fetchExistingOpspodVehicleDays('2026-10-01', '2026-10-10'))[0].id, 1002)
-  assert.equal(queries.length, 3, 'the next file sees fresh history rather than a previous file cache')
+  assert.equal((await db.fetchExistingOpspodVehicleDays('2026-10-09', '2026-10-09'))[0].id, 1002)
+  assert.equal(queries.length, 4, 'the next file sees fresh history rather than a previous file cache')
+})
+
+test('Opspod timeouts shrink pages and retry the same date and large ID cursor', async (t) => {
+  const original = globalThis.setTimeout
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => original(fn, ms >= 200 ? 0 : ms, ...args))
+  queries.length = 0
+  reply = () => {
+    if (queries.length === 1 || queries.length === 3) return { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }
+    if (queries.length === 2) return { data: Array.from({ length: 250 }, (_, i) => ({ id: String(9007199254740993n + BigInt(i)), run_date: '2026-10-08' })), error: null }
+    return { data: [{ id: '9007199254741243', run_date: '2026-10-08' }], error: null }
+  }
+  assert.equal((await db.fetchExistingOpspodVehicleDays('2026-10-08', '2026-10-08')).length, 251)
+  assert.deepEqual(queries.map((query) => query.limit[0]), [500, 250, 250, 125])
+  assert.deepEqual(queries[2].gt, ['id', '9007199254741242'])
+  assert.deepEqual(queries[3].gt, queries[2].gt)
+  assert.ok(queries.every((query) => query.eq[1] === '2026-10-08'))
+})
+
+test('persistent Opspod timeouts stop with no writes and no partial-history cache', async (t) => {
+  const original = globalThis.setTimeout
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => original(fn, ms >= 200 ? 0 : ms, ...args))
+  queries.length = 0
+  reply = (query) => query.gt
+    ? { data: null, error: { code: '57014', message: 'statement timeout' } }
+    : { data: Array.from({ length: 500 }, (_, i) => ({ id: i + 1, run_date: '2026-10-08' })), error: null }
+  await assert.rejects(db.fetchExistingOpspodVehicleDays('2026-10-08', '2026-10-08'), (error) => error.code === '57014')
+  assert.deepEqual(queries.map((query) => query.limit[0]), [500, 500, 250, 125, 100])
+  assert.ok(queries.every((query) => !query.rpc))
+  queries.length = 0
+  reply = () => ({ data: [], error: null })
+  assert.deepEqual(await db.fetchExistingOpspodVehicleDays('2026-10-08', '2026-10-08'), [])
+  assert.equal(queries[0].gt, undefined)
+})
+
+test('Opspod history checks empty dates and crosses calendar months in UTC', async () => {
+  queries.length = 0
+  reply = () => ({ data: [], error: null })
+  assert.deepEqual(await db.fetchExistingOpspodVehicleDays('2026-09-30', '2026-10-02'), [])
+  assert.deepEqual(queries.map((query) => query.eq[1]), ['2026-09-30', '2026-10-01', '2026-10-02'])
+})
+
+test('Opspod refuses a stalled history cursor instead of returning an incomplete preview', async () => {
+  queries.length = 0
+  reply = () => ({ data: Array.from({ length: 500 }, () => ({ id: 1 })), error: null })
+  await assert.rejects(db.fetchExistingOpspodVehicleDays('2026-10-08', '2026-10-08'), /complete Opspod upload history/)
+  assert.equal(queries.length, 2)
 })
 
 test('history read errors stop catch-up preparation without making writes', async () => {

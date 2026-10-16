@@ -50,7 +50,7 @@ import {
   currentIndianFinancialYearLabel,
 } from './lib/paymentHistoryReport'
 import { fetchIotDataInRange } from './lib/iotDataDb'
-import { buildOverviewAttritionIndex, buildOverviewAttritionSeries } from './lib/overviewRiderAttrition'
+import { buildOverviewAttritionIndex, buildOverviewAttritionSeries, buildOverviewAttritionExportDetails } from './lib/overviewRiderAttrition'
 import RiderAttritionTooltip from './components/RiderAttritionTooltip'
 import {
   KM_PRODUCTIVITY_BUCKETS,
@@ -523,6 +523,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [attritionPeriod, setAttritionPeriod] = useState('monthly')
   const [attritionExporting, setAttritionExporting] = useState(false)
   const [attritionExportError, setAttritionExportError] = useState('')
+  const [attritionExportNotice, setAttritionExportNotice] = useState('')
   const [kmPreset, setKmPreset] = useState('yesterday')
   const [kmCustomFrom, setKmCustomFrom] = useState('')
   const [kmCustomTo, setKmCustomTo] = useState('')
@@ -859,15 +860,23 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const exportAttritionDetails = async () => {
     setAttritionExporting(true)
     setAttritionExportError('')
+    setAttritionExportNotice('')
     try {
-      const { downloadOverviewAttritionExcel } = await import('./lib/overviewRiderAttritionExcelExport.js')
+      const [{ downloadOverviewAttritionExcel }, { fetchOverviewAttritionContactIndexes }] = await Promise.all([
+        import('./lib/overviewRiderAttritionExcelExport.js'),
+        import('./lib/overviewAttritionContactDb.js'),
+      ])
+      const { phoneIndex, nameIndex } = await fetchOverviewAttritionContactIndexes()
+      const exportDetails = buildOverviewAttritionExportDetails(attritionTrend, overviewOrderRows, phoneIndex)
       downloadOverviewAttritionExcel(attritionTrend, {
         client: attritionClient, city: attritionCity, period: attritionPeriod,
         source: overviewOrdersFromUpload ? 'Order Upload data' : 'Rider metrics',
+        phoneIndex, nameIndex, exportDetails,
       })
+      setAttritionExportNotice(`Exported ${exportDetails.details.length.toLocaleString('en-IN')} rider${exportDetails.details.length === 1 ? '' : 's'}. Other Working Client shows matches for ${exportDetails.otherClientCount.toLocaleString('en-IN')} rider${exportDetails.otherClientCount === 1 ? '' : 's'}. All riders are kept; chart counts are unchanged.`)
     } catch (error) {
       console.error('Rider attrition export failed', error)
-      setAttritionExportError('Could not export rider details. Please try again.')
+      setAttritionExportError('Could not export rider details or load rider names and phone numbers. Please try again.')
     } finally {
       setAttritionExporting(false)
     }
@@ -1706,6 +1715,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
           </div>
         </div>
         {attritionExportError && <p role="alert" style={{ color: 'var(--accent-red)', fontSize: '0.8rem' }}>{attritionExportError}</p>}
+        {attritionExportNotice && <p role="status" style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>{attritionExportNotice}</p>}
         <div style={{ height: '320px', width: '100%' }}>
           {!attritionTrend.series.length ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>

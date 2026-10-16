@@ -1,22 +1,23 @@
 import * as XLSX from 'xlsx'
+import { lookupOverviewAttritionPhone, lookupOverviewAttritionName } from './overviewAttritionContacts.js'
 
 const DETAIL_HEADERS = [
-  'Period', 'Rider ID', 'Rider Name', 'Client', 'City', 'EV / Non-EV',
+  'Period', 'Rider ID', 'Rider Name', 'Phone Number', 'Client', 'Other Working Client', 'City', 'EV / Non-EV',
   'Work Started Date', 'Last Working Date', 'Attrition Date', 'Inactive Days at Attrition', 'Next Working Date',
   'Previous Period', 'Comparison From', 'Comparison Through', 'Period Status',
 ]
 
-export function buildOverviewAttritionWorkbook(report, { client = 'All', city = 'All', period = report.period || 'monthly', source = 'Order Upload data' } = {}) {
+export function buildOverviewAttritionWorkbook(report, { client = 'All', city = 'All', period = report.period || 'monthly', source = 'Order Upload data', phoneIndex, nameIndex, exportDetails } = {}) {
   const workbook = XLSX.utils.book_new()
   const details = XLSX.utils.aoa_to_sheet([
     DETAIL_HEADERS,
-    ...report.details.map((row) => [
-      row.period, row.workerCode, row.workerName, row.client, row.city, row.type,
+    ...(exportDetails?.details ?? report.details).map((row) => [
+      row.period, row.workerCode, lookupOverviewAttritionName(nameIndex, row.workerCode, row.workerName), lookupOverviewAttritionPhone(phoneIndex, row.workerCode), row.client, (row.otherWorkingClients || []).join(', '), row.city, row.type,
       row.workStartedDate, row.lastWorkingDate, row.attritionDate, row.inactiveDays, row.nextWorkingDate,
       row.previousPeriod, row.comparisonFrom, row.comparisonThrough, row.periodStatus,
     ]),
   ])
-  details['!cols'] = [24, 20, 24, 24, 20, 16, 22, 22, 20, 26, 24, 24, 22, 22, 20].map((wch) => ({ wch }))
+  details['!cols'] = [24, 20, 24, 18, 24, 32, 20, 16, 22, 22, 20, 26, 24, 24, 22, 22, 20].map((wch) => ({ wch }))
   details['!autofilter'] = { ref: details['!ref'] }
   XLSX.utils.book_append_sheet(workbook, details, 'Rider Details')
 
@@ -53,6 +54,14 @@ export function buildOverviewAttritionWorkbook(report, { client = 'All', city = 
     ['Total Percentage', 'Sum of attrition counts ÷ sum of period rider bases × 100, not an average of the percentages.'],
     ['Counting', report.period === 'daily' ? 'Each rider counts once at the four-day threshold after their final working date. Earlier absences followed by a return are excluded.' : 'Each rider counts once per comparison period when they worked in the previous period and did not work anywhere in this period.'],
     ['Scope', 'Client, city and EV type come from the last working activity.'],
+    ['Phone Number', 'Current contact matched by rider ID: onboarding first, latest dated fleet_data/new_fleet_data contact next, then rider_kyc. Names are never used. Missing or unresolved conflicting contacts remain blank.'],
+    ['Rider Name', 'Matched independently by rider ID: onboarding first, latest dated fleet_data/new_fleet_data name next, then rider_kyc. Falls back to the activity-data name if no name is found.'],
+    ...(exportDetails ? [
+      ['Export Phone Check', 'All chart riders remain in Rider Details. Other Working Client lists clients with positive orders matched by phone across all cities. Month/Week check the comparison period; Days also checks all later loaded activity. No match or missing phone leaves the column blank.'],
+      ['Riders Working for Other Clients', exportDetails.otherClientCount],
+      ['Exported Rider Details', exportDetails.details.length],
+      ['Chart Summary Scope', 'Chart Summary keeps the original chart counts. Other Working Client is informational and does not remove riders from the exported list.'],
+    ] : []),
     ['Work Started Date', 'Earliest date with positive delivered orders for the rider in the full loaded source history, before date, client or city filters.'],
     ['Next Working Date', report.period === 'daily' ? 'Always blank for daily attrition. Any later work in loaded history excludes the earlier absence.' : 'Work within the comparison period excludes attrition. A return in a later period does not erase a missed month or week.'],
     ['Calendar Periods', 'Months use calendar months; weeks use Monday–Sunday. Date filters select the displayed periods; activity is checked across each full period in loaded history.'],

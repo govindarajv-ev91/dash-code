@@ -138,25 +138,48 @@ export async function fetchIotDataInRange(dateFrom, dateTo, { force = false } = 
 /** Fresh, minimal vehicle/day keys for automatic Opspod catch-up across multiple files. */
 export async function fetchExistingOpspodVehicleDays(dateFrom, dateTo) {
   const all = []
-  let lastId = null
-  const pageSize = 1000
-  while (true) {
-    let query = supabase.from(IOT_TABLE)
-      .select('id,vehicle_number,raw_vehicle_id,run_date')
-      .eq('data_source', 'opspod_ev91')
-      .gte('run_date', dateFrom)
-      .lte('run_date', dateTo)
-      .order('id', { ascending: true })
-      .limit(pageSize)
-    if (lastId !== null) query = query.gt('id', lastId)
-    const { data, error } = await query
-    if (error) throw error
-    if (!data?.length) break
-    all.push(...data)
-    if (data.length < pageSize) break
-    const nextId = data.at(-1).id
-    if (nextId == null || nextId === lastId) throw new Error('Could not read complete Opspod upload history. Choose the file again to retry.')
-    lastId = nextId
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom || '') ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(dateTo || '') || dateFrom > dateTo) {
+    throw new Error('Choose a report with a valid Opspod date range.')
+  }
+  // A range ordered only by ID can scan the entire historical primary key
+  // before finding recent dates. Equality on source/date keeps each page local
+  // to one day's index entries, including late uploads of older dates.
+  for (let date = dateFrom; date <= dateTo;) {
+    let lastId = null
+    let pageSize = 500
+    let timeouts = 0
+    while (true) {
+      let query = supabase.from(IOT_TABLE)
+        .select('id,vehicle_number,raw_vehicle_id,run_date')
+        .eq('data_source', 'opspod_ev91')
+        .eq('run_date', date)
+        .order('id', { ascending: true })
+        .limit(pageSize)
+      if (lastId !== null) query = query.gt('id', lastId)
+      const { data, error } = await query
+      if (error) {
+        if ((error.code === '57014' || /statement timeout/i.test(error.message || '')) && timeouts < 3) {
+          timeouts++
+          pageSize = Math.max(100, Math.floor(pageSize / 2))
+          await new Promise((resolve) => setTimeout(resolve, 200 * timeouts))
+          continue
+        }
+        throw error
+      }
+      timeouts = 0
+      if (!data?.length) break
+      const nextId = String(data.at(-1).id ?? '')
+      if (!/^\d+$/.test(nextId) || (lastId !== null && BigInt(nextId) <= BigInt(lastId))) {
+        throw new Error('Could not read complete Opspod upload history. Choose the file again to retry.')
+      }
+      all.push(...data)
+      lastId = nextId
+      if (data.length < pageSize) break
+    }
+    const nextDay = new Date(date + 'T00:00:00Z')
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1)
+    date = nextDay.toISOString().slice(0, 10)
   }
   return all
 }

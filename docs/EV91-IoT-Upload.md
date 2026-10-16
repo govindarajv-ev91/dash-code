@@ -31,6 +31,13 @@ report's columns `9` and `10` supply the two missing dates without a date select
 All completed dates in the report are checked against fresh Opspod history after
 vehicle lookup; existing records are skipped per canonical vehicle and date.
 This also fills older gaps and partial uploads across the four separate files.
+History is read one provider/date at a time in ID-cursor pages of at most 500
+rows, rather than scanning the month ordered by ID. Statement timeouts retry the
+same date/cursor with smaller pages, down to 100 rows. An incomplete history read
+stops preparation; it never treats unread records as missing. Existing databases
+should run `sql/iot-upload/fix_opspod_history_timeout.sql` in the Supabase SQL
+Editor, outside a transaction, to add the matching `(data_source, run_date, id)`
+index without blocking uploads. Existing rows and upload rules are preserved.
 Today and future dates are excluded. With no existing history, all completed
 report dates are imported. Daily KM comes from each day column; monthly
 `Total Distance` is ignored. Preview lists new dates and the already saved count.

@@ -95,6 +95,7 @@ try {
   const setup = readFileSync(join(root, 'sql/iot-upload/create_iot_data_table.sql'), 'utf8')
   const migration = readFileSync(join(root, 'sql/iot-upload/fix_upload_integrity.sql'), 'utf8')
   const dashboard = readFileSync(join(root, 'sql/iot-upload/fix_dashboard_last_upload_timeout.sql'), 'utf8')
+  const opspodHistory = readFileSync(join(root, 'sql/iot-upload/fix_opspod_history_timeout.sql'), 'utf8')
   sql(setup)
   // Preserve duplicates already created by the old raw-identifier uniqueness rule.
   sql(`insert into public.iot_data (vehicle_number,run_date,total_distance,data_source,raw_vehicle_id)
@@ -107,6 +108,8 @@ try {
     sql(setup)
     sql(migration)
     sql(dashboard)
+    sql(opspodHistory)
+    sql(opspodHistory)
     assert.equal(sql('select count(*) from public.iot_data'), '2')
   })
 

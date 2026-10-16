@@ -50,6 +50,18 @@ const server = await createServer({
       `
     },
     transform(code, id) {
+      if (id.replaceAll('\\', '/').endsWith('/src/lib/overviewAttritionContactDb.js')) {
+        return `import { buildOverviewAttritionPhoneIndex, buildOverviewAttritionNameIndex } from './overviewAttritionContacts.js';
+          export const fetchOverviewAttritionContactIndexes = async () => {
+            const rows = { kycRows: [
+              { rider_id: 'r2', rider_mobile_number: '9876543210', rider_name: 'KYC Rider Two' },
+              { rider_id: 'BB-OLD', rider_mobile_number: '9345889303' },
+              { rider_id: 'OTHER-NEW', rider_mobile_number: '9345889303' },
+              { rider_id: 'BB-INACTIVE', rider_mobile_number: '9000000001' }
+            ] };
+            return { phoneIndex: buildOverviewAttritionPhoneIndex(rows), nameIndex: buildOverviewAttritionNameIndex(rows) };
+          };`
+      }
       if (id.replaceAll('\\', '/').endsWith('/src/lib/supabaseClient.js')) {
         return "export const supabase = { from() { throw new Error('Unexpected overview database request') } }"
       }
@@ -314,6 +326,8 @@ test('Rider Attrition renders EV, Non-EV and Total lines with independent client
   const details = XLSX.utils.sheet_to_json(workbook.Sheets['Rider Details'])
   assert.equal(details.length, 1)
   assert.equal(details[0]['Rider ID'], 'r2')
+  assert.equal(details[0]['Phone Number'], '9876543210')
+  assert.equal(details[0]['Rider Name'], 'KYC Rider Two')
   assert.equal(details[0]['Work Started Date'], '2026-09-30')
   assert.equal(details[0]['Attrition Date'], '2026-10-04')
   assert.equal(details[0]['EV / Non-EV'], 'Non-EV')
@@ -333,6 +347,45 @@ test('Rider Attrition handles empty data and rider-metrics fallback', async (t) 
   assert.match(chart.textContent, /Rider metrics/)
   assert.match(chart.textContent, /EV 1 · Non-EV 0 · Total 1/)
   await waitFor(() => chart.querySelectorAll('.recharts-line-curve').length === 3)
+  assert.deepEqual(errors, [])
+})
+
+test('BB export keeps riders and shows their other working client without changing the chart', async (t) => {
+  const { container, root, errors } = mount(t)
+  await act(async () => root.render(createElement(Dashboard, { loading: false, riderData: [
+    order('2026-09-30', 'BB-OLD', 5, { client: 'BB' }),
+    order('2026-09-30', 'BB-INACTIVE', 5, { client: 'BB' }),
+    order('2026-10-06', 'OTHER-NEW', 2, { client: 'Zomato', city: 'Bengaluru' }),
+    order('2026-10-15', 'coverage', 0),
+  ] })))
+  const chart = container.querySelector('[aria-label="Rider attrition chart"]')
+  const client = chart.querySelector('select')
+  await act(async () => { client.value = 'BB'; client.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.match(chart.textContent, /EV 2 · Non-EV 0 · Total 2/)
+  let blob
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click
+  URL.createObjectURL = (value) => { blob = value; return 'blob:bb-export' }
+  URL.revokeObjectURL = () => {}
+  dom.window.HTMLAnchorElement.prototype.click = function () {}
+  t.after(() => {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    dom.window.HTMLAnchorElement.prototype.click = originalClick
+  })
+  await act(async () => chart.querySelector('button').dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await waitFor(() => blob)
+  const workbook = XLSX.read(await blob.arrayBuffer(), { type: 'array' })
+  const details = XLSX.utils.sheet_to_json(workbook.Sheets['Rider Details'], { defval: '' })
+  assert.deepEqual(details.map((detail) => detail['Rider ID']), ['BB-INACTIVE', 'BB-OLD'])
+  assert.equal(details[0]['Phone Number'], '9000000001')
+  assert.equal(details[0]['Other Working Client'], '')
+  assert.equal(details[1].Client, 'BB')
+  assert.equal(details[1]['Other Working Client'], 'Zomato')
+  assert.equal(XLSX.utils.sheet_to_json(workbook.Sheets['Chart Summary']).at(-1).Total, 2)
+  assert.match(chart.textContent, /EV 2 · Non-EV 0 · Total 2/)
+  assert.match(chart.textContent, /Other Working Client shows matches for 1 rider/)
   assert.deepEqual(errors, [])
 })
 

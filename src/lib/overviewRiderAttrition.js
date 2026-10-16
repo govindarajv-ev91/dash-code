@@ -1,8 +1,9 @@
 import { addDays, addMonths, addWeeks, differenceInCalendarDays, eachDayOfInterval, endOfMonth, endOfWeek, format, getISOWeek, parseISO, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns'
 import { toMetricDateKey } from './mergeRiderMetrics'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
-import { normalizeSummaryClient } from './clientSummaryClients'
+import { clientLookupKey, normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeSummaryCity } from './citySummaryAliases'
+import { lookupOverviewAttritionPhone, normalizeOverviewAttritionPhone } from './overviewAttritionContacts.js'
 
 export const ATTRITION_INACTIVE_DAYS = 4
 export const OVERVIEW_ATTRITION_RULES = {
@@ -216,4 +217,57 @@ export function buildOverviewAttritionSeries(
     return point
   })
   return result
+}
+
+/** Export-only check. Keep chart counts and the report itself unchanged. */
+export function buildOverviewAttritionExportDetails(report, activityRows = [], phoneIndex) {
+  const workByPhone = new Map()
+  // Full activity history, before any client/city/date display filters. Different
+  // rider IDs can belong to the same phone under different clients.
+  for (const row of activityRows) {
+    if (row?._ic_only || !normalizeRiderIdKey(row?.worker_code)) continue
+    const orders = Number(row.delivered ?? row.orders)
+    if (!Number.isFinite(orders) || orders <= 0) continue
+    const phone = normalizeOverviewAttritionPhone(lookupOverviewAttritionPhone(phoneIndex, row.worker_code) || row.mob_number)
+    if (!phone) continue
+    const date = toMetricDateKey(row.date_record)
+    if (!date) continue
+    const clientName = normalizeSummaryClient(row.client)
+    const client = clientLookupKey(clientName)
+    if (!workByPhone.has(phone)) workByPhone.set(phone, new Map())
+    const clients = workByPhone.get(phone)
+    if (!clients.has(client)) clients.set(client, { name: clientName, dates: new Set() })
+    clients.get(client).dates.add(date)
+  }
+  for (const clients of workByPhone.values()) {
+    for (const activity of clients.values()) activity.dates = [...activity.dates].sort()
+  }
+
+  function workedInRange(dates, from, through) {
+    let lo = 0, hi = dates.length
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (dates[mid] < from) lo = mid + 1
+      else hi = mid
+    }
+    return lo < dates.length && dates[lo] <= through
+  }
+
+  const details = report.details.map((detail) => {
+    const phone = normalizeOverviewAttritionPhone(lookupOverviewAttritionPhone(phoneIndex, detail.workerCode))
+    const clients = workByPhone.get(phone)
+    const from = detail.comparisonFrom
+    // Daily attrition excludes later returns anywhere in loaded history. A
+    // later month's/week's return does not erase a wholly missed period.
+    const through = report.period === 'daily' ? report.returnCheckThrough : detail.comparisonThrough
+    const ownClient = clientLookupKey(normalizeSummaryClient(detail.client))
+    const otherWorkingClients = []
+    if (clients && from && through && from <= through) {
+      for (const [client, activity] of clients) {
+        if (client !== ownClient && workedInRange(activity.dates, from, through)) otherWorkingClients.push(activity.name)
+      }
+    }
+    return { ...detail, otherWorkingClients: otherWorkingClients.sort((a, b) => a.localeCompare(b)) }
+  })
+  return { details, otherClientCount: details.filter((detail) => detail.otherWorkingClients.length).length }
 }

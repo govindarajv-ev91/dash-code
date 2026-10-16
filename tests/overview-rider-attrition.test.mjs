@@ -3,19 +3,144 @@ import { after, test } from 'node:test'
 import { createServer } from 'vite'
 import * as XLSX from 'xlsx'
 import { buildOverviewAttritionWorkbook } from '../src/lib/overviewRiderAttritionExcelExport.js'
+import { buildOverviewAttritionPhoneIndex } from '../src/lib/overviewAttritionContacts.js'
 
 const server = await createServer({
   cacheDir: 'node_modules/.vite-tests/overview-rider-attrition',
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true, include: [] },
 })
-const { buildOverviewAttritionIndex, buildOverviewAttritionSeries } = await server.ssrLoadModule('/src/lib/overviewRiderAttrition.js')
+const { buildOverviewAttritionIndex, buildOverviewAttritionSeries, buildOverviewAttritionExportDetails } = await server.ssrLoadModule('/src/lib/overviewRiderAttrition.js')
 after(() => server.close())
 
 const row = (date, worker, delivered = 1, overrides = {}) => ({
   date_record: date, worker_code: worker, delivered, client: 'Alpha', city: 'Chennai', type1: 'EV', ...overrides,
 })
 const report = (rows, options) => buildOverviewAttritionSeries(buildOverviewAttritionIndex(rows), options)
+
+test('export keeps BB riders and shows the other client matched by phone in every view', () => {
+  const phoneIndex = buildOverviewAttritionPhoneIndex({ onboardingRows: [
+    { rider_id_details: 'BB-OLD', rider_mobile_number: '+91 93458 89303' },
+    { rider_id_details: 'OTHER-NEW', rider_mobile_number: '9345889303' },
+  ] })
+  for (const period of ['monthly', 'weekly', 'daily']) {
+    const rows = [
+      row(period === 'monthly' ? '2026-09-30' : period === 'weekly' ? '2026-10-04' : '2026-10-01', 'BB-OLD', 5, { client: 'BB' }),
+      row(period === 'daily' ? '2026-10-10' : '2026-10-06', 'OTHER-NEW', 2, { client: 'Zomato', city: 'Bengaluru' }),
+      row('2026-10-15', 'coverage', 0),
+    ]
+    const chart = report(rows, { client: 'BB', city: 'Chennai', period, dateFrom: '2026-10-01' })
+    assert.equal(chart.details.length, 1)
+    const before = structuredClone(chart)
+    const exportDetails = buildOverviewAttritionExportDetails(chart, rows, phoneIndex)
+    assert.equal(exportDetails.details.length, 1)
+    assert.equal(exportDetails.otherClientCount, 1)
+    assert.deepEqual(exportDetails.details[0].otherWorkingClients, ['Zomato'])
+    assert.deepEqual(chart, before, 'chart data is unchanged')
+    const workbook = buildOverviewAttritionWorkbook(chart, { phoneIndex, exportDetails })
+    const reopened = XLSX.read(XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }), { type: 'buffer' })
+    const exported = XLSX.utils.sheet_to_json(reopened.Sheets['Rider Details'])
+    assert.equal(exported.length, 1)
+    assert.equal(exported[0].Client, 'BB')
+    assert.equal(exported[0]['Other Working Client'], 'Zomato')
+    assert.equal(reopened.Sheets['Rider Details'].F2.t, 's')
+    const summary = XLSX.utils.sheet_to_json(workbook.Sheets['Chart Summary'])
+    assert.equal(summary.at(-1).Total, 1)
+    const metadata = Object.fromEntries(XLSX.utils.sheet_to_json(workbook.Sheets['Filters and Rule']).map((row) => [row.Setting, row.Value]))
+    assert.equal(metadata['Riders Working for Other Clients'], 1)
+    assert.equal(metadata['Exported Rider Details'], 1)
+    assert.match(metadata['Chart Summary Scope'], /does not remove riders/)
+  }
+})
+
+test('export phone check records every other working client once within the comparison period', () => {
+  const phoneIndex = buildOverviewAttritionPhoneIndex({ onboardingRows: [
+    { rider_id_details: 'BB-OLD', rider_mobile_number: '9345889303' },
+  ] })
+  const rows = [
+    row('2026-09-30', 'BB-OLD', 5, { client: 'BB' }),
+    row('2026-10-06', 'OTHER-NEW', 2, { client: 'swiggy', mob_number: '9345889303' }),
+    row('2026-10-07', 'OTHER-NEW', 2, { client: 'Swiggy Instamart', mob_number: '9345889303' }),
+    row('2026-10-09', 'OTHER-NEW', 2, { client: 'Zomato', mob_number: '9345889303' }),
+    row('2026-10-10', 'OTHER-NEW', 0, { client: 'Inactive Client', mob_number: '9345889303' }),
+    row('2026-11-01', 'OTHER-NEW', 2, { client: 'Later Client', mob_number: '9345889303' }),
+  ]
+  for (const activity of [rows, [...rows].reverse()]) {
+    const chart = report(activity, { client: 'BB', period: 'monthly', dateFrom: '2026-10-01', dateTo: '2026-10-31' })
+    const filtered = buildOverviewAttritionExportDetails(chart, activity, phoneIndex)
+    assert.equal(filtered.otherClientCount, 1)
+    assert.equal(filtered.details[0].workerCode, 'BB-OLD')
+    assert.deepEqual(filtered.details[0].otherWorkingClients, ['Swiggy Instamart', 'Zomato'])
+    const workbook = buildOverviewAttritionWorkbook(chart, { phoneIndex, exportDetails: filtered })
+    assert.equal(XLSX.utils.sheet_to_json(workbook.Sheets['Rider Details'])[0]['Other Working Client'], 'Swiggy Instamart, Zomato')
+    assert.equal(chart.details[0].otherWorkingClients, undefined)
+  }
+})
+
+test('export phone check retains genuinely missed months/weeks despite work outside the comparison period', () => {
+  const phoneIndex = buildOverviewAttritionPhoneIndex({ kycRows: [
+    { rider_id: 'BB-OLD', rider_mobile_number: '9345889303' },
+    { rider_id: 'OTHER-NEW', rider_mobile_number: '9345889303' },
+  ] })
+  for (const period of ['monthly', 'weekly']) {
+    const rows = [
+      row(period === 'monthly' ? '2026-09-30' : '2026-10-04', 'BB-OLD', 5, { client: 'BB' }),
+      row(period === 'monthly' ? '2026-11-01' : '2026-10-12', 'OTHER-NEW', 2, { client: 'Zomato' }),
+    ]
+    const chart = report(rows, { client: 'BB', period, dateFrom: '2026-10-01' })
+    assert.equal(chart.details.length, 1)
+    const exported = buildOverviewAttritionExportDetails(chart, rows, phoneIndex)
+    assert.equal(exported.details.length, 1)
+    assert.equal(exported.otherClientCount, 0)
+    assert.deepEqual(exported.details[0].otherWorkingClients, [])
+  }
+})
+
+test('export phone check ignores zero/invalid orders, invalid dates, IC mirrors and earlier work', () => {
+  const phoneIndex = buildOverviewAttritionPhoneIndex({ fleetRows: [
+    { rider_id: 'BB-OLD', rider_contact_number: '9345889303' },
+    { rider_id: 'OTHER-NEW', rider_contact_number: '9345889303' },
+  ] })
+  const rows = [
+    row('2026-10-01', 'BB-OLD', 5, { client: 'BB' }),
+    row('2026-09-30', 'OTHER-NEW', 5, { client: 'Zomato' }),
+    row('2026-10-03', 'OTHER-NEW', 0, { client: 'Zomato' }),
+    row('2026-10-04', 'OTHER-NEW', -1, { client: 'Zomato' }),
+    row('2026-10-05', 'OTHER-NEW', 'NaN', { client: 'Zomato' }),
+    row('31-02-2026', 'OTHER-NEW', 5, { client: 'Zomato' }),
+    row('2026-10-06', 'OTHER-NEW', 5, { client: 'Zomato', _ic_only: true }),
+    row('2026-10-10', 'coverage', 0),
+  ]
+  const chart = report(rows, { client: 'BB', period: 'daily' })
+  assert.equal(chart.details.length, 1)
+  const exported = buildOverviewAttritionExportDetails(chart, rows, phoneIndex)
+  assert.equal(exported.details.length, 1)
+  assert.equal(exported.otherClientCount, 0)
+})
+
+test('export phone check uses working-row phones as fallback and retains unknown or unmatched phones', () => {
+  const phoneIndex = buildOverviewAttritionPhoneIndex({ kycRows: [
+    { rider_id: 'BB-OLD', rider_mobile_number: '9345889303' },
+    { rider_id: 'BB-OTHER', rider_mobile_number: '9000000001' },
+  ] })
+  const rows = [
+    row('2026-09-30', 'BB-OLD', 5, { client: 'BB' }),
+    row('2026-09-30', 'BB-OTHER', 5, { client: 'BB' }),
+    row('2026-09-30', 'BB-UNKNOWN', 5, { client: 'BB' }),
+    row('2026-10-06', 'OTHER-NEW', 2, { client: 'Zomato', mob_number: '+91 93458 89303' }),
+    row('2026-10-15', 'coverage', 0),
+  ]
+  const chart = report(rows, { client: 'BB', period: 'monthly' })
+  const filtered = buildOverviewAttritionExportDetails(chart, rows, phoneIndex)
+  assert.equal(chart.details.length, 3)
+  assert.deepEqual(filtered.details.map((detail) => detail.workerCode).sort(), ['BB-OLD', 'BB-OTHER', 'BB-UNKNOWN'])
+  assert.equal(filtered.otherClientCount, 1)
+  const workbook = buildOverviewAttritionWorkbook(chart, { phoneIndex, exportDetails: filtered })
+  const details = XLSX.utils.sheet_to_json(workbook.Sheets['Rider Details'], { defval: '' })
+  assert.equal(details.find((detail) => detail['Rider ID'] === 'BB-OLD')['Other Working Client'], 'Zomato')
+  assert.equal(details.find((detail) => detail['Rider ID'] === 'BB-OTHER')['Other Working Client'], '')
+  assert.equal(details.find((detail) => detail['Rider ID'] === 'BB-UNKNOWN')['Other Working Client'], '')
+})
 
 test('attrition starts exactly four calendar days after last work, even without zero-order rows', () => {
   const rows = [row('2026-10-01', 'r1'), row('2026-10-04', 'coverage', 0)]

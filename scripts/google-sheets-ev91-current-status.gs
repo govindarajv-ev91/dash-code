@@ -10,7 +10,7 @@
  *    (or: Apps Script → Triggers → Add Trigger → importEv91CurrentStatus → Time-driven → Every 5 hours)
  *
  * Source: when EV91 source is "-" / blank, fill from rider_onboarding.source_name
- * (match by phone / rider_id_details / merge / FE id).
+ * (match by exact normalized rider_id_details / merge ID or full phone, never rider name).
  */
 
 var CONFIG = {
@@ -157,8 +157,8 @@ function fetchDeployedCurrentStatus_() {
 }
 
 function buildOnboardingSourceIndex_() {
-  var byRider = {}
-  var byPhone = {}
+  var byRider = Object.create(null)
+  var byPhone = Object.create(null)
   var cfg = getSupabaseConfig_()
   if (!cfg.url || !cfg.key) {
     throw new Error(
@@ -168,7 +168,7 @@ function buildOnboardingSourceIndex_() {
 
   // Real columns only (rider_id / worker_code do NOT exist on this table)
   var select =
-    'id,rider_id_details,source_name,rider_mobile_number,merge,rider_name,email_address'
+    'id,rider_id_details,source_name,rider_mobile_number,merge'
   var base =
     String(cfg.url).replace(/\/$/, '') +
     '/rest/v1/rider_onboarding?select=' +
@@ -193,15 +193,16 @@ function buildOnboardingSourceIndex_() {
       var src = String(row.source_name || '').trim()
       if (!src || isMissingSource_(src)) continue
       addAllRiderKeys_(byRider, row.rider_id_details, src)
-      addAllRiderKeys_(byRider, row.merge, src)
-      addAllRiderKeys_(byRider, row.rider_name, src)
+      // merge stores IDs with the known "voice" prefix, e.g. voiceFE11083660.
+      addAllRiderKeys_(byRider, String(row.merge || '').replace(/^voice/i, ''), src)
       var phone = normalizePhone_(row.rider_mobile_number)
-      if (phone && !byPhone[phone]) byPhone[phone] = src
+      addUniqueSource_(byPhone, phone, src)
       // rider_id_details is often the phone itself
       var detailsPhone = normalizePhone_(row.rider_id_details)
-      if (detailsPhone && !byPhone[detailsPhone]) byPhone[detailsPhone] = src
-      if (row.id != null) lastId = row.id
+      addUniqueSource_(byPhone, detailsPhone, src)
     }
+    // Advance even when the final rows have no source.
+    lastId = batch[batch.length - 1].id
     total += batch.length
     if (batch.length < pageSize) break
   }
@@ -215,7 +216,6 @@ function fillMissingSources_(rows, index) {
     var hit =
       lookupAllKeys_(index.byRider, row.clientRiderId) ||
       lookupAllKeys_(index.byRider, row.ev91RiderId) ||
-      lookupAllKeys_(index.byRider, row.riderName) ||
       index.byPhone[normalizePhone_(row.riderContact)] ||
       index.byPhone[normalizePhone_(row.clientRiderId)] ||
       ''
@@ -248,29 +248,30 @@ function isMissingSource_(value) {
   )
 }
 
-/** Same spirit as riderIdLookupKeys in the dashboard */
+/** Exact normalized ID keys; do not extract digits or truncate identifiers. */
 function riderKeys_(raw) {
-  var out = {}
   var text = String(raw || '').trim()
-  if (!text) return []
-  var upper = text.toUpperCase().replace(/[\s_-]+/g, '')
-  out[upper] = true
-  out[text.toUpperCase()] = true
-  var fe = text.match(/FE\d{5,}/i)
-  if (fe) {
-    out[fe[0].toUpperCase()] = true
-    out[String(fe[0].replace(/FE/i, ''))] = true
+  if (isMissingSource_(text)) return []
+  // Preserve the complete ID: FE11893572 must not match OTHER11893572,
+  // a numeric suffix, or another rider with the same name.
+  var key = text.toUpperCase().replace(/[\s_-]+/g, '')
+  return key ? [key] : []
+}
+
+function addUniqueSource_(map, key, source) {
+  if (!key) return
+  if (!Object.prototype.hasOwnProperty.call(map, key)) {
+    map[key] = source
+  } else if (map[key] !== source) {
+    // Conflicting onboarding entries are unsafe to use; do not pick the first.
+    map[key] = null
   }
-  var digits = text.replace(/\D/g, '')
-  if (digits.length >= 5) out[digits] = true
-  if (digits.length >= 10) out[digits.slice(-10)] = true
-  return Object.keys(out)
 }
 
 function addAllRiderKeys_(map, raw, source) {
   var keys = riderKeys_(raw)
   for (var i = 0; i < keys.length; i++) {
-    if (keys[i] && !map[keys[i]]) map[keys[i]] = source
+    addUniqueSource_(map, keys[i], source)
   }
 }
 
@@ -283,9 +284,11 @@ function lookupAllKeys_(map, raw) {
 }
 
 function normalizePhone_(value) {
-  var digits = String(value || '').replace(/\D/g, '')
-  if (digits.length >= 10) return digits.slice(-10)
-  return digits.length >= 6 ? digits : ''
+  var text = String(value || '').trim()
+  if (!/^\+?[\d\s().-]+$/.test(text)) return ''
+  var digits = text.replace(/\D/g, '')
+  if (digits.length === 12 && digits.slice(0, 2) === '91') digits = digits.slice(2)
+  return /^\d{10}$/.test(digits) && !/^0+$/.test(digits) ? digits : ''
 }
 
 function normalizeVehicleNumber_(value) {

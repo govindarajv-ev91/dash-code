@@ -13,6 +13,10 @@ globalThis.__sourceSearchPayments = [
   { rider_id: 'B1', source_name: 'Beta Team', gross_payout: 200 },
 ].map((row, index) => ({ ...row, id: index + 1, week: '1526', month: 'Apr-2026', period_start: '2026-04-06',
   period_label: 'Week 15', city: 'Chennai', client_name: 'Blinkit' }))
+globalThis.__sourceMasterRows = [
+  { city: 'Chennai', source_name: 'Alpha Team', is_active: true },
+  { city: 'Chennai', source_name: 'Beta Team', is_active: true },
+]
 const { createRoot } = await import('react-dom/client')
 const server = await createServer({
   cacheDir: 'node_modules/.vite-tests/client-period-source-search',
@@ -21,12 +25,80 @@ const server = await createServer({
     if (id.replaceAll('\\', '/').endsWith('/src/lib/riderPaymentDb.js')) {
       return 'export const fetchRiderPaymentsForPeriod = async () => globalThis.__sourceSearchPayments'
     }
+    if (id.replaceAll('\\', '/').endsWith('/src/lib/sourceMasterDb.js')) {
+      return `export const fetchSourceMaster = async () => {
+        if (globalThis.__sourceMasterFailure) throw new Error('Unavailable');
+        return globalThis.__sourceMasterRows;
+      }`
+    }
+    if (id.replaceAll('\\', '/').endsWith('/src/lib/clientPeriodExcelExport.js')) {
+      return 'export const downloadClientPeriodExcel = async (data) => { globalThis.__sourceExport = data }'
+    }
   } }],
 })
 const { default: Trend } = await server.ssrLoadModule('/src/Ev91ClientPeriodTrend.jsx')
 after(async () => {
   await server.close(); dom.window.close()
-  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'Event', 'IS_REACT_ACT_ENVIRONMENT', '__sourceSearchPayments']) delete globalThis[key]
+  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'Event', 'IS_REACT_ACT_ENVIRONMENT', '__sourceSearchPayments', '__sourceMasterRows', '__sourceMasterFailure', '__sourceExport']) delete globalThis[key]
+})
+
+test('active city/source list filters all tables but every export summary retains hidden sources and periods', async (t) => {
+  const previous = globalThis.__sourceSearchPayments
+  const master = globalThis.__sourceMasterRows
+  globalThis.__sourceMasterRows = [
+    { city: 'Chennai', source_name: ' aLPHa  Team ', is_active: true },
+    { city: 'Chennai', source_name: 'Beta Team', is_active: false },
+    { city: 'Delhi', source_name: 'Wrong city', is_active: true },
+  ]
+  globalThis.__sourceSearchPayments = [...previous,
+    { ...previous[0], id: 4, rider_id: 'C1', source_name: 'Unlisted', gross_payout: 400,
+      period_start: '2026-04-13', period_label: 'Week 16', week: '1626' },
+    { ...previous[0], id: 5, rider_id: 'D1', source_name: 'Wrong city', gross_payout: 500 },
+    { ...previous[0], id: 6, rider_id: 'E1', source_name: '', gross_payout: 600 },
+  ]
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => {
+    await act(async () => root.unmount()); container.remove()
+    globalThis.__sourceSearchPayments = previous
+    globalThis.__sourceMasterRows = master
+  })
+  await act(async () => root.render(createElement(Trend)))
+  const tables = () => [...container.querySelectorAll('section tbody')]
+  const total = (table) => table.querySelector('tr th:nth-child(2)')?.textContent
+  for (const mode of ['weekly', 'monthly']) {
+    await act(async () => container.querySelector(`input[value="${mode}"]`).click())
+    assert.deepEqual(tables().map(total), ['150', '2', '2', '150'])
+    assert.doesNotMatch(tables()[2].textContent, /Beta Team|Unlisted|Wrong city|Unknown/)
+    await act(async () => [...container.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Export').click())
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 100)))
+    const exported = globalThis.__sourceExport
+    assert.ok(exported, container.textContent)
+    assert.equal(exported.rawRows.length, 6)
+    const revenue = exported.summarySheets[0].rows.at(-1)
+    assert.equal(revenue.Total, 1850)
+    assert.equal(exported.summarySheets[1].rows.at(-1).Total, 6)
+    const sourceRevenue = exported.summarySheets[3].rows
+    for (const name of ['Alpha Team', 'Beta Team', 'Unlisted', 'Wrong city', 'Unknown']) {
+      assert.ok(sourceRevenue.some((row) => row.Source === name), `${name} remains exported`)
+    }
+    if (mode === 'weekly') assert.deepEqual(exported.periods, ['Week 15', 'Week 16'])
+  }
+  // An intentionally empty list hides all displayed data, but export stays enabled.
+  globalThis.__sourceMasterRows = []
+  await act(async () => window.dispatchEvent(new Event('focus')))
+  assert.ok(tables().every((table) => !table.querySelector('th')))
+  const exportButton = [...container.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Export')
+  assert.equal(exportButton.disabled, false)
+  await act(async () => exportButton.click())
+  assert.equal(globalThis.__sourceExport.rawRows.length, 6)
+  // Fetch failures never fall back to showing every source.
+  globalThis.__sourceMasterFailure = true
+  await act(async () => window.dispatchEvent(new Event('focus')))
+  assert.match(container.querySelector('[role="alert"]').textContent, /Unable to load the source list/)
+  assert.ok(tables().every((table) => !table.querySelector('th')))
+  delete globalThis.__sourceMasterFailure
 })
 
 test('source searches filter their own table and totals, with separate clearing in weekly and monthly views', async (t) => {

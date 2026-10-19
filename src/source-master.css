@@ -1,0 +1,23 @@
+.source-master-page { padding-bottom: 2rem; }
+.source-master-page .header { gap: 1rem; flex-wrap: wrap; }
+.source-master-page h1, .source-master-page label span { display: flex; align-items: center; gap: .5rem; }
+.source-master-page h2 { width: 100%; margin: 0; font-size: 1.1rem; }
+.source-master-page p, .source-master-hint { color: var(--text-dim); }
+.source-master-form, .source-master-filters { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; padding: 1rem; margin-bottom: 1rem; }
+.source-master-page label { display: flex; flex-direction: column; gap: .4rem; font-size: .85rem; }
+.source-master-page input:not([type=checkbox]), .source-master-page select { color: #fff; background: #182337; border: 1px solid var(--border-color); border-radius: 8px; padding: .6rem .75rem; min-width: 150px; }
+.source-master-name { flex: 1; min-width: min(260px, 100%); }
+.source-master-status-field { display: flex; flex-direction: column; gap: .4rem; font-size: .85rem; }
+.source-master-status-buttons { display: inline-flex; gap: .25rem; white-space: nowrap; }
+.source-master-status-buttons button { padding: .5rem .75rem; border: 1px solid var(--border-color); border-radius: 6px; background: #182337; color: #cbd5e1; cursor: pointer; font: inherit; }
+.source-master-status-buttons button[aria-pressed=true] { border-color: #60a5fa; background: #1e3a5f; color: #bfdbfe; font-weight: 600; }
+.source-master-status-buttons button[data-status=active][aria-pressed=true] { border-color: #4ade80; background: #14532d; color: #bbf7d0; }
+.source-master-status-buttons button[data-status=inactive][aria-pressed=true] { border-color: #fbbf24; background: #713f12; color: #fef08a; }
+.source-master-status-buttons button:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+.source-master-page .source-master-status-buttons button[aria-pressed=true]:disabled { opacity: 1; }
+.source-master-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.source-master-message { padding: 1rem; margin-bottom: 1rem; }
+.source-master-error, .source-master-page .source-master-danger { color: #f87171; }
+.source-master-table-wrap td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; min-width: 150px; }
+.source-master-table-wrap { overflow-x: auto; }
+.source-master-page button:disabled { opacity: .5; cursor: not-allowed; }

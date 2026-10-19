@@ -3,6 +3,8 @@
 FleetPro uses email and password login. See [login setup](docs/login-setup.md)
 for staff accounts, database access prerequisites, and verification.
 
+See [source list setup and maintenance](docs/source-master.md) for Source Wise Data and EV91 Client Period Trend visibility.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

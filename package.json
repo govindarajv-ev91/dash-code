@@ -15,6 +15,7 @@
     "prepare:admin": "node scripts/prepare-dashboard-admin.mjs",
     "test:overview": "node --test tests/dashboard-overview.test.mjs tests/overview-order-loading.test.mjs tests/overview-rider-attrition.test.mjs tests/overview-attrition-contacts.test.mjs",
     "test:payment-trend": "node --test tests/rider-payment-period.test.mjs tests/ev91-client-source-report.test.mjs tests/client-period-excel-export.test.mjs tests/ev91-client-period-source-search.test.mjs",
+    "test:source-master": "node --test --test-concurrency=1 tests/source-master.test.mjs tests/source-master-management.test.mjs tests/source-wise-visibility.test.mjs tests/ev91-client-period-source-search.test.mjs",
     "test:onboarding-pending": "node --test tests/ev91-onboarding-pending.test.mjs",
     "test:fl-pending": "node --test tests/ev91-fl-pending.test.mjs",
     "test:summary-rtd": "node --test tests/ev91-summary-rtd.test.mjs tests/ev91-vehicles-api.test.mjs",

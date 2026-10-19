@@ -30,6 +30,8 @@ import {
 import { fetchRiderOnboardingRows } from './lib/riderOnboardingDb'
 import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
 import { dedupeCanonicalCities } from './lib/citySummaryAliases'
+import { useSourceMaster } from './lib/useSourceMaster'
+import { isListedSource } from './lib/sourceMaster'
 
 const ROWS_PER_PAGE = 50
 const DATE_LOAD_DEBOUNCE_MS = 350
@@ -355,6 +357,7 @@ const SearchableSelect = memo(function SearchableSelect({
 })
 
 export default function SourceWiseData({ onboardingData = [] }) {
+  const { sourceIndex, sourcesLoading, sourceError, refreshSources } = useSourceMaster()
   const [months, setMonths] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [dateFrom, setDateFrom] = useState('')
@@ -492,8 +495,9 @@ export default function SourceWiseData({ onboardingData = [] }) {
   }, [dateFrom, dateTo, staticLoading, loadOrdersForRange])
 
   const refreshAll = useCallback(() => {
+    refreshSources()
     loadOrdersForRange(dateFrom, dateTo, { force: true })
-  }, [dateFrom, dateTo, loadOrdersForRange])
+  }, [dateFrom, dateTo, loadOrdersForRange, refreshSources])
 
   const baseReport = useMemo(() => {
     if (!dateFrom || !dateTo || dateFrom > dateTo || !orderRows.length) {
@@ -509,16 +513,24 @@ export default function SourceWiseData({ onboardingData = [] }) {
     )
   }, [orderRows, onboardingRows, overallRows, mappingRows, currentRows, dateFrom, dateTo, viewTab])
 
-  const clientFilterArg = viewTab === 'bySource' ? 'All' : deferredClient === 'All' ? 'All' : [deferredClient]
-
-  const monthRows = useMemo(
+  const exportMonthRows = useMemo(
     () =>
       filterSourceMonthRows(baseReport.month, {
         cityFilter: deferredCity,
-        clientFilter: clientFilterArg,
+        clientFilter: viewTab === 'bySource' || deferredClient === 'All' ? 'All' : [deferredClient],
       }),
-    [baseReport.month, deferredCity, clientFilterArg]
+    [baseReport.month, deferredCity, deferredClient, viewTab]
   )
+
+  const monthRows = useMemo(() => exportMonthRows.filter((row) =>
+    isListedSource(sourceIndex, row.City, row.Source)
+  ), [exportMonthRows, sourceIndex])
+
+  // Source visibility/search only affects the page. Exports retain every source
+  // within the selected dates, city and client, including inactive/unknown ones.
+  const exportRows = useMemo(() => [...exportMonthRows].sort((a, b) =>
+    compareSourceRows(a, b, sortKey, sortDir)
+  ), [exportMonthRows, sortKey, sortDir])
 
   const filterOptions = useMemo(
     () => collectFullDataFilterOptions(orderRows, overallRows),
@@ -553,7 +565,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
   }, [clientOptions, clientFilter])
 
   useEffect(() => {
-    if (sourceFilter !== 'All' && sourceOptions.length > 1 && !sourceOptions.includes(sourceFilter)) {
+    if (sourceFilter !== 'All' && !sourceOptions.includes(sourceFilter)) {
       startTransition(() => setSourceFilter('All'))
     }
   }, [sourceOptions, sourceFilter])
@@ -598,7 +610,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchTerm, cityFilter, clientFilter, sourceFilter, dateFrom, dateTo, orderRows.length, viewTab, sortKey, sortDir])
+  }, [searchTerm, cityFilter, clientFilter, sourceFilter, dateFrom, dateTo, orderRows.length, viewTab, sortKey, sortDir, sourceIndex])
 
   const toggleSort = (col) => {
     if (TEXT_COLUMNS.has(col) && col !== 'Active window end') return
@@ -613,20 +625,20 @@ export default function SourceWiseData({ onboardingData = [] }) {
   }
 
   const exportExcel = () => {
-    if (!sortedRows.length) return
+    if (!exportRows.length) return
     setExporting(true)
     try {
       const wb = XLSX.utils.book_new()
       const sheetName = viewTab === 'byClient' ? 'Source by Client' : 'Source Total'
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sortedRows), sheetName)
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exportRows), sheetName)
       const rawRows = buildFullDataSourceRawOrderRows(orderRows, onboardingRows, overallRows, mappingRows, currentRows, {
-        fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient', summaryRows: sortedRows,
+        fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient', summaryRows: exportRows,
       })
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rawRows, { header: SOURCE_RAW_ORDER_COLUMNS }), 'Raw Orders')
       if (baseReport.activeSummary?.length) {
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(baseReport.activeSummary), 'Active Summary')
       }
-      const suffix = `${dateFrom}_${dateTo}_${cityFilter}_${clientFilter}_${sourceFilter}`.replace(/\s+/g, '_')
+      const suffix = `${dateFrom}_${dateTo}_${cityFilter}_${clientFilter}_All_Sources`.replace(/\s+/g, '_')
       XLSX.writeFile(wb, `Source_Wise_Data_${suffix}.xlsx`)
     } catch (err) {
       setError(err.message || 'Failed to export Excel')
@@ -653,6 +665,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
             </h1>
             <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '820px', fontSize: '0.9rem' }}>
               Source / city / client month summary with active rider counts (last 4 order days).
+              {' '}Only active listed sources appear here. Excel includes all sources.
             </p>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -670,8 +683,8 @@ export default function SourceWiseData({ onboardingData = [] }) {
               type="button"
               className="glass"
               onClick={exportExcel}
-              disabled={exporting || loading || filtersPending || !sortedRows.length}
-              title="Download source summary, detailed raw orders and active summary"
+              disabled={exporting || loading || filtersPending || !exportRows.length}
+              title="Download all sources for the selected dates, city and client, including hidden sources"
               style={{ padding: '0.45rem 0.75rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             >
               {exporting ? <Loader size={14} className="spin" /> : <Download size={14} />}
@@ -680,6 +693,9 @@ export default function SourceWiseData({ onboardingData = [] }) {
           </div>
         </div>
       </header>
+
+      {sourcesLoading && <p role="status">Loading source list...</p>}
+      {sourceError && <p role="alert" style={{ color: '#f87171' }}>{sourceError}</p>}
 
       <div
         className="glass"

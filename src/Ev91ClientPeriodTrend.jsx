@@ -9,6 +9,8 @@ import { buildClientSourceReport } from './lib/ev91ClientSourceReport'
 import { attachClientPeriodStickyHeader } from './lib/clientPeriodStickyHeader'
 import { attachClientPeriodHorizontalScroll } from './lib/clientPeriodHorizontalScroll'
 import { clientPeriodValueLevels, TREND_VALUE_COLORS } from './lib/clientPeriodValueColors'
+import { useSourceMaster } from './lib/useSourceMaster'
+import { isListedSource } from './lib/sourceMaster'
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -251,6 +253,7 @@ function buildRiderReport(rows, filters, mode, periods) {
 }
 
 export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS }) {
+  const { sourceIndex, sourcesLoading, sourceError, refreshSources } = useSourceMaster()
   const pageRef = useRef(null)
   const filtersRef = useRef(null)
   const [paymentResult, setPaymentResult] = useState({ key: '', rows: [], error: '' })
@@ -301,11 +304,20 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
 
   const onboardingRows = onboardingData ?? EMPTY_ONBOARDING_ROWS
 
-  const orderRows = useMemo(() => normalizeRows(paymentRows), [paymentRows])
+  const allOrderRows = useMemo(() => normalizeRows(paymentRows), [paymentRows])
   const onboardingSourceIndex = useMemo(
     () => buildOnboardingSourceLookupIndex(onboardingRows),
     [onboardingRows]
   )
+  const sourceForRow = (row) => lookupOnboardingSource(onboardingSourceIndex, {
+    riderIds: [row.rider_id, row.rider_name], phone: row.rider_mobile_number,
+  }) || String(row.source_name || 'Unknown').trim() || 'Unknown'
+  const orderRows = useMemo(() => allOrderRows.filter((row) => {
+    const source = lookupOnboardingSource(onboardingSourceIndex, {
+      riderIds: [row.rider_id, row.rider_name], phone: row.rider_mobile_number,
+    }) || row.source_name
+    return isListedSource(sourceIndex, row.city, source)
+  }), [allOrderRows, onboardingSourceIndex, sourceIndex])
   const onboardingDetailIndex = useMemo(() => {
     const index = new Map()
     for (const onboarding of onboardingRows) {
@@ -410,7 +422,6 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     }) || String(row.source_name || 'Unknown').trim() || 'Unknown',
     periodForRow: (row) => periodInfo(row, viewMode).label,
   }), [orderRows, activeReport.periods, filters, onboardingSourceIndex, viewMode])
-  const activeSourceRows = sourceReport.riderRows
   const visibleSourceRiderRows = useMemo(() => sourceReport.riderRows.filter((row) =>
     comparable(row.source).includes(comparable(sourceRiderSearch))
   ), [sourceReport.riderRows, sourceRiderSearch])
@@ -433,7 +444,8 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         import('./lib/clientPeriodExcelExport'),
         fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate }),
       ])
-      const filteredRows = normalizeRows(fullRows).filter((row) => rowMatches(row, filters, viewMode)).map((row) => {
+      const exportRows = normalizeRows(fullRows)
+      const filteredRows = exportRows.filter((row) => rowMatches(row, filters, viewMode)).map((row) => {
         const detail = [row.rider_id, row.rider_name]
           .flatMap((value) => riderIdLookupKeys(value))
           .map((key) => onboardingDetailIndex.get(key))
@@ -445,12 +457,23 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
           'Source Phone Number': onboardingPhone(detail) || String(row.rider_mobile_number || row.mobile || row.phone || '').trim(),
         }
       })
-      const periods = activeReport.periods
+      // Rebuild every export summary from full data, independently of visibility
+      // and source searches, including periods with only unlisted sources.
+      const exportRevenue = buildRevenueReport(exportRows, filters, viewMode)
+      const periods = exportRevenue.periods
+      const exportRiders = buildRiderReport(exportRows, filters, viewMode, periods)
+      const exportSources = buildClientSourceReport(exportRows, {
+        periods,
+        matches: (row) => rowMatches(row, filters, viewMode),
+        sourceForRow,
+        periodForRow: (row) => periodInfo(row, viewMode).label,
+      })
+      const activeSourceRows = exportSources.riderRows
       const matrix = (rows, totalRow) => [...rows.map((row) => ({ Name: row.name, ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])), Total: row.total })), { Name: 'Total', ...Object.fromEntries(periods.map((period) => [period, totalRow.totals[period] || 0])), Total: totalRow.grandTotal }]
       const sourceExport = [{ Source: 'Total', ...Object.fromEntries(periods.map((period) => [period, activeSourceRows.reduce((sum, row) => sum + (row.values[period] || 0), 0)])) }, ...activeSourceRows.map((row) => ({ Source: row.source, ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])) }))]
       const sourceRevenueExport = [
-        { Source: 'Total', ...sourceReport.revenueTotals },
-        ...sourceReport.revenueRows.map((row) => ({
+        { Source: 'Total', ...exportSources.revenueTotals },
+        ...exportSources.revenueRows.map((row) => ({
           Source: row.source,
           ...Object.fromEntries(periods.map((period) => [period, row.values[period] || 0])),
         })),
@@ -459,8 +482,8 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         rawRows: filteredRows,
         periods,
         summarySheets: [
-          { name: `${viewMode} Revenue`, rows: matrix(activeReport.rows, activeReport), totalRowIndex: activeReport.rows.length },
-          { name: `${viewMode} Riders`, rows: matrix(activeRiderReport.rows, activeRiderReport), totalRowIndex: activeRiderReport.rows.length },
+          { name: `${viewMode} Revenue`, rows: matrix(exportRevenue.rows, exportRevenue), totalRowIndex: exportRevenue.rows.length },
+          { name: `${viewMode} Riders`, rows: matrix(exportRiders.rows, exportRiders), totalRowIndex: exportRiders.rows.length },
           { name: `${viewMode} Sources`, rows: sourceExport, totalRowIndex: 0 },
           { name: `${viewMode} Source Revenue`, rows: sourceRevenueExport, totalRowIndex: 0 },
         ],
@@ -492,8 +515,12 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         <div>
           <h1><Table2 size={22} /> EV91 Client Period Trend</h1>
           <p>Rider Payment Data · weekly gross payout revenue and source-wise rider count</p>
+          <p>Only active listed sources appear here. Exports include all sources for the selected dates, city and client.</p>
         </div>
         <div className="ev91-client-trend-actions">
+          <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={refreshSources} disabled={sourcesLoading}>
+            <RefreshCw size={15} /> Refresh sources
+          </button>
           <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={exportReport} disabled={loading || exporting} title="Export raw data and summaries">
             <Download size={15} /> {exporting ? 'Exporting...' : 'Export'}
           </button>
@@ -502,6 +529,9 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
           </button>
         </div>
       </div>
+
+      {sourcesLoading && <p role="status">Loading source list...</p>}
+      {sourceError && <p role="alert" style={{ color: '#f87171' }}>{sourceError}</p>}
 
       <div className="glass ev91-client-trend-filters" ref={filtersRef} role="region" aria-label="Client period trend filters">
         <label className="filter-label">From<input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={selectStyle} /></label>

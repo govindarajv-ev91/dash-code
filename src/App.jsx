@@ -42,6 +42,7 @@ const Ev91Vehicles = lazy(() => import('./Ev91Vehicles'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
 const SourceWiseData = lazy(() => import('./SourceWiseData'))
+const SourceMaster = lazy(() => import('./SourceMaster'))
 import {
   FLEET_FORM_CACHE_KEY,
   FLEET_FORM_TABLE,
@@ -73,6 +74,7 @@ const EV91_PAGES = new Set([
   'ev91-summary',
   'ev91-operational',
   'ev91-client-period-trend',
+  'ev91-sources',
   'ev91-vehicles',
   'ev91-iotupload',
 ])
@@ -844,6 +846,14 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
                   </button>
                 <button
                   type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-sources' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-sources')}
+                >
+                  <Users size={18} />
+                  Source List
+                </button>
+                <button
+                  type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-current' ? 'active' : ''}`}
                   onClick={() => openEv91Page('ev91-current')}
                 >
@@ -1062,6 +1072,8 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
           <Ev91OperationalStatus />
         ) : activePage === 'ev91-client-period-trend' ? (
           <Ev91ClientPeriodTrend riderData={riderData} onboardingData={onboardingData} />
+        ) : activePage === 'ev91-sources' ? (
+          <SourceMaster canManage={!!user && !!isAdmin} />
         ) : activePage === 'ev91-vehicles' ? (
           <Ev91Vehicles />
         ) : activePage === 'ev91-insight' ? (

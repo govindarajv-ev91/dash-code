@@ -285,14 +285,14 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
   const queryToDate = viewMode === 'monthly' && !Number.isNaN(to.getTime())
     ? format(endOfMonth(to), 'yyyy-MM-dd')
     : toDate
-  const queryKey = `${queryFromDate}|${queryToDate}`
+  const queryKey = `${viewMode}|${queryFromDate}|${queryToDate}`
   const paymentRows = paymentResult.rows
   const loading = paymentResult.key !== queryKey
   const error = (loading ? '' : paymentResult.error) || exportError
 
   useEffect(() => {
     let cancelled = false
-    fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate, slim: true })
+    fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate, slim: true, monthly: viewMode === 'monthly' })
       .then((rows) => {
         if (!cancelled) setPaymentResult({ key: queryKey, rows: rows || [], error: '' })
       })
@@ -300,7 +300,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         if (!cancelled) setPaymentResult({ key: queryKey, rows: [], error: err?.message || 'Failed to load Rider Payment Data.' })
       })
     return () => { cancelled = true }
-  }, [queryFromDate, queryToDate, queryKey])
+  }, [queryFromDate, queryToDate, queryKey, viewMode])
 
   const onboardingRows = onboardingData ?? EMPTY_ONBOARDING_ROWS
 
@@ -333,10 +333,8 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
   const options = useMemo(() => {
     const cities = new Set()
     const clients = new Set()
-    for (const row of orderRows) {
-      const date = String(row.date_record).slice(0, 10)
-      if (fromDate && date < fromDate) continue
-      if (toDate && date > toDate) continue
+    for (const row of allOrderRows) {
+      if (!rowMatches(row, { city: 'All', client: 'All', fromDate, toDate }, viewMode)) continue
       if (row.city) cities.add(normalizeSummaryCity(row.city))
       if (row.client) clients.add(String(row.client).trim())
     }
@@ -344,13 +342,14 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
       cities: [...cities].filter(Boolean).sort(),
       clients: [...clients].filter(Boolean).sort(),
     }
-  }, [orderRows, fromDate, toDate])
+  }, [allOrderRows, fromDate, toDate, viewMode])
 
   const weeklyReport = useMemo(() => {
     if (viewMode !== 'weekly') return EMPTY_WEEKLY_REPORT
     const byClient = new Map()
     const weekOrder = new Map()
-    for (const row of orderRows) {
+    // Client revenue represents every payment, independently of source visibility.
+    for (const row of allOrderRows) {
       const date = String(row.period_start || '').slice(0, 10)
       if (!date || (fromDate && date < fromDate) || (toDate && date > toDate)) continue
       if (city !== 'All' && normalizeSummaryCity(row.city) !== city) continue
@@ -374,7 +373,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
       totals,
       grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0),
     }
-  }, [orderRows, city, client, fromDate, toDate, viewMode])
+  }, [allOrderRows, city, client, fromDate, toDate, viewMode])
 
   const weeklyRiderReport = useMemo(() => {
     if (viewMode !== 'weekly') return EMPTY_PERIOD_REPORT
@@ -402,7 +401,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
   }, [orderRows, city, client, fromDate, toDate, weeklyReport.weeks, viewMode])
 
   const filters = useMemo(() => ({ city, client, fromDate, toDate }), [city, client, fromDate, toDate])
-  const monthlyReport = useMemo(() => viewMode === 'monthly' ? buildRevenueReport(orderRows, filters, 'monthly') : EMPTY_PERIOD_REPORT, [orderRows, filters, viewMode])
+  const monthlyReport = useMemo(() => viewMode === 'monthly' ? buildRevenueReport(allOrderRows, filters, 'monthly') : EMPTY_PERIOD_REPORT, [allOrderRows, filters, viewMode])
   const monthlyRiderReport = useMemo(() => viewMode === 'monthly' ? buildRiderReport(orderRows, filters, 'monthly', monthlyReport.periods) : EMPTY_PERIOD_REPORT, [orderRows, filters, monthlyReport.periods, viewMode])
 
   const activeReport = viewMode === 'monthly' ? monthlyReport : { periods: weeklyReport.weeks, periodStarts: weeklyReport.weekStarts, rows: weeklyReport.rows, totals: weeklyReport.totals, grandTotal: weeklyReport.grandTotal }
@@ -442,7 +441,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     try {
       const [{ downloadClientPeriodExcel }, fullRows] = await Promise.all([
         import('./lib/clientPeriodExcelExport'),
-        fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate }),
+        fetchRiderPaymentsForPeriod({ fromDate: queryFromDate, toDate: queryToDate, monthly: viewMode === 'monthly' }),
       ])
       const exportRows = normalizeRows(fullRows)
       const filteredRows = exportRows.filter((row) => rowMatches(row, filters, viewMode)).map((row) => {
@@ -515,7 +514,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         <div>
           <h1><Table2 size={22} /> EV91 Client Period Trend</h1>
           <p>Rider Payment Data · weekly gross payout revenue and source-wise rider count</p>
-          <p>Only active listed sources appear here. Exports include all sources for the selected dates, city and client.</p>
+          <p>Client payout revenue includes all sources. Rider counts and source tables show active listed sources. Exports include all sources for the selected dates, city and client.</p>
         </div>
         <div className="ev91-client-trend-actions">
           <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={refreshSources} disabled={sourcesLoading}>

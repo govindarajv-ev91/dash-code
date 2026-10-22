@@ -23,10 +23,11 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true, include: [] },
   plugins: [{ name: 'source-search-payments', enforce: 'pre', transform(_code, id) {
     if (id.replaceAll('\\', '/').endsWith('/src/lib/riderPaymentDb.js')) {
-      return 'export const fetchRiderPaymentsForPeriod = async () => globalThis.__sourceSearchPayments'
+      return 'export const fetchRiderPaymentsForPeriod = async (params) => { globalThis.__sourcePaymentQuery = params; return globalThis.__sourceSearchPayments }'
     }
     if (id.replaceAll('\\', '/').endsWith('/src/lib/sourceMasterDb.js')) {
       return `export const fetchSourceMaster = async () => {
+        if (globalThis.__sourceMasterPending) return globalThis.__sourceMasterPending;
         if (globalThis.__sourceMasterFailure) throw new Error('Unavailable');
         return globalThis.__sourceMasterRows;
       }`
@@ -39,10 +40,10 @@ const server = await createServer({
 const { default: Trend } = await server.ssrLoadModule('/src/Ev91ClientPeriodTrend.jsx')
 after(async () => {
   await server.close(); dom.window.close()
-  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'Event', 'IS_REACT_ACT_ENVIRONMENT', '__sourceSearchPayments', '__sourceMasterRows', '__sourceMasterFailure', '__sourceExport']) delete globalThis[key]
+  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'Event', 'IS_REACT_ACT_ENVIRONMENT', '__sourceSearchPayments', '__sourceMasterRows', '__sourceMasterFailure', '__sourceMasterPending', '__sourcePaymentQuery', '__sourceExport']) delete globalThis[key]
 })
 
-test('active city/source list filters all tables but every export summary retains hidden sources and periods', async (t) => {
+test('client revenue includes all sources while rider/source tables retain active-source visibility and exports retain everything', async (t) => {
   const previous = globalThis.__sourceSearchPayments
   const master = globalThis.__sourceMasterRows
   globalThis.__sourceMasterRows = [
@@ -66,10 +67,10 @@ test('active city/source list filters all tables but every export summary retain
   })
   await act(async () => root.render(createElement(Trend)))
   const tables = () => [...container.querySelectorAll('section tbody')]
-  const total = (table) => table.querySelector('tr th:nth-child(2)')?.textContent
   for (const mode of ['weekly', 'monthly']) {
     await act(async () => container.querySelector(`input[value="${mode}"]`).click())
-    assert.deepEqual(tables().map(total), ['150', '2', '2', '150'])
+    const totals = tables().map((table, index) => table.querySelector(index < 2 ? 'tr th:last-child' : 'tr th:nth-child(2)')?.textContent)
+    assert.deepEqual(totals, ['1,850', '2', '2', '150'])
     assert.doesNotMatch(tables()[2].textContent, /Beta Team|Unlisted|Wrong city|Unknown/)
     await act(async () => [...container.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Export').click())
     await act(async () => new Promise((resolve) => setTimeout(resolve, 100)))
@@ -88,7 +89,8 @@ test('active city/source list filters all tables but every export summary retain
   // An intentionally empty list hides all displayed data, but export stays enabled.
   globalThis.__sourceMasterRows = []
   await act(async () => window.dispatchEvent(new Event('focus')))
-  assert.ok(tables().every((table) => !table.querySelector('th')))
+  assert.equal(tables()[0].querySelector('tr th:last-child').textContent, '1,850')
+  assert.ok(tables().slice(1).every((table) => !table.querySelector('th')))
   const exportButton = [...container.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Export')
   assert.equal(exportButton.disabled, false)
   await act(async () => exportButton.click())
@@ -97,7 +99,8 @@ test('active city/source list filters all tables but every export summary retain
   globalThis.__sourceMasterFailure = true
   await act(async () => window.dispatchEvent(new Event('focus')))
   assert.match(container.querySelector('[role="alert"]').textContent, /Unable to load the source list/)
-  assert.ok(tables().every((table) => !table.querySelector('th')))
+  assert.equal(tables()[0].querySelector('tr th:last-child').textContent, '1,850')
+  assert.ok(tables().slice(1).every((table) => !table.querySelector('th')))
   delete globalThis.__sourceMasterFailure
 })
 
@@ -181,4 +184,69 @@ test('table radio selection shows the chosen table and preserves each source sea
   assert.equal(container.querySelectorAll('.data-table').length, 4)
   assert.equal(container.querySelector('[aria-label="Search sources in rider count"]').value, 'Alpha')
   assert.equal(container.querySelector('[aria-label="Search sources in payout revenue"]').value, 'Beta')
+})
+
+test('September client gross payout reconciles to all payments regardless of active sources', async (t) => {
+  const previous = globalThis.__sourceSearchPayments
+  const base = previous[0]
+  globalThis.__sourceSearchPayments = [
+    { ...base, id: 1, month: 'Sep-26', week: '3626', period_start: '2026-08-31', gross_payout: 52106581 },
+    { ...base, id: 2, month: 'Sep-26', week: '3726', period_start: '2026-09-07',
+      source_name: 'Unlisted', client_name: 'Other client', city: 'Delhi', gross_payout: 10267896 },
+  ]
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => {
+    await act(async () => root.unmount()); container.remove()
+    globalThis.__sourceSearchPayments = previous
+  })
+  await act(async () => root.render(createElement(Trend)))
+  await act(async () => container.querySelector('input[value="monthly"]').click())
+  const change = async (selector, value) => act(async () => {
+    const input = container.querySelector(selector)
+    const prototype = input.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value)
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await change('input[type="date"]', '2026-09-01')
+  const endInput = container.querySelectorAll('input[type="date"]')[1]
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(endInput, '2026-09-30')
+    endInput.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  assert.equal(globalThis.__sourcePaymentQuery.monthly, true)
+  assert.equal(globalThis.__sourcePaymentQuery.fromDate, '2026-09-01')
+  assert.equal(globalThis.__sourcePaymentQuery.toDate, '2026-09-30')
+  const revenue = container.querySelector('section tbody')
+  assert.equal(revenue.querySelector('tr th:nth-child(2)').textContent, '6,23,74,477')
+  assert.match(revenue.textContent, /Other client/)
+  assert.ok([...container.querySelectorAll('select')[0].options].some((option) => option.value === 'Delhi'))
+  await change('select', 'Delhi')
+  assert.equal(revenue.querySelector('tr th:nth-child(2)').textContent, '1,02,67,896')
+})
+
+test('returning focus keeps tables visible during refresh, then applies source changes', async (t) => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => {
+    delete globalThis.__sourceMasterPending
+    await act(async () => root.unmount()); container.remove()
+  })
+  await act(async () => root.render(createElement(Trend)))
+  const totals = () => [...container.querySelectorAll('section tbody')]
+    .map((table) => table.querySelector('tr th:nth-child(2)')?.textContent)
+  const before = totals()
+  let release
+  globalThis.__sourceMasterPending = new Promise((resolve) => { release = resolve })
+  await act(async () => window.dispatchEvent(new Event('focus')))
+  assert.match(container.querySelector('[role="status"]').textContent, /Loading source list/)
+  assert.deepEqual(totals(), before)
+  await act(async () => root.render(null))
+  await act(async () => root.render(createElement(Trend)))
+  assert.deepEqual(totals(), before, 'returning to the page reuses the last successful source list')
+  await act(async () => release([]))
+  assert.deepEqual(totals(), ['350', undefined, undefined, undefined])
 })

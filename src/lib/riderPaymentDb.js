@@ -105,15 +105,21 @@ export async function clearRiderPaymentDataByMonth(month) {
   clearRiderPaymentCache()
 }
 
-export async function fetchRiderPaymentMonths() {
+export async function fetchRiderPaymentMonths({ requireComplete = false } = {}) {
   const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
   if (probe.error) throw probe.error
   if (!probe.data?.length) return []
 
   const { data: rpcData, error: rpcError } = await supabase.rpc('distinct_rider_payment_months')
-  if (!rpcError && Array.isArray(rpcData) && rpcData.length) {
+  if (!rpcError && Array.isArray(rpcData) && (rpcData.length || requireComplete)) {
     const labels = rpcData.map((row) => (typeof row === 'string' ? row : row?.month))
     return mergeMonthLists(labels)
+  }
+
+  // A sampled month list is useful for upload controls, but could silently
+  // omit entire accounting months from a revenue report.
+  if (requireComplete) {
+    throw new Error('Unable to load all payment months. Refresh and retry; if this continues, run sql/create_rider_payment_tables.sql to restore distinct_rider_payment_months.')
   }
 
   if (rpcError) {
@@ -180,6 +186,24 @@ let paymentCacheGeneration = 0
 /** Only fields used by Client Period Trend; full payment details load on export. */
 export const RIDER_PAYMENT_TREND_COLUMNS =
   'id,client_name,week,month,rider_id,rider_name,city,orders,gross_payout,period_start,period_label,rider_key,source_name'
+
+function paymentMonthKey(value) {
+  const match = String(value || '').trim().match(/^([A-Za-z]{3,9})[-\s/]?(\d{2}|\d{4})$/)
+  if (!match) return ''
+  const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    .indexOf(match[1].slice(0, 3).toLowerCase())
+  if (month < 0) return ''
+  let year = Number(match[2])
+  if (year < 100) year += year >= 70 ? 1900 : 2000
+  return `${year}-${String(month + 1).padStart(2, '0')}`
+}
+
+function matchesPaymentRange(row, fromDate, toDate, monthly) {
+  const key = monthly ? paymentMonthKey(row.month) : row.period_start
+  const from = monthly ? fromDate.slice(0, 7) : fromDate
+  const to = monthly ? toDate.slice(0, 7) : toDate
+  return !key || ((!from || key >= from) && (!to || key <= to))
+}
 
 function paymentDateRanges(fromDate, toDate) {
   // Partition by calendar month so independent keyset scans can run concurrently.
@@ -282,17 +306,16 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
   return paymentsInflight
 }
 
-export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', force = false, slim = false } = {}) {
+export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', force = false, slim = false, monthly = false } = {}) {
   if (fromDate && toDate && fromDate > toDate) return []
   const columns = slim ? RIDER_PAYMENT_TREND_COLUMNS : RIDER_PAYMENT_COLUMNS
-  const cacheKey = `${columns}|${fromDate}|${toDate}`
+  const cacheKey = `${monthly ? 'month' : 'period'}|${columns}|${fromDate}|${toDate}`
   if (!force) {
     for (const cached of rangedPaymentsCache.values()) {
-      if (cached.columns === columns &&
+      if (cached.columns === columns && cached.monthly === monthly &&
           (!cached.fromDate || (fromDate && cached.fromDate <= fromDate)) &&
           (!cached.toDate || (toDate && cached.toDate >= toDate))) {
-        return cached.rows.filter((row) => !row.period_start ||
-          ((!fromDate || row.period_start >= fromDate) && (!toDate || row.period_start <= toDate)))
+        return cached.rows.filter((row) => matchesPaymentRange(row, fromDate, toDate, monthly))
       }
     }
   }
@@ -300,21 +323,36 @@ export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', 
 
   const generation = paymentCacheGeneration
   const request = (async () => {
-    const ranges = paymentDateRanges(fromDate, toDate)
+    // Monthly totals follow the uploaded accounting month. A September payment
+    // can have an August week start (or no period_start at all).
+    const ranges = monthly
+      ? (await fetchRiderPaymentMonths({ requireComplete: true })).filter((month) => {
+        const key = paymentMonthKey(month)
+        return key && (!fromDate || key >= fromDate.slice(0, 7)) && (!toDate || key <= toDate.slice(0, 7))
+      }).map((month) => ({ month }))
+      : paymentDateRanges(fromDate, toDate)
     const pages = new Array(ranges.length)
     let next = 0
     await Promise.all(Array.from({ length: Math.min(4, ranges.length) }, async () => {
       while (next < ranges.length) {
         const index = next++
         const range = ranges[index]
-        pages[index] = await fetchPaymentPeriodRange(columns, range)
+        if (monthly) {
+          const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, columns, 'id', {
+            useKeyset: true, throwOnError: true, untilEmpty: true, maxRetries: 2,
+            queryModifier: (query) => query.eq('month', range.month),
+          })
+          pages[index] = data
+        } else {
+          pages[index] = await fetchPaymentPeriodRange(columns, range)
+        }
       }
     }))
     let rows = pages.flat().sort((a, b) => Number(a.id) - Number(b.id))
     // Older uploads may not have period_start; let the page derive it from week/month.
-    if (!rows.length && fromDate && toDate) rows = await fetchAllRiderPayments({ force })
+    if (!monthly && !rows.length && fromDate && toDate) rows = await fetchAllRiderPayments({ force })
     if (generation === paymentCacheGeneration) {
-      rangedPaymentsCache.set(cacheKey, { columns, fromDate, toDate, rows })
+      rangedPaymentsCache.set(cacheKey, { columns, fromDate, toDate, monthly, rows })
     }
     return rows
   })().finally(() => {

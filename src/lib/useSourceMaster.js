@@ -2,18 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchSourceMaster } from './sourceMasterDb'
 import { buildSourceMasterIndex } from './sourceMaster'
 
+let cachedSourceRows = []
+
 export function useSourceMaster() {
-  const [result, setResult] = useState({ rows: [], loading: true, error: '' })
+  const [result, setResult] = useState(() => ({ rows: cachedSourceRows, loading: true, error: '' }))
   const generation = useRef(0)
   const refreshSources = useCallback(async () => {
     const request = ++generation.current
-    setResult({ rows: [], loading: true, error: '' })
+    setResult((previous) => ({ ...previous, loading: true, error: '' }))
     try {
       const rows = await fetchSourceMaster()
-      if (request === generation.current) setResult({ rows, loading: false, error: '' })
+      if (request === generation.current) {
+        cachedSourceRows = rows
+        setResult({ rows, loading: false, error: '' })
+      }
     } catch {
-      if (request === generation.current) setResult({ rows: [], loading: false,
-        error: 'Unable to load the source list. Run sql/create_source_master.sql in Supabase, then refresh sources. Exports still include all sources.' })
+      if (request === generation.current) {
+        cachedSourceRows = []
+        setResult({ rows: [], loading: false,
+          error: 'Unable to load the source list. Run sql/create_source_master.sql in Supabase, then refresh sources. Exports still include all sources.' })
+      }
     }
   }, [])
   useEffect(() => {

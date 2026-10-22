@@ -4,11 +4,13 @@ import { createServer } from 'vite'
 
 const queries = []
 let reply
+let monthError = null
 globalThis.__paymentPeriodTestClient = {
+  rpc() { return Promise.resolve({ data: ['Aug-26', 'Sep-26', 'September 2026', 'Oct-26'], error: monthError }) },
   from(table) {
     const query = { table }
     const builder = {}
-    for (const method of ['select', 'gte', 'lte', 'gt', 'or', 'range', 'limit']) {
+    for (const method of ['select', 'eq', 'gte', 'lte', 'gt', 'or', 'range', 'limit']) {
       builder[method] = (...args) => { query[method] = args; return builder }
     }
     builder.order = (...args) => { (query.orders ||= []).push(args); return builder }
@@ -34,11 +36,12 @@ const server = await createServer({
 })
 after(async () => { await server.close(); delete globalThis.__paymentPeriodTestClient })
 const db = await server.ssrLoadModule('/src/lib/riderPaymentDb.js')
-beforeEach(() => { queries.length = 0; db.clearRiderPaymentCache() })
+beforeEach(() => { queries.length = 0; monthError = null; db.clearRiderPaymentCache() })
 
 function page(query, rows, cap = Infinity) {
   const cursor = query.or?.[0].match(/period_start\.eq\.([^,]+),id\.gt\.(\d+)/)
   return rows.filter((row) =>
+    (!query.eq || row[query.eq[0]] === query.eq[1]) &&
     (!query.gte || row[query.gte[0]] >= query.gte[1]) &&
     (!query.lte || row[query.lte[0]] <= query.lte[1]) &&
     (!query.gt || row.id > query.gt[1]) &&
@@ -187,4 +190,39 @@ test('unbounded requests preserve undated uploads through ID pagination', async 
   reply = (query) => ({ data: page(query, rows, 1), error: null })
   assert.deepEqual(await db.fetchRiderPaymentsForPeriod({ slim: true }), rows)
   assert.equal(queries.length, 3)
+})
+
+test('monthly reads include previous-month week starts and undated payments, with separate weekly and export caches', async () => {
+  const rows = [
+    { id: 1, month: 'Sep-26', period_start: '2026-08-31', gross_payout: 13242990 },
+    { id: 2, month: 'Sep-26', period_start: '2026-09-07', gross_payout: 49131487 },
+    { id: 3, month: 'September 2026', period_start: null, gross_payout: 100 },
+    { id: 4, month: 'Aug-26', period_start: '2026-09-01', gross_payout: 200 },
+    { id: 5, month: 'Oct-26', period_start: '2026-09-28', gross_payout: 300 },
+  ]
+  reply = (query) => ({ data: page(query, rows, 1), error: null })
+  const params = { fromDate: '2026-09-01', toDate: '2026-09-30', slim: true }
+  await db.fetchRiderPaymentsForPeriod(params)
+  const start = queries.length
+  const monthly = await db.fetchRiderPaymentsForPeriod({ ...params, monthly: true })
+  assert.deepEqual(monthly, rows.slice(0, 3))
+  assert.equal(monthly.slice(0, 2).reduce((sum, row) => sum + row.gross_payout, 0), 62374477)
+  assert.deepEqual(new Set(queries.slice(start).filter((query) => query.eq).map((query) => query.eq[1])),
+    new Set(['Sep-26', 'September 2026']))
+  const calls = queries.length
+  assert.deepEqual(await db.fetchRiderPaymentsForPeriod({ ...params, fromDate: '2026-09-15', monthly: true }), monthly)
+  assert.equal(queries.length, calls, 'narrowing within a month retains its boundary and undated payments')
+  assert.deepEqual(await db.fetchRiderPaymentsForPeriod({ ...params, slim: false, monthly: true }), monthly)
+  assert.ok(queries.slice(calls).some((query) => query.select[0] === db.RIDER_PAYMENT_COLUMNS))
+})
+
+test('monthly revenue refuses sampled month lists and retries without caching an incomplete result', async () => {
+  const row = { id: 1, month: 'Sep-26', period_start: '2026-08-31', gross_payout: 100 }
+  reply = (query) => ({ data: page(query, [row]), error: null })
+  monthError = { code: '57014', message: 'statement timeout' }
+  const params = { fromDate: '2026-09-01', toDate: '2026-09-30', slim: true, monthly: true }
+  await assert.rejects(db.fetchRiderPaymentsForPeriod(params), /Unable to load all payment months/)
+  assert.equal(queries.length, 1, 'does not substitute a sampled month list')
+  monthError = null
+  assert.deepEqual(await db.fetchRiderPaymentsForPeriod(params), [row])
 })

@@ -39,6 +39,7 @@ const Ev91DeployReturnSummary = lazy(() => import('./Ev91DeployReturnSummary'))
 const Ev91OperationalStatus = lazy(() => import('./Ev91OperationalStatus'))
 const Ev91ClientPeriodTrend = lazy(() => import('./Ev91ClientPeriodTrend'))
 const Ev91Vehicles = lazy(() => import('./Ev91Vehicles'))
+const Ev91SdWallet = lazy(() => import('./Ev91SdWallet'))
 const BigQueryDeployReturn = lazy(() => import('./BigQueryDeployReturn'))
 const ServiceSchedule = lazy(() => import('./ServiceSchedule'))
 const SourceWiseData = lazy(() => import('./SourceWiseData'))
@@ -76,6 +77,7 @@ const EV91_PAGES = new Set([
   'ev91-client-period-trend',
   'ev91-sources',
   'ev91-vehicles',
+  'ev91-sd',
   'ev91-iotupload',
 ])
 const EV91_ENDPOINT_BY_PAGE = {
@@ -830,6 +832,14 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
                 </button>
                 <button
                   type="button"
+                  className={`nav-item nav-item-child ${activePage === 'ev91-sd' ? 'active' : ''}`}
+                  onClick={() => openEv91Page('ev91-sd')}
+                >
+                  <Shield size={18} />
+                  EV91 SD
+                </button>
+                <button
+                  type="button"
                   className={`nav-item nav-item-child ${activePage === 'ev91-operational' ? 'active' : ''}`}
                   onClick={() => openEv91Page('ev91-operational')}
                 >
@@ -1076,6 +1086,8 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
           <SourceMaster canManage={!!user && !!isAdmin} />
         ) : activePage === 'ev91-vehicles' ? (
           <Ev91Vehicles />
+        ) : activePage === 'ev91-sd' ? (
+          <Ev91SdWallet />
         ) : activePage === 'ev91-insight' ? (
           <VehicleTracking
             fleetData={displayFleetData}

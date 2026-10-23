@@ -162,6 +162,27 @@ function ev91VehiclesApiPlugin() {
   }
 }
 
+function ev91SdWalletApiPlugin() {
+  const mount = (middlewares) => {
+    middlewares.use('/api/ev91-sd-wallet', async (req, res) => {
+      try {
+        const { default: handler } = await import('./api/ev91-sd-wallet.js')
+        await handler(req, res)
+      } catch {
+        res.statusCode = 502
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify({ message: 'Unable to load EV91 SD wallet.' }))
+      }
+    })
+  }
+  return {
+    name: 'ev91-sd-wallet-api',
+    configureServer(server) { mount(server.middlewares) },
+    configurePreviewServer(server) { mount(server.middlewares) },
+  }
+}
+
 function rentalPendingApiPlugin() {
   return {
     name: 'rental-pending-api',
@@ -244,6 +265,7 @@ export default defineConfig({
     riderPerformanceApiPlugin(),
     ev91MisApiPlugin(),
     ev91VehiclesApiPlugin(),
+    ev91SdWalletApiPlugin(),
     rentalPendingApiPlugin(),
   ],
   server: {

@@ -106,15 +106,15 @@ export default function SdPaymentViewer() {
   )
 
   const sdReport = useMemo(
-    () => buildSdPaymentReport(paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex),
-    [paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex]
+    () => buildSdPaymentReport(paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex, overallRows),
+    [paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex, overallRows]
   )
   const sdRows = sdReport.rows
   const paymentWeekLabels = sdReport.paymentWeekLabels
 
   const evRentRows = useMemo(
-    () => buildEvRentMonthReport(paymentRows, collationRows, deferredFleet),
-    [paymentRows, collationRows, deferredFleet]
+    () => buildEvRentMonthReport(paymentRows, collationRows, deferredFleet, overallRows, publicRiderIndex),
+    [paymentRows, collationRows, deferredFleet, overallRows, publicRiderIndex]
   )
 
   const cityOptions = useMemo(() => {

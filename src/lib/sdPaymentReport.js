@@ -6,6 +6,7 @@ import { formatInr } from './paymentHistoryReport'
 import { monthSortKey, normalizeMonthLabel } from './paymentMonthList'
 import { buildEv91SdByRiderIndex, lookupEv91SdRow } from './ev91SdDb'
 import { lookupEv91PublicRiderId } from './ev91OnboardingPending'
+import { buildEv91LatestOverallStatusByIdentity, lookupEv91LatestOverallStatus } from './ev91EvLookup'
 
 export { formatInr }
 
@@ -400,6 +401,38 @@ function resolveApiPublicRiderId(publicRiderIndex, candidates = []) {
   return ''
 }
 
+function buildLatestVehicleIndex(rows, dateForRow) {
+  const byRider = new Map()
+  for (const row of rows || []) {
+    const id = normalizeRiderIdKey(row.rider_id)
+    const vehicleNumber = pickText(row.vehicle_number)
+    if (!id || !vehicleNumber) continue
+    const at = parseFleetDate(dateForRow(row))?.getTime() || 0
+    const previous = byRider.get(id)
+    if (!previous || at >= previous.at) byRider.set(id, { vehicleNumber, at })
+  }
+  return byRider
+}
+
+/** Vehicle identity is independent of whether a fleet row contains SD amounts. */
+function buildSdVehicleLookup(paymentRows, fleetRows, overallRows, publicRiderIndex) {
+  const fleetVehicles = buildLatestVehicleIndex(fleetRows, (row) => row.date_record)
+  const paymentVehicles = buildLatestVehicleIndex(paymentRows, (row) => row.period_start || row.payment_date)
+  const overallVehicles = buildEv91LatestOverallStatusByIdentity(
+    overallRows.filter((row) => pickText(row.vehicleNumber))
+  )
+  return (riderId, publicRiderId = '', phone = '') => {
+    const ev91PublicId = publicRiderId || lookupEv91PublicRiderId(publicRiderIndex, riderId, phone)
+    const id = normalizeRiderIdKey(riderId)
+    const publicId = normalizeRiderIdKey(ev91PublicId)
+    const overall = lookupEv91LatestOverallStatus(overallVehicles, {
+      workerCode: riderId, ev91PublicId, mobile: phone,
+    })
+    return pickText(fleetVehicles.get(id)?.vehicleNumber, fleetVehicles.get(publicId)?.vehicleNumber,
+      overall?.vehicleNumber, paymentVehicles.get(id)?.vehicleNumber, paymentVehicles.get(publicId)?.vehicleNumber)
+  }
+}
+
 /** Aggregate payment SD — include ALL riders from payment data (not only fleet EV riders).
  *  Riders with sd=0 are still indexed so they appear in search results. */
 function aggregatePaymentSdTotalAll(paymentRows) {
@@ -478,7 +511,8 @@ export function buildSdPaymentReport(
   collationRows = [],
   fleetRows = [],
   ev91SdRows = [],
-  publicRiderIndex = null
+  publicRiderIndex = null,
+  overallRows = []
 ) {
   const evRiders = buildEvRiderIdSet(fleetRows)
   const fleetIndex = buildFleetEvSdIndex(fleetRows)
@@ -491,6 +525,7 @@ export function buildSdPaymentReport(
   const sdWeeksByRider = aggregatePaymentSdWeeksPerRiderAll(paymentRows)
   const paymentSdTotal = aggregatePaymentSdTotalAll(paymentRows)
   const manualSd = aggregateManualSdAll(collationRows)
+  const vehicleForRider = buildSdVehicleLookup(paymentRows, fleetRows, overallRows, publicRiderIndex)
 
   // Start with fleet EV riders, then add payment/manual/EV91 riders not in fleet.
   const riderIds = new Set(evRiders)
@@ -538,7 +573,7 @@ export function buildSdPaymentReport(
       riderName: pickText(fleet?.riderName, firstDeployee?.riderName, payTotal?.riderName, manual?.riderName) || 'N/A',
       city: pickText(fleet?.city, payTotal?.city, manual?.city, ev91?.city) || 'Unknown',
       client: fleet?.client || payTotal?.client || pickText(ev91?.client_name) || 'Unknown',
-      vehicleNumber: fleet?.vehicleNumber || '',
+      vehicleNumber: vehicleForRider(id, sdFields.ev91PublicRiderId, phone),
       riderPhone: phone,
       firstDeployeeDate: formatDeployedAt(firstDeployee?.dateRecord),
       vehicleDeployedAt: formatDeployedAt(fleet?.vehicleDeployedAt),
@@ -579,7 +614,7 @@ export function buildSdPaymentReport(
       riderName: 'N/A',
       city: pickText(ev91.city) || 'Unknown',
       client: pickText(ev91.client_name) || 'Unknown',
-      vehicleNumber: '',
+      vehicleNumber: vehicleForRider(id, pickText(ev91.public_rider_id, apiPublicId)),
       riderPhone: '',
       firstDeployeeDate: '',
       vehicleDeployedAt: '',
@@ -606,8 +641,9 @@ export function buildSdPaymentReport(
 
 /** All riders with EV rent — payment rows + manual EV rent rows (Purpose).
  *  Includes riders from Rider Payment Data even without fleet deploy/return records. */
-export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fleetRows = []) {
+export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fleetRows = [], overallRows = [], publicRiderIndex = null) {
   const fleetIndex = buildFleetEvSdIndex(fleetRows)
+  const vehicleForRider = buildSdVehicleLookup(paymentRows, fleetRows, overallRows, publicRiderIndex)
   const rows = []
 
   for (const row of paymentRows || []) {
@@ -627,7 +663,7 @@ export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fle
       riderName: pickText(row.rider_name, fleet?.riderName) || 'N/A',
       city: normalizeSummaryCity(pickText(row.city, fleet?.city)) || 'Unknown',
       client: normalizeSummaryClient(pickText(row.client_name, fleet?.client)) || 'Unknown',
-      vehicleNumber: pickText(row.vehicle_number, fleet?.vehicleNumber) || '',
+      vehicleNumber: pickText(row.vehicle_number, vehicleForRider(id)) || '',
       purpose: '',
       paymentEvRent,
       manualEvRent: 0,
@@ -653,7 +689,7 @@ export function buildEvRentMonthReport(paymentRows = [], collationRows = [], fle
       riderName: pickText(row.rider_name, fleet?.riderName) || 'N/A',
       city: normalizeSummaryCity(pickText(row.city, fleet?.city)) || 'Unknown',
       client: fleet?.client || 'Unknown',
-      vehicleNumber: pickText(row.vehicle_number, fleet?.vehicleNumber) || '',
+      vehicleNumber: pickText(row.vehicle_number, vehicleForRider(id)) || '',
       purpose: pickText(row.purpose),
       paymentEvRent: 0,
       manualEvRent,

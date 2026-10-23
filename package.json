@@ -18,7 +18,7 @@
     "test:source-master": "node --test --test-concurrency=1 tests/source-master.test.mjs tests/source-master-management.test.mjs tests/source-wise-visibility.test.mjs tests/ev91-client-period-source-search.test.mjs",
     "test:onboarding-pending": "node --test tests/ev91-onboarding-pending.test.mjs",
     "test:fl-pending": "node --test tests/ev91-fl-pending.test.mjs",
-    "test:ev91-sd": "node --test tests/ev91-sd-wallet-api.test.mjs tests/ev91-sd-wallet-page.test.mjs",
+    "test:ev91-sd": "node --test tests/ev91-sd-wallet-api.test.mjs tests/ev91-sd-wallet-page.test.mjs tests/sd-payment-vehicle.test.mjs",
     "test:summary-rtd": "node --test tests/ev91-summary-rtd.test.mjs tests/ev91-vehicles-api.test.mjs",
     "test:full-data": "node --test tests/full-data-performance.test.mjs tests/full-data-page.test.mjs",
     "pretest:full-data:bundle": "npm run build",

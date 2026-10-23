@@ -37,6 +37,16 @@ const server = await createServer({
       if (path.endsWith('/src/lib/manualCollationDb.js')) return 'export const fetchAllManualCollation = async () => globalThis.__sdVehicleFixture.collation'
       if (path.endsWith('/src/lib/fleetSdFetch.js')) return 'export const fetchFleetSdRows = async () => globalThis.__sdVehicleFixture.fleet'
       if (path.endsWith('/src/lib/ev91SdDb.js')) return `${code}\nfetchAllEv91Sd = async () => globalThis.__sdVehicleFixture.ev91Sd;`
+      if (path.endsWith('/src/lib/ev91SdWalletApi.js')) return `
+        export const getCachedEv91SdWallet = () => null;
+        export const fetchEv91SdWallet = async ({ force } = {}) => {
+          const fixture = globalThis.__sdVehicleFixture;
+          (fixture.walletCalls ||= []).push(force);
+          if (fixture.walletPending) return fixture.walletPending;
+          if (fixture.walletError) throw new Error('Wallet service unavailable');
+          return { rows: fixture.walletRows || fixture.ev91Sd, loadedAt: 1792700000000 };
+        };
+      `
       if (path.endsWith('/src/lib/ev91EvLookup.js')) return `${code}\nfetchEv91OverallStatusAll = async () => ({ data: globalThis.__sdVehicleFixture.overall });`
       if (path.endsWith('/src/lib/ev91OnboardingPending.js')) return `${code}\nfetchEv91ClientMappingAll = async () => ({ data: globalThis.__sdVehicleFixture.mapping });`
     },
@@ -118,4 +128,78 @@ test('searching the SD page displays the vehicle and both tab exports include it
     assert.equal(exported.length, 1)
     assert.equal(exported[0].Vehicle, registration)
   }
+})
+
+test('ID-less wallet rows match public/client aliases once and retain API-only riders', () => {
+  const wallet = { public_rider_id: riderId, client_rider_id: 'CURRENT-CLIENT',
+    total_sd: 4321, pending_sd: 123, fixed_deposit: 500 }
+  const walletOnly = { public_rider_id: 'MYS-26-R000207', client_rider_id: 'WALLET-ONLY',
+    total_sd: 987, pending_sd: 0, fixed_deposit: 100 }
+  const aliases = buildEv91PublicRiderIndex([], [{ ev91RiderId: riderId, clientId: 'OLD-CLIENT' }])
+  const report = buildSdPaymentReport([{ ...payments[0], rider_id: 'OLD-CLIENT' }], [], [],
+    [wallet, walletOnly], aliases, overall)
+  assert.equal(report.rows.length, 2, 'matched wallet does not create a second API-only row')
+  const matched = report.rows.find((row) => row.ev91PublicRiderId === riderId)
+  assert.deepEqual([matched.ev91TotalSd, matched.ev91PendingSd, matched.ev91FixedDeposit], [4321, 123, 500])
+  assert.equal(matched.paymentSdDeductionTotal, 250)
+  assert.equal(report.rows.find((row) => row.riderId === 'WALLET-ONLY').ev91TotalSd, 987)
+})
+
+test('SD columns, cards and Excel use wallet balances; refresh keeps rows and updates all three amounts', async (t) => {
+  const fixture = globalThis.__sdVehicleFixture
+  fixture.walletRows = [{ public_rider_id: riderId, client_rider_id: clientId,
+    total_sd: 4321, pending_sd: 123, fixed_deposit: 500 }]
+  fixture.walletCalls = []
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => {
+    await act(async () => root.unmount()); container.remove()
+    delete fixture.walletRows; delete fixture.walletPending; delete fixture.walletError
+  })
+  await act(async () => root.render(createElement(Viewer)))
+  const balances = () => [...container.querySelectorAll('tbody tr:first-child td')].slice(11, 14).map((cell) => cell.textContent)
+  const button = (text) => [...container.querySelectorAll('button')].find((node) => node.textContent.trim() === text)
+  assert.deepEqual(balances(), ['₹4,321', '₹123', '₹500'])
+  assert.match(container.querySelector('.rp-stats-grid').textContent, /EV91 Total SD₹4,321/)
+  await act(async () => button('Export Excel').click())
+  const exported = Object.values(globalThis.__sdVehicleExport).flat()[0]
+  assert.deepEqual([exported['EV91 TotalSd'], exported['EV91 PendingSd'], exported['EV91 FixedDeposit']], [4321, 123, 500])
+  let release
+  fixture.walletPending = new Promise((resolve) => { release = resolve })
+  await act(async () => button('Refresh EV91 SD').click())
+  assert.deepEqual(balances(), ['₹4,321', '₹123', '₹500'])
+  assert.match(container.querySelector('[role="status"]').textContent, /Refreshing EV91 SD wallet/)
+  await act(async () => release({ rows: [{ ...fixture.walletRows[0], total_sd: 5000, pending_sd: 0, fixed_deposit: 750 }], loadedAt: 1792700100000 }))
+  assert.deepEqual(balances(), ['₹5,000', '₹0', '₹750'])
+  assert.deepEqual(fixture.walletCalls, [false, true])
+  delete fixture.walletPending
+  fixture.walletError = true
+  await act(async () => button('Refresh EV91 SD').click())
+  assert.deepEqual(balances(), ['₹5,000', '₹0', '₹750'])
+  assert.match(container.querySelector('[role="alert"]').textContent, /last successfully loaded wallet balances/)
+})
+
+test('failed initial wallet load shows unavailable balances instead of zeros, permits EV Rent, and retries', async (t) => {
+  const fixture = globalThis.__sdVehicleFixture
+  fixture.walletError = true
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => {
+    await act(async () => root.unmount()); container.remove()
+    delete fixture.walletError
+  })
+  await act(async () => root.render(createElement(Viewer)))
+  const button = (text) => [...container.querySelectorAll('button')].find((node) => node.textContent.trim() === text)
+  assert.match(container.querySelector('[role="alert"]').textContent, /EV91 balances are unavailable/)
+  assert.deepEqual([...container.querySelectorAll('tbody tr:first-child td')].slice(11, 14).map((cell) => cell.textContent), ['—', '—', '—'])
+  assert.equal(button('Export Excel').disabled, true)
+  await act(async () => button('EV Rent').click())
+  assert.equal(button('Export Excel').disabled, false)
+  await act(async () => button('SD Payment').click())
+  fixture.walletError = false
+  await act(async () => button('Refresh EV91 SD').click())
+  assert.equal(container.querySelector('[role="alert"]'), null)
+  assert.equal(button('Export Excel').disabled, false)
 })

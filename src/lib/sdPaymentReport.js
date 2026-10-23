@@ -533,6 +533,7 @@ export function buildSdPaymentReport(
   for (const id of sdWeeksByRider.keys()) riderIds.add(id)
   for (const id of manualSd.keys()) riderIds.add(id)
   const matchedEv91Ids = new Set()
+  const matchedEv91Rows = new Set()
   const rows = []
 
   for (const id of riderIds) {
@@ -555,6 +556,7 @@ export function buildSdPaymentReport(
       (apiPublicId ? lookupEv91SdRow(ev91Index, apiPublicId) : null)
     if (!fleet && !recentSdWeeks.length && !payTotal && !manual && !ev91) continue
     if (ev91?.id != null) matchedEv91Ids.add(ev91.id)
+    if (ev91) matchedEv91Rows.add(ev91)
 
     const fleetSdPaid = fleet?.sdPaid ?? 0
     const paymentSdLastWeek = recentSdWeeks[0]?.amount ?? 0
@@ -596,6 +598,9 @@ export function buildSdPaymentReport(
   }
 
   for (const ev91 of ev91SdRows || []) {
+    // Wallet API rows have no database IDs. Track matched objects too, so a
+    // client alias resolved through PublicRiderId does not add a duplicate row.
+    if (matchedEv91Rows.has(ev91)) continue
     if (ev91?.id != null && matchedEv91Ids.has(ev91.id)) continue
     const clientId = normalizeRiderIdKey(ev91.client_rider_id)
     const publicId = normalizeRiderIdKey(ev91.public_rider_id)

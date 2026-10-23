@@ -4,7 +4,9 @@ Open **EV91 DB Data → EV91 SD** to read the live security-deposit wallet expor
 
 The source is `https://dashboard.ev91riderz.com/api/v1/security-deposit/export/wallet`. It returns an Excel workbook rather than JSON. The client validates its columns, rider IDs and numeric SD amounts before accepting it. A successful result is cached in memory for five minutes; **Refresh** bypasses that cache. The last successful data stays visible while refreshing and after refresh failures, with its load time and an error message.
 
-This page reads the API without replacing uploaded `ev91_sd_data`. The existing Rider Payment Upload and SD & EV Rent workflows continue to use that database table.
+The **SD & EV Rent** page also reads this wallet API for **EV91 TotalSd**, **EV91 PendingSd** and **EV91 FixedDeposit**, including its summary cards and Excel export. It matches wallets by ClientRiderId and PublicRiderId, including Overall/Client Mapping aliases. **Refresh EV91 SD** reloads these balances while retaining the last successful values. If the API fails before any successful load, the three columns show a dash and SD export stays disabled until balances load successfully; EV Rent remains available.
+
+The Rider Payment Upload page still supports manual uploads to `ev91_sd_data`, but SD & EV Rent no longer reads that table for these wallet balances. Reading the API does not overwrite stored uploads.
 
 ## Hosting
 

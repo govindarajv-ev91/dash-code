@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition } from 'react'
-import { Shield, Zap, Search, Download, Landmark, Receipt, Wallet } from 'lucide-react'
+import { Shield, Zap, Search, Download, Landmark, Receipt, Wallet, RefreshCw } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { fetchAllRiderPayments } from './lib/riderPaymentDb'
 import { fetchAllManualCollation } from './lib/manualCollationDb'
-import { fetchAllEv91Sd } from './lib/ev91SdDb'
+import { fetchEv91SdWallet, getCachedEv91SdWallet } from './lib/ev91SdWalletApi'
 import { fetchFleetSdRows } from './lib/fleetSdFetch'
 import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
 import { fetchEv91ClientMappingAll, buildEv91PublicRiderIndex } from './lib/ev91OnboardingPending'
@@ -18,6 +18,7 @@ import {
 } from './lib/sdPaymentReport'
 
 const ROWS_PER_PAGE = 100
+const EMPTY_SD_ROWS = []
 
 function SdPaidScreenshotLink({ url }) {
   if (!isViewableFleetUrl(url)) return '—'
@@ -47,7 +48,10 @@ export default function SdPaymentViewer() {
   const [activeTab, setActiveTab] = useState('sd')
   const [paymentRows, setPaymentRows] = useState([])
   const [collationRows, setCollationRows] = useState([])
-  const [ev91SdRows, setEv91SdRows] = useState([])
+  const [walletResult, setWalletResult] = useState(() => ({ wallet: getCachedEv91SdWallet(), loading: true, error: '' }))
+  const [walletReload, setWalletReload] = useState(0)
+  const ev91SdRows = walletResult.wallet?.rows || EMPTY_SD_ROWS
+  const walletAvailable = Boolean(walletResult.wallet)
   const [overallRows, setOverallRows] = useState([])
   const [mappingRows, setMappingRows] = useState([])
   const [fleetRows, setFleetRows] = useState([])
@@ -68,15 +72,13 @@ export default function SdPaymentViewer() {
     Promise.all([
       fetchAllRiderPayments().catch(() => []),
       fetchAllManualCollation().catch(() => []),
-      fetchAllEv91Sd().catch(() => []),
       fetchEv91OverallStatusAll().then((r) => r?.data || []).catch(() => []),
       fetchEv91ClientMappingAll().then((r) => r?.data || []).catch(() => []),
     ])
-      .then(([payments, collation, ev91Sd, overall, mapping]) => {
+      .then(([payments, collation, overall, mapping]) => {
         if (cancelled) return
         setPaymentRows(payments)
         setCollationRows(collation)
-        setEv91SdRows(ev91Sd)
         setOverallRows(overall)
         setMappingRows(mapping)
       })
@@ -99,6 +101,17 @@ export default function SdPaymentViewer() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchEv91SdWallet({ force: walletReload > 0 }).then((wallet) => {
+      if (!cancelled) setWalletResult({ wallet, loading: false, error: '' })
+    }).catch((error) => {
+      if (!cancelled) setWalletResult((previous) => ({ ...previous, loading: false,
+        error: error?.message || 'Unable to load EV91 SD wallet.' }))
+    })
+    return () => { cancelled = true }
+  }, [walletReload])
 
   const publicRiderIndex = useMemo(
     () => buildEv91PublicRiderIndex(overallRows, mappingRows),
@@ -207,6 +220,7 @@ export default function SdPaymentViewer() {
   }, [activeTab, search, selectedCity, selectedMonth, linkSearchByPhone])
 
   const exportExcel = useCallback(() => {
+    if (activeTab === 'sd' && !walletAvailable) return
     if (activeTab === 'sd') {
       const week1Label = paymentWeekLabels[0] || 'Recent 1'
       const week2Label = paymentWeekLabels[1] || 'Recent 2'
@@ -260,7 +274,7 @@ export default function SdPaymentViewer() {
       XLSX.utils.book_append_sheet(wb, ws, 'EV Rent')
       XLSX.writeFile(wb, `EV_Rent_${new Date().toISOString().slice(0, 10)}.xlsx`)
     }
-  }, [activeTab, filteredSd, filteredEvRent, paymentWeekLabels])
+  }, [activeTab, filteredSd, filteredEvRent, paymentWeekLabels, walletAvailable])
 
   if (loading) {
     return (
@@ -279,14 +293,20 @@ export default function SdPaymentViewer() {
             <div>
               <h1 style={{ margin: 0 }}>SD & EV Rent</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
-                Unique EV riders · fleet SD · EV91 SD · PublicRiderId from Overall / Client Mapping · payment SD
+                Unique EV riders · fleet SD · EV91 SD wallet · PublicRiderId from Overall / Client Mapping · payment SD
               </p>
             </div>
           </div>
-          <button type="button" onClick={exportExcel} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          {activeTab === 'sd' && <button type="button" className="glass-btn" disabled={walletResult.loading} onClick={() => {
+            setWalletResult((previous) => ({ ...previous, loading: true, error: '' }))
+            setWalletReload((value) => value + 1)
+          }}><RefreshCw size={16} className={walletResult.loading ? 'ev91-spin' : undefined} /> Refresh EV91 SD</button>}
+          <button type="button" onClick={exportExcel} disabled={activeTab === 'sd' && !walletAvailable} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
             <Download size={18} />
             Export Excel
           </button>
+          </div>
         </div>
       </header>
 
@@ -309,12 +329,22 @@ export default function SdPaymentViewer() {
         </button>
       </div>
 
+      {activeTab === 'sd' && <div style={{ marginBottom: '1rem' }}>
+        {walletResult.loading && <p role="status">{walletAvailable ? 'Refreshing EV91 SD wallet…' : 'Loading EV91 SD wallet…'}</p>}
+        {walletResult.wallet && <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>
+          EV91 SD wallet last loaded: {new Date(walletResult.wallet.loadedAt).toLocaleString('en-IN')}
+        </p>}
+        {walletResult.error && <div role="alert" className="ev91-error glass">
+          {walletResult.error} {walletAvailable ? 'Showing the last successfully loaded wallet balances.' : 'EV91 balances are unavailable. Refresh EV91 SD to retry.'}
+        </div>}
+      </div>}
+
       {activeTab === 'sd' ? (
         <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
           <StatCard label="EV Riders" value={sdTotals.riders.toLocaleString('en-IN')} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
           <StatCard label="Fleet SD Paid" value={formatInr(sdTotals.fleetPaid)} icon={Landmark} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
-          <StatCard label="EV91 Total SD" value={formatInr(sdTotals.ev91Total)} icon={Shield} color="#c4b5fd" iconBg="rgba(196, 181, 253, 0.12)" />
-          <StatCard label="EV91 Pending SD" value={formatInr(sdTotals.ev91Pending)} icon={Wallet} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
+          <StatCard label="EV91 Total SD" value={walletAvailable ? formatInr(sdTotals.ev91Total) : '—'} icon={Shield} color="#c4b5fd" iconBg="rgba(196, 181, 253, 0.12)" />
+          <StatCard label="EV91 Pending SD" value={walletAvailable ? formatInr(sdTotals.ev91Pending) : '—'} icon={Wallet} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
           <StatCard label="Payment SD Ded. (2 wks)" value={formatInr(sdTotals.paymentDed2Wks)} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
           <StatCard label="Payment SD Ded. (Total)" value={formatInr(sdTotals.paymentDedTotal)} icon={Receipt} color="#f97316" iconBg="rgba(249, 115, 22, 0.12)" />
           <StatCard label="Manual SD Paid" value={formatInr(sdTotals.manualPaid)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
@@ -410,10 +440,10 @@ export default function SdPaymentViewer() {
                   <th>Fleet SD Total</th>
                   <th>Fleet SD Paid</th>
                   <th>Fleet SD Pending</th>
-                  <th title="From EV91 SD upload, or Overall / Client Mapping API">EV91 PublicRiderId</th>
-                  <th title="From EV91 SD upload">EV91 TotalSd</th>
-                  <th title="From EV91 SD upload">EV91 PendingSd</th>
-                  <th title="From EV91 SD upload">EV91 FixedDeposit</th>
+                  <th title="From EV91 SD wallet, or Overall / Client Mapping API">EV91 PublicRiderId</th>
+                  <th title="From EV91 SD wallet API">EV91 TotalSd</th>
+                  <th title="From EV91 SD wallet API">EV91 PendingSd</th>
+                  <th title="From EV91 SD wallet API">EV91 FixedDeposit</th>
                   <th title="Rider's most recent payment week with SD deduction">SD Ded. (Recent 1)</th>
                   <th title="Rider's previous payment week with SD deduction">SD Ded. (Recent 2)</th>
                   <th>SD Ded. (2 wks)</th>
@@ -448,7 +478,7 @@ export default function SdPaymentViewer() {
                         {r.ev91PublicRiderId ? (
                           <div
                             style={{ fontSize: '0.7rem', color: '#c4b5fd', marginTop: 2 }}
-                            title="EV91 PublicRiderId (Overall / Client Mapping / SD upload)"
+                            title="EV91 PublicRiderId (SD wallet / Overall / Client Mapping)"
                           >
                             {r.ev91PublicRiderId}
                           </div>
@@ -464,9 +494,9 @@ export default function SdPaymentViewer() {
                       <td style={{ color: '#4ade80', fontWeight: 600 }}>{formatInr(r.fleetSdPaid)}</td>
                       <td>{formatInr(r.fleetSdPending)}</td>
                       <td style={{ fontSize: '0.75rem' }}>{r.ev91PublicRiderId || '—'}</td>
-                      <td style={{ color: '#c4b5fd', fontWeight: 600 }}>{formatInr(r.ev91TotalSd)}</td>
-                      <td style={{ color: '#fbbf24', fontWeight: 600 }}>{formatInr(r.ev91PendingSd)}</td>
-                      <td>{formatInr(r.ev91FixedDeposit)}</td>
+                      <td style={{ color: '#c4b5fd', fontWeight: 600 }}>{walletAvailable ? formatInr(r.ev91TotalSd) : '—'}</td>
+                      <td style={{ color: '#fbbf24', fontWeight: 600 }}>{walletAvailable ? formatInr(r.ev91PendingSd) : '—'}</td>
+                      <td>{walletAvailable ? formatInr(r.ev91FixedDeposit) : '—'}</td>
                       <td style={{ color: '#fdba74', fontWeight: 600 }}>
                         <div>{formatInr(r.paymentSdLastWeek)}</div>
                         {r.paymentSdLastWeekLabel ? (

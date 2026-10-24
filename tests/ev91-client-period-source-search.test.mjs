@@ -227,6 +227,75 @@ test('September client gross payout reconciles to all payments regardless of act
   assert.equal(revenue.querySelector('tr th:nth-child(2)').textContent, '1,02,67,896')
 })
 
+test('monthly client and source rider counts deduplicate weeks in the tables and Excel export', async (t) => {
+  const previous = globalThis.__sourceSearchPayments
+  const payment = (id, rider, week, start, month, payout, overrides = {}) => ({
+    id, rider_id: rider, rider_name: 'Same Name', source_name: 'Alpha Team', city: 'Chennai',
+    client_name: 'Blinkit', week, period_start: start, month, gross_payout: payout,
+    period_label: `Week ${Math.floor(Number(week) / 100)}`,
+    rider_key: `${overrides.client_name || 'Blinkit'}|${week}|${rider}`, ...overrides,
+  })
+  globalThis.__sourceSearchPayments = [
+    payment(1, 'A1', '1526', '2026-04-06', 'Apr-2026', 100),
+    payment(2, 'A1', '1626', '2026-04-13', 'Apr-2026', 100),
+    payment(3, 'A1', '1626', '2026-04-13', 'Apr-2026', 50),
+    payment(4, 'A2', '1626', '2026-04-13', 'Apr-2026', 200),
+    payment(5, 'A1', '1626', '2026-04-13', 'Apr-2026', 300, { client_name: 'Swiggy' }),
+    payment(6, 'A1', '1826', '2026-05-04', 'May-2026', 400),
+    payment(7, 'A1', '1926', '2026-05-11', 'May-2026', 500),
+    payment(8, 'B1', '1626', '2026-04-13', 'Apr-2026', 100, { source_name: 'Beta Team' }),
+  ]
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => {
+    await act(async () => root.unmount()); container.remove()
+    globalThis.__sourceSearchPayments = previous
+  })
+  await act(async () => root.render(createElement(Trend)))
+  const tables = () => [...container.querySelectorAll('section tbody')]
+  const rowValues = (table, name) => {
+    const row = [...table.querySelectorAll('tr')].find((row) => row.firstElementChild.textContent === name)
+    assert.ok(row, `Missing row: ${name}`)
+    return [...row.children].slice(1).map((cell) => cell.textContent)
+  }
+  assert.deepEqual(rowValues(tables()[1], 'Blinkit'), ['1', '3', '1', '1', '6'])
+  await act(async () => container.querySelector('input[value="monthly"]').click())
+  assert.deepEqual(rowValues(tables()[1], 'Blinkit'), ['3', '1', '4'])
+  assert.deepEqual(rowValues(tables()[1], 'Swiggy'), ['1', '0', '1'])
+  assert.deepEqual(rowValues(tables()[2], 'Alpha Team'), ['2', '1'])
+  assert.deepEqual(rowValues(tables()[2], 'Beta Team'), ['1', '0'])
+  assert.deepEqual(rowValues(tables()[2], 'Total'), ['3', '1'])
+  assert.deepEqual(rowValues(tables()[0], 'Total'), ['850', '900', '1,750'])
+  assert.match(container.textContent, /Each rider once per client per month/)
+  assert.match(container.textContent, /Each rider once per source per month/)
+
+  delete globalThis.__sourceExport
+  await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Export').click())
+  for (let index = 0; index < 100 && !globalThis.__sourceExport; index++) {
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 10)))
+  }
+  const exported = globalThis.__sourceExport
+  assert.ok(exported, 'Excel export completed')
+  assert.equal(exported.rawRows.length, 8, 'every payment remains in the raw export')
+  assert.deepEqual(exported.periods, ['Apr 2026', 'May 2026'])
+  assert.deepEqual(exported.summarySheets[1].rows.find((row) => row.Name === 'Blinkit'),
+    { Name: 'Blinkit', 'Apr 2026': 3, 'May 2026': 1, Total: 4 })
+  assert.deepEqual(exported.summarySheets[2].rows.find((row) => row.Source === 'Alpha Team'),
+    { Source: 'Alpha Team', 'Apr 2026': 2, 'May 2026': 1 })
+  assert.equal(exported.summarySheets[0].rows.at(-1).Total, 1750)
+
+  // A client filter still limits the population before monthly deduplication.
+  const client = container.querySelectorAll('select')[1]
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set.call(client, 'Swiggy')
+    client.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  assert.deepEqual(rowValues(tables()[1], 'Swiggy'), ['1', '1'])
+  assert.deepEqual(rowValues(tables()[2], 'Alpha Team'), ['1'])
+  assert.doesNotMatch(tables()[1].textContent, /Blinkit/)
+})
+
 test('returning focus keeps tables visible during refresh, then applies source changes', async (t) => {
   const container = document.createElement('div')
   document.body.appendChild(container)

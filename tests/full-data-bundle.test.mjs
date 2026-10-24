@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { SourceTextModule } from 'node:vm'
 import { JSDOM, VirtualConsole } from 'jsdom'
+import * as XLSX from 'xlsx'
 
-test('production login, Full Data, admin settings and IoT upload access work through their real lazy modules', async () => {
+test('production login, Full Data, SD wallet balances, admin settings and IoT upload access work through their real lazy modules', async () => {
   const html = await readFile(new URL('../dist/index.html', import.meta.url), 'utf8')
   const errors = []
   const virtualConsole = new VirtualConsole()
@@ -22,8 +23,22 @@ test('production login, Full Data, admin settings and IoT upload access work thr
   for (const name of ['Response', 'Request', 'Headers', 'AbortController', 'AbortSignal', 'TextEncoder', 'TextDecoder']) window[name] = globalThis[name]
   let dashboardRole = 'user'
   let loginRequired = true
+  const walletBook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(walletBook, XLSX.utils.aoa_to_sheet([
+    ['PublicRiderId', 'City', 'ClientName', 'ClientRiderId', 'TotalSd', 'PendingSd', 'FixedDeposit'],
+    ['BLR-26-R001050', 'Bengaluru', 'Blinkit', 'FE7644427', 2500, 0, 2500],
+  ]), 'Wallet')
+  const walletBytes = XLSX.write(walletBook, { type: 'array', bookType: 'xlsx' })
   window.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === 'string' ? input : input.url, window.location.href)
+    if (url.pathname === '/api/ev91-sd-wallet') {
+      const response = new Response(walletBytes, {
+        headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      })
+      // A browser response creates its ArrayBuffer in the browser's realm.
+      response.arrayBuffer = async () => new window.Uint8Array(new Uint8Array(walletBytes)).buffer
+      return response
+    }
     if (url.pathname.endsWith('/auth/v1/token')) {
       const payload = Buffer.from(JSON.stringify({ sub: 'test-staff', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')
       return Response.json({ access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.test`, refresh_token: 'test-refresh',
@@ -45,6 +60,11 @@ test('production login, Full Data, admin settings and IoT upload access work thr
     if (url.pathname.endsWith('/order_upload_data')) {
       if (url.searchParams.getAll('id').some((filter) => filter.startsWith('gt.'))) return Response.json([])
       return Response.json([{ id: 1, month: 'Jun-2026', date_record: '2026-06-03', worker_code: 'FE1', delivered: 5, city: 'Chennai', client: 'Blinkit', type1: 'EV' }])
+    }
+    if (url.pathname.endsWith('/rider_payment_data')) {
+      if (url.searchParams.getAll('id').some((filter) => filter.startsWith('gt.'))) return Response.json([])
+      return Response.json([{ id: 1, rider_id: '7644427', rider_name: 'Wallet regression rider', sd: 250,
+        month: 'Aug-2026', week: '3426', city: 'Bengaluru', client_name: 'Blinkit' }])
     }
     if (url.pathname.includes('/rest/v1/')) return Response.json([])
     return Response.json({ success: true, data: [], vehicles: [], pagination: { hasMore: false, totalPages: 1 } })
@@ -118,6 +138,20 @@ test('production login, Full Data, admin settings and IoT upload access work thr
     assert.equal(alert, null, alert?.textContent)
     assert.ok(window.document.querySelector('aside'))
     assert.match(window.document.querySelector('.full-data-sheet').textContent, /FleetPro Full Data/)
+    findButton('SD & EV Rent').click()
+    await until(() => window.document.querySelector('h1')?.textContent === 'SD & EV Rent')
+    await until(() => (window.document.querySelectorAll('tbody tr:first-child td').length > 14 &&
+      !findButton('Refresh EV91 SD')?.disabled) || window.document.querySelector('[role="alert"]'))
+    assert.equal(window.document.querySelector('[role="alert"]'), null,
+      window.document.querySelector('[role="alert"]')?.textContent)
+    assert.deepEqual([...window.document.querySelectorAll('thead th')].slice(11, 14).map((cell) => cell.textContent),
+      ['EV91 TotalSd', 'EV91 PendingSd', 'EV91 FixedDeposit'])
+    assert.deepEqual([...window.document.querySelectorAll('tbody tr:first-child td')].slice(11, 14).map((cell) => cell.textContent),
+      ['₹2,500', '₹0', '₹2,500'])
+    assert.equal(window.document.querySelectorAll('tbody tr').length, 1, 'The wallet must match the existing payment rider')
+    assert.match(window.document.querySelector('tbody tr').textContent, /BLR-26-R001050/)
+    findButton('Full Data').click()
+    await until(() => window.document.querySelector('.full-data-sheet'))
     await openIotUpload()
     await until(() => window.document.querySelector('#iot-upload-password'))
     assert.ok(window.document.querySelector('.full-data-sheet'), 'Ordinary users must unlock before navigating')

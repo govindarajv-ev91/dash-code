@@ -146,15 +146,30 @@ body {
   width: 100%;
 }
 
+.page-navigation-status {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 90;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  background: var(--bg-dark);
+  color: var(--text-main);
+  pointer-events: none;
+}
+
 .sidebar-shell {
   position: fixed;
   left: 0;
   top: 0;
   height: 100vh;
   z-index: 100;
-  width: 18px;
+  width: 280px;
   overflow: hidden;
-  transition: width 0.22s ease;
+  transform: translateX(calc(-100% + 18px));
+  transition: transform 0.22s ease;
+  will-change: transform;
 }
 
 .sidebar-shell::before {
@@ -173,7 +188,7 @@ body {
 
 .sidebar-shell:hover,
 .sidebar-shell:focus-within {
-  width: 280px;
+  transform: translateX(0);
 }
 
 .sidebar-shell:hover::before,
@@ -184,20 +199,12 @@ body {
 .sidebar {
   width: 280px;
   height: 100vh;
-  background: rgba(15, 23, 42, 0.95);
-  backdrop-filter: blur(20px);
+  background: #10192b;
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   padding: 2rem 1rem;
-  transform: translateX(calc(-100% + 18px));
-  transition: transform 0.22s ease;
   box-shadow: 8px 0 24px rgba(0, 0, 0, 0.25);
-}
-
-.sidebar-shell:hover .sidebar,
-.sidebar-shell:focus-within .sidebar {
-  transform: translateX(0);
 }
 
 .sidebar-logo {
@@ -226,7 +233,7 @@ body {
   color: var(--text-dim);
   text-decoration: none;
   border-radius: 0.75rem;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease;
   cursor: pointer;
   border: none;
   background: transparent;
@@ -306,10 +313,26 @@ body {
   margin-left: 1.15rem;
 }
 
+.nav-folder-children[hidden] {
+  display: none;
+}
+
+.nav-links .nav-item svg {
+  flex-shrink: 0;
+}
+
 .nav-item.nav-item-child {
   font-size: 0.9rem;
   padding: 0.65rem 0.85rem;
   gap: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-shell,
+  .nav-item,
+  .nav-folder-chevron {
+    transition: none;
+  }
 }
 
 .ev91-filters {

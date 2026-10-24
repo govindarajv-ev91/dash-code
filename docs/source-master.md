@@ -2,7 +2,7 @@
 
 Run [sql/create_source_master.sql](../sql/create_source_master.sql) in the Supabase SQL Editor as the project owner before using the updated pages. It creates `public.source_master` and seeds the 41 supplied city/source pairs. Rerunning it preserves later edits, deleted rows and inactive sources.
 
-Open **EV91 DB Data → Source List** in the sidebar to view all active and inactive sources. Sign in with a dashboard administrator account to add, edit, activate, deactivate or remove entries. Search and city/status filters help find entries. Removal asks for confirmation and preserves historical data and exports.
+Open **Supply → Source List** in the sidebar to view all active and inactive sources. Sign in with a dashboard administrator account to add, edit, activate, deactivate or remove entries. Search and city/status filters help find entries. Removal asks for confirmation and preserves historical data and exports.
 
 Each row has **Active** and **Inactive** buttons in the Status column. The highlighted button shows the current status; administrators can click the other button to change it. For viewers, both buttons stay visible but disabled. The **All / Active / Inactive** filter buttons above the table only change which entries you see.
 

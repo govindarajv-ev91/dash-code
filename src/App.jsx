@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, Suspense, lazy, startTransition, useRef } from 'react'
+import React, { useState, useEffect, useCallback, Suspense, lazy, startTransition, useRef, useDeferredValue } from 'react'
 import Dashboard from './Dashboard'
 import RiderAttendance from './RiderAttendance'
 import TempSourceActive from './TempSourceActive'
@@ -7,6 +7,7 @@ import RiderDetails from './RiderDetails'
 import IotUploadPasswordDialog from './components/IotUploadPasswordDialog'
 import FullDataPage from './components/FullDataPage'
 import AccountMenu from './components/AccountMenu'
+import SidebarNavigation from './components/SidebarNavigation'
 import { fetchAllData } from './lib/supabaseFetch'
 import { scheduleCacheWrite } from './lib/deferredCache'
 import {
@@ -59,7 +60,7 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v4'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout, BarChart3, ClipboardList, Truck, UserPlus, AlertTriangle, FileBarChart2, Mail, Users, UserX, Database, Radio, PieChart, MapPin, Activity, TrendingDown, Wallet, History, Shield, Package, FolderOpen, Folder, ChevronDown, Bike, Layers, Link2, Search, Briefcase, Wrench, Table2, IdCard, Leaf, CircleDollarSign } from 'lucide-react'
+import { Layout } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
@@ -223,6 +224,7 @@ async function fetchSecondaryTables() {
 }
 
 const ACTIVE_PAGE_STORAGE_KEY = 'fleetpro-active-page'
+const FLEET_PAGES_NEEDING_FULL = new Set(['fleetdata', 'tracking', 'ev91-insight'])
 
 function getSavedActivePage() {
   try {
@@ -233,9 +235,248 @@ function getSavedActivePage() {
   }
 }
 
+// Keep report work out of the urgent sidebar selection update.
+const DashboardContent = React.memo(function DashboardContent({
+  activePage,
+  riderData,
+  fleetData,
+  weeklyData,
+  loading,
+  fetchData,
+  displayFleetData,
+  fleetLoading,
+  refreshing,
+  dataUpdatedAt,
+  kycData,
+  onboardingData,
+  vehicleInventoryData,
+  refreshOrdersAfterUpload,
+  fleetTotalCount,
+  fleetFormCount,
+  fleetFullLoading,
+  fleetDataFull,
+  loadFullFleet,
+  user,
+  isAdmin,
+}) {
+  return (
+    <Suspense fallback={<PageLoading />}>
+    {activePage === 'dashboard' ? (
+      <Dashboard
+        riderData={riderData}
+        fleetData={fleetData}
+        weeklyData={weeklyData}
+        loading={loading}
+        refreshData={fetchData}
+      />
+    ) : activePage === 'attendance' ? (
+      <RiderAttendance
+        riderData={riderData}
+        loading={loading}
+      />
+    ) : activePage === 'tracking' ? (
+      <VehicleTracking
+        fleetData={displayFleetData}
+        riderData={riderData}
+        loading={loading || fleetLoading}
+      />
+    ) : activePage === 'riderperformance' ? (
+      <RiderPerformance
+        fleetData={fleetData}
+        riderData={riderData}
+        loading={loading}
+        fleetLoading={fleetLoading}
+        refreshing={refreshing}
+        dataUpdatedAt={dataUpdatedAt}
+        refreshData={() => fetchData({ bypassCache: true })}
+      />
+    ) : activePage === 'onboarding' ? (
+      <OnboardingAnalytics
+        kycData={kycData}
+        onboardingData={onboardingData}
+        fleetData={fleetData}
+        riderData={riderData}
+        loading={loading}
+      />
+    ) : activePage === 'errorfinder' ? (
+      <ErrorFinder
+        fleetData={fleetData}
+        riderData={riderData}
+        loading={loading}
+      />
+    ) : activePage === 'dailymailer' ? (
+      <DailyMailer
+        riderData={riderData}
+        loading={loading}
+        refreshData={fetchData}
+      />
+    ) : activePage === 'tempparser' ? (
+      <TempSourceActive
+        riderData={riderData}
+        fleetData={fleetData}
+        loading={loading}
+      />
+    ) : activePage === 'riderdetails' ? (
+      <RiderDetails
+        fleetData={fleetData}
+        kycData={kycData}
+        onboardingData={onboardingData}
+        riderData={riderData}
+        loading={loading}
+      />
+    ) : activePage === 'inactivemailer' ? (
+      <InactiveRiderMailer
+        riderData={riderData}
+        kycData={kycData}
+        fleetData={fleetData}
+        onboardingData={onboardingData}
+        inventoryData={vehicleInventoryData}
+        loading={loading}
+      />
+    ) : activePage === 'attritionmailer' ? (
+      <RiderAttritionMailer
+        riderData={riderData}
+        fleetData={fleetData}
+        onboardingData={onboardingData}
+        loading={loading}
+      />
+    ) : activePage === 'paymentupload' ? (
+      <RiderPaymentUpload />
+    ) : activePage === 'deployedrental' ? (
+      <DeployedRentalPending />
+    ) : activePage === 'orderupload' ? (
+      <OrderUpload onOrdersSaved={refreshOrdersAfterUpload} />
+    ) : activePage === 'orderhistory' ? (
+      <OrderHistory />
+    ) : activePage === 'paymenthistory' ? (
+      <PaymentHistory onboardingData={onboardingData} />
+    ) : activePage === 'sdpayment' ? (
+      <SdPaymentViewer />
+    ) : activePage === 'iotdata' || activePage === 'ev91-iotupload' ? (
+      <IotData
+        key={activePage}
+        uploadEnabled={activePage === 'ev91-iotupload'}
+        fleetData={fleetData}
+        riderData={riderData}
+        vehicleInventoryData={vehicleInventoryData}
+        loading={loading}
+      />
+    ) : activePage === 'evimpact' ? (
+      <EvEnvironmentalImpact
+        vehicleInventoryData={vehicleInventoryData}
+        loading={loading}
+      />
+    ) : activePage === 'fulldata' ? (
+      <FullDataPage onboardingData={onboardingData} riderData={riderData} />
+    ) : activePage === 'sourcewise' ? (
+      <SourceWiseData onboardingData={onboardingData} />
+    ) : activePage === 'fleetdata' ? (
+      <FleetDataViewer
+        fleetData={displayFleetData}
+        riderData={riderData}
+        totalCount={fleetTotalCount}
+        sheetCount={fleetFormCount}
+        loading={loading || fleetFullLoading}
+        fleetFullLoading={fleetFullLoading}
+        fleetIsSlim={!fleetDataFull}
+        loadFullFleet={loadFullFleet}
+        refreshData={() => fetchData({ bypassCache: true, fullFleet: true })}
+        defaultTab="data"
+      />
+    ) : activePage === 'fleetcitysummary' ? (
+      <FleetDataViewer
+        fleetData={fleetData}
+        riderData={riderData}
+        totalCount={fleetTotalCount}
+        sheetCount={fleetFormCount}
+        loading={loading}
+        refreshData={fetchData}
+        defaultTab="citysummary"
+      />
+    ) : activePage === 'serviceschedule' ? (
+      <ServiceSchedule />
+    ) : activePage === 'fleetsummary' ? (
+      <FleetDataViewer
+        fleetData={fleetData}
+        riderData={riderData}
+        totalCount={fleetTotalCount}
+        sheetCount={fleetFormCount}
+        loading={loading}
+        refreshData={fetchData}
+        defaultTab="clientsummary"
+      />
+    ) : activePage === 'bigquery' ? (
+      <BigQueryDeployReturn
+        fleetData={displayFleetData}
+        loading={loading || fleetLoading}
+        fleetFullLoading={fleetFullLoading}
+        fleetIsSlim={!fleetDataFull}
+        loadFullFleet={loadFullFleet}
+        onboardingData={onboardingData}
+      />
+    ) : activePage === 'ev91-performance' ? (
+      <Ev91RiderPerformance
+        riderData={riderData}
+        onboardingData={onboardingData}
+        loading={loading}
+        refreshing={refreshing}
+        dataUpdatedAt={dataUpdatedAt}
+        refreshData={() => fetchData({ bypassCache: true })}
+      />
+    ) : activePage === 'ev91-onboarding' ? (
+      <Ev91OnboardingPending
+        riderData={riderData}
+        onboardingData={onboardingData}
+        loading={loading}
+        refreshing={refreshing}
+        dataUpdatedAt={dataUpdatedAt}
+        refreshData={() => fetchData({ bypassCache: true })}
+      />
+    ) : activePage === 'ev91-fl-pending' ? (
+      <Ev91FlPending />
+    ) : activePage === 'ev91-evlookup' ? (
+      <Ev91EvLookup
+        riderData={riderData}
+        loading={loading}
+        refreshing={refreshing}
+        dataUpdatedAt={dataUpdatedAt}
+        refreshData={() => fetchData({ bypassCache: true })}
+      />
+    ) : activePage === 'ev91-summary' ? (
+      <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
+    ) : activePage === 'ev91-operational' ? (
+      <Ev91OperationalStatus />
+    ) : activePage === 'ev91-client-period-trend' ? (
+      <Ev91ClientPeriodTrend riderData={riderData} onboardingData={onboardingData} />
+    ) : activePage === 'ev91-sources' ? (
+      <SourceMaster canManage={!!user && !!isAdmin} />
+    ) : activePage === 'ev91-vehicles' ? (
+      <Ev91Vehicles />
+    ) : activePage === 'ev91-sd' ? (
+      <Ev91SdWallet />
+    ) : activePage === 'ev91-insight' ? (
+      <VehicleTracking
+        fleetData={displayFleetData}
+        riderData={riderData}
+        loading={loading || fleetLoading}
+        includeEv91Api
+        pageTitle="Rider & Vehicle Insight"
+        pageSubtitle="Fleet + EV91 API · Rider-Vehicle Monitor with deploy/return history"
+      />
+    ) : EV91_PAGES.has(activePage) ? (
+      <Ev91DbData
+        endpoint={EV91_ENDPOINT_BY_PAGE[activePage]}
+        onboardingData={onboardingData}
+      />
+    ) : null}
+    </Suspense>
+  )
+})
+
 function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
   const [activePage, setActivePage] = useState(getSavedActivePage)
-  const [ev91FolderOpen, setEv91FolderOpen] = useState(false)
+  const renderedPage = useDeferredValue(activePage)
+  const pagePending = renderedPage !== activePage
   const [iotUploadPasswordOpen, setIotUploadPasswordOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [riderData, setRiderData] = useState([])
@@ -516,30 +757,21 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
     }
   }, [])
 
-  const fleetPagesNeedingFull = new Set(['fleetdata', 'tracking', 'ev91-insight'])
   useEffect(() => {
-    if (fleetPagesNeedingFull.has(activePage) && !fleetDataFull && !fleetFullLoading) {
+    if (FLEET_PAGES_NEEDING_FULL.has(activePage) && !fleetDataFull && !fleetFullLoading) {
       loadFullFleet()
     }
   }, [activePage, fleetDataFull, fleetFullLoading, loadFullFleet])
 
-  useEffect(() => {
-    if (EV91_PAGES.has(activePage)) setEv91FolderOpen(true)
-  }, [activePage])
-
   const displayFleetData = fleetDataFull ?? fleetData
-  const openEv91Page = (page) => {
-    setEv91FolderOpen(true)
-    setActivePage(page)
-  }
-  const openEv91IotUpload = () => {
+  const openEv91IotUpload = useCallback(() => {
     if (user && isAdmin) {
       setIotUploadPasswordOpen(false)
-      openEv91Page('ev91-iotupload')
+      setActivePage('ev91-iotupload')
       return
     }
     setIotUploadPasswordOpen(true)
-  }
+  }, [user, isAdmin])
 
   return (
     <div className="app-layout app-layout-auto-sidebar">
@@ -548,7 +780,7 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
           onDismiss={() => setIotUploadPasswordOpen(false)}
           onUnlock={() => {
             setIotUploadPasswordOpen(false)
-            openEv91Page('ev91-iotupload')
+            setActivePage('ev91-iotupload')
           }}
         />
       )}
@@ -560,550 +792,40 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
           </div>
           {user ? <AccountMenu user={user} onSignOut={onSignOut} signingOut={signingOut} signOutError={signOutError} isAdmin={isAdmin} />
             : <a className="public-admin-link" href="#admin">Admin sign in</a>}
-          <nav className="nav-links">
-          {isAdmin && <a className="nav-item" href="#admin"><Shield size={20} />Sign-in settings</a>}
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setActivePage('dashboard')}
-          >
-            <BarChart3 size={20} />
-            Dashboard
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'attendance' ? 'active' : ''}`}
-            onClick={() => setActivePage('attendance')}
-          >
-            <ClipboardList size={20} />
-            Rider Attendance
-          </button>
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'tracking' ? 'active' : ''}`}
-            onClick={() => setActivePage('tracking')}
-          >
-            <Truck size={20} />
-            Vehicle Tracking
-          </button>
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'riderperformance' ? 'active' : ''}`}
-            onClick={() => setActivePage('riderperformance')}
-          >
-            <Activity size={20} />
-            Rider Performance
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'onboarding' ? 'active' : ''}`}
-            onClick={() => setActivePage('onboarding')}
-          >
-            <UserPlus size={20} />
-            Onboarding Analytics
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'errorfinder' ? 'active' : ''}`}
-            onClick={() => setActivePage('errorfinder')}
-          >
-            <AlertTriangle size={20} />
-            Error Finder
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'dailymailer' ? 'active' : ''}`}
-            onClick={() => setActivePage('dailymailer')}
-          >
-            <Mail size={20} />
-            Daily Mailer
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'tempparser' ? 'active' : ''}`}
-            onClick={() => setActivePage('tempparser')}
-          >
-            <FileBarChart2 size={20} />
-            Temp Parser
-          </button>
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'riderdetails' ? 'active' : ''}`}
-            onClick={() => setActivePage('riderdetails')}
-          >
-            <Users size={20} />
-            Rider Details
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'inactivemailer' ? 'active' : ''}`}
-            onClick={() => setActivePage('inactivemailer')}
-          >
-            <UserX size={20} />
-            Inactive Mailer
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'attritionmailer' ? 'active' : ''}`}
-            onClick={() => setActivePage('attritionmailer')}
-          >
-            <TrendingDown size={20} />
-            Rider Attrition
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'paymentupload' ? 'active' : ''}`}
-            onClick={() => setActivePage('paymentupload')}
-          >
-            <Wallet size={20} />
-            Payment Upload
-          </button>
-          <button
-            className={`nav-item nav-item-green ${activePage === 'deployedrental' ? 'active' : ''}`}
-            onClick={() => setActivePage('deployedrental')}
-          >
-            <CircleDollarSign size={20} />
-            Deployed Rental
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'orderupload' ? 'active' : ''}`}
-            onClick={() => setActivePage('orderupload')}
-          >
-            <Package size={20} />
-            Order Upload
-          </button>
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'orderhistory' ? 'active' : ''}`}
-            onClick={() => setActivePage('orderhistory')}
-          >
-            <ClipboardList size={20} />
-            Order History
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'paymenthistory' ? 'active' : ''}`}
-            onClick={() => setActivePage('paymenthistory')}
-          >
-            <History size={20} />
-            Payment History
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'sdpayment' ? 'active' : ''}`}
-            onClick={() => setActivePage('sdpayment')}
-          >
-            <Shield size={20} />
-            SD & EV Rent
-          </button>
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'iotdata' ? 'active' : ''}`}
-            onClick={() => setActivePage('iotdata')}
-          >
-            <Radio size={20} />
-            IoT Data
-          </button>
-          <button
-            className={`nav-item nav-item-green ${activePage === 'evimpact' ? 'active' : ''}`}
-            onClick={() => setActivePage('evimpact')}
-          >
-            <Leaf size={20} />
-            CO₂ &amp; Savings
-          </button>
-          <button
-            className={`nav-item nav-item-green ${activePage === 'fulldata' ? 'active' : ''}`}
-            onClick={() => setActivePage('fulldata')}
-          >
-            <Table2 size={20} />
-            Full Data
-          </button>
-          <button
-            className={`nav-item nav-item-green ${activePage === 'sourcewise' ? 'active' : ''}`}
-            onClick={() => setActivePage('sourcewise')}
-          >
-            <Users size={20} />
-            Source Wise Data
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'fleetdata' ? 'active' : ''}`}
-            onClick={() => setActivePage('fleetdata')}
-          >
-            <Database size={20} />
-            Fleet Data
-          </button>
-          <button 
-            className={`nav-item nav-item-green ${activePage === 'fleetcitysummary' ? 'active' : ''}`}
-            onClick={() => setActivePage('fleetcitysummary')}
-          >
-            <MapPin size={20} />
-            Fleet Summary
-          </button>
-          <button
-            className={`nav-item nav-item-green ${activePage === 'serviceschedule' ? 'active' : ''}`}
-            onClick={() => setActivePage('serviceschedule')}
-          >
-            <Wrench size={20} />
-            Service Schedule
-          </button>
-          <button 
-            className={`nav-item ${activePage === 'fleetsummary' ? 'active' : ''}`}
-            onClick={() => setActivePage('fleetsummary')}
-          >
-            <PieChart size={20} />
-            Client Summary
-          </button>
-          <button
-            className={`nav-item nav-item-green ${activePage === 'bigquery' ? 'active' : ''}`}
-            onClick={() => setActivePage('bigquery')}
-          >
-            <Layers size={20} />
-            BigQuery Data
-          </button>
-
-          <div className={`nav-folder ${ev91FolderOpen || EV91_PAGES.has(activePage) ? 'open' : ''}`}>
-            <button
-              type="button"
-              className={`nav-item nav-folder-toggle ${EV91_PAGES.has(activePage) ? 'folder-active' : ''}`}
-              onClick={() => setEv91FolderOpen((v) => !v)}
-              aria-expanded={ev91FolderOpen}
-            >
-              {ev91FolderOpen || EV91_PAGES.has(activePage) ? <FolderOpen size={20} /> : <Folder size={20} />}
-              <span className="nav-folder-label">EV91 DB Data</span>
-              <ChevronDown size={16} className="nav-folder-chevron" />
-            </button>
-            {(ev91FolderOpen || EV91_PAGES.has(activePage)) && (
-              <div className="nav-folder-children">
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-iotupload' ? 'active' : ''}`}
-                  onClick={openEv91IotUpload}
-                >
-                  <Radio size={18} />
-                  IoT Data Upload
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-summary' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-summary')}
-                >
-                  <Briefcase size={18} />
-                  City / Client Summary
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-performance' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-performance')}
-                >
-                  <Activity size={18} />
-                  Rider Performance
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-onboarding' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-onboarding')}
-                >
-                  <UserPlus size={18} />
-                  Onboarding Pending
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-fl-pending' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-fl-pending')}
-                >
-                  <ClipboardList size={18} />
-                  FL Pending
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-evlookup' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-evlookup')}
-                >
-                  <Search size={18} />
-                  EV / NON-EV Lookup
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-insight' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-insight')}
-                >
-                  <Users size={18} />
-                  Rider-Vehicle Monitor
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-riders' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-riders')}
-                >
-                  <IdCard size={18} />
-                  Rider Details
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-vehicles' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-vehicles')}
-                >
-                  <Bike size={18} />
-                  Vehicles
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-sd' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-sd')}
-                >
-                  <Shield size={18} />
-                  EV91 SD
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-operational' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-operational')}
-                >
-                  <Wrench size={18} />
-                  Operational Status
-                </button>
-                  <button
-                    type="button"
-                    className={`nav-item nav-item-child ${activePage === 'ev91-client-period-trend' ? 'active' : ''}`}
-                    onClick={() => openEv91Page('ev91-client-period-trend')}
-                  >
-                    <Table2 size={17} />
-                    Client Period Trend
-                  </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-sources' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-sources')}
-                >
-                  <Users size={18} />
-                  Source List
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-current' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-current')}
-                >
-                  <Bike size={18} />
-                  Current Status
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-overall' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-overall')}
-                >
-                  <Layers size={18} />
-                  Overall Status
-                </button>
-                <button
-                  type="button"
-                  className={`nav-item nav-item-child ${activePage === 'ev91-mapping' ? 'active' : ''}`}
-                  onClick={() => openEv91Page('ev91-mapping')}
-                >
-                  <Link2 size={18} />
-                  Client Mapping
-                </button>
-              </div>
-            )}
-          </div>
-        </nav>
+          <SidebarNavigation
+            activePage={activePage}
+            onSelectPage={setActivePage}
+            onIotUpload={openEv91IotUpload}
+            isAdmin={isAdmin}
+          />
         </aside>
       </div>
 
-      <main className={`main-content${activePage === 'ev91-client-period-trend' ? ' ev91-client-trend-main' : ''}`}>
-        <Suspense fallback={<PageLoading />}>
-        {activePage === 'dashboard' ? (
-          <Dashboard 
-            riderData={riderData} 
-            fleetData={fleetData} 
-            weeklyData={weeklyData} 
-            loading={loading}
-            refreshData={fetchData}
-          />
-        ) : activePage === 'attendance' ? (
-          <RiderAttendance 
-            riderData={riderData} 
-            loading={loading} 
-          />
-        ) : activePage === 'tracking' ? (
-          <VehicleTracking
-            fleetData={displayFleetData}
-            riderData={riderData}
-            loading={loading || fleetLoading}
-          />
-        ) : activePage === 'riderperformance' ? (
-          <RiderPerformance
-            fleetData={fleetData}
-            riderData={riderData}
-            loading={loading}
-            fleetLoading={fleetLoading}
-            refreshing={refreshing}
-            dataUpdatedAt={dataUpdatedAt}
-            refreshData={() => fetchData({ bypassCache: true })}
-          />
-        ) : activePage === 'onboarding' ? (
-          <OnboardingAnalytics
-            kycData={kycData}
-            onboardingData={onboardingData}
-            fleetData={fleetData}
-            riderData={riderData}
-            loading={loading}
-          />
-        ) : activePage === 'errorfinder' ? (
-          <ErrorFinder
-            fleetData={fleetData}
-            riderData={riderData}
-            loading={loading}
-          />
-        ) : activePage === 'dailymailer' ? (
-          <DailyMailer
-            riderData={riderData}
-            loading={loading}
-            refreshData={fetchData}
-          />
-        ) : activePage === 'tempparser' ? (
-          <TempSourceActive
-            riderData={riderData}
-            fleetData={fleetData}
-            loading={loading}
-          />
-        ) : activePage === 'riderdetails' ? (
-          <RiderDetails
-            fleetData={fleetData}
-            kycData={kycData}
-            onboardingData={onboardingData}
-            riderData={riderData}
-            loading={loading}
-          />
-        ) : activePage === 'inactivemailer' ? (
-          <InactiveRiderMailer
-            riderData={riderData}
-            kycData={kycData}
-            fleetData={fleetData}
-            onboardingData={onboardingData}
-            inventoryData={vehicleInventoryData}
-            loading={loading}
-          />
-        ) : activePage === 'attritionmailer' ? (
-          <RiderAttritionMailer
-            riderData={riderData}
-            fleetData={fleetData}
-            onboardingData={onboardingData}
-            loading={loading}
-          />
-        ) : activePage === 'paymentupload' ? (
-          <RiderPaymentUpload />
-        ) : activePage === 'deployedrental' ? (
-          <DeployedRentalPending />
-        ) : activePage === 'orderupload' ? (
-          <OrderUpload onOrdersSaved={refreshOrdersAfterUpload} />
-        ) : activePage === 'orderhistory' ? (
-          <OrderHistory />
-        ) : activePage === 'paymenthistory' ? (
-          <PaymentHistory onboardingData={onboardingData} />
-        ) : activePage === 'sdpayment' ? (
-          <SdPaymentViewer />
-        ) : activePage === 'iotdata' || activePage === 'ev91-iotupload' ? (
-          <IotData
-            key={activePage}
-            uploadEnabled={activePage === 'ev91-iotupload'}
-            fleetData={fleetData}
-            riderData={riderData}
-            vehicleInventoryData={vehicleInventoryData}
-            loading={loading}
-          />
-        ) : activePage === 'evimpact' ? (
-          <EvEnvironmentalImpact
-            vehicleInventoryData={vehicleInventoryData}
-            loading={loading}
-          />
-        ) : activePage === 'fulldata' ? (
-          <FullDataPage onboardingData={onboardingData} riderData={riderData} />
-        ) : activePage === 'sourcewise' ? (
-          <SourceWiseData onboardingData={onboardingData} />
-        ) : activePage === 'fleetdata' ? (
-          <FleetDataViewer
-            fleetData={displayFleetData}
-            riderData={riderData}
-            totalCount={fleetTotalCount}
-            sheetCount={fleetFormCount}
-            loading={loading || fleetFullLoading}
-            fleetFullLoading={fleetFullLoading}
-            fleetIsSlim={!fleetDataFull}
-            loadFullFleet={loadFullFleet}
-            refreshData={() => fetchData({ bypassCache: true, fullFleet: true })}
-            defaultTab="data"
-          />
-        ) : activePage === 'fleetcitysummary' ? (
-          <FleetDataViewer
-            fleetData={fleetData}
-            riderData={riderData}
-            totalCount={fleetTotalCount}
-            sheetCount={fleetFormCount}
-            loading={loading}
-            refreshData={fetchData}
-            defaultTab="citysummary"
-          />
-        ) : activePage === 'serviceschedule' ? (
-          <ServiceSchedule />
-        ) : activePage === 'fleetsummary' ? (
-          <FleetDataViewer
-            fleetData={fleetData}
-            riderData={riderData}
-            totalCount={fleetTotalCount}
-            sheetCount={fleetFormCount}
-            loading={loading}
-            refreshData={fetchData}
-            defaultTab="clientsummary"
-          />
-        ) : activePage === 'bigquery' ? (
-          <BigQueryDeployReturn
-            fleetData={displayFleetData}
-            loading={loading || fleetLoading}
-            fleetFullLoading={fleetFullLoading}
-            fleetIsSlim={!fleetDataFull}
-            loadFullFleet={loadFullFleet}
-            onboardingData={onboardingData}
-          />
-        ) : activePage === 'ev91-performance' ? (
-          <Ev91RiderPerformance
-            riderData={riderData}
-            onboardingData={onboardingData}
-            loading={loading}
-            refreshing={refreshing}
-            dataUpdatedAt={dataUpdatedAt}
-            refreshData={() => fetchData({ bypassCache: true })}
-          />
-        ) : activePage === 'ev91-onboarding' ? (
-          <Ev91OnboardingPending
-            riderData={riderData}
-            onboardingData={onboardingData}
-            loading={loading}
-            refreshing={refreshing}
-            dataUpdatedAt={dataUpdatedAt}
-            refreshData={() => fetchData({ bypassCache: true })}
-          />
-        ) : activePage === 'ev91-fl-pending' ? (
-          <Ev91FlPending />
-        ) : activePage === 'ev91-evlookup' ? (
-          <Ev91EvLookup
-            riderData={riderData}
-            loading={loading}
-            refreshing={refreshing}
-            dataUpdatedAt={dataUpdatedAt}
-            refreshData={() => fetchData({ bypassCache: true })}
-          />
-        ) : activePage === 'ev91-summary' ? (
-          <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
-        ) : activePage === 'ev91-operational' ? (
-          <Ev91OperationalStatus />
-        ) : activePage === 'ev91-client-period-trend' ? (
-          <Ev91ClientPeriodTrend riderData={riderData} onboardingData={onboardingData} />
-        ) : activePage === 'ev91-sources' ? (
-          <SourceMaster canManage={!!user && !!isAdmin} />
-        ) : activePage === 'ev91-vehicles' ? (
-          <Ev91Vehicles />
-        ) : activePage === 'ev91-sd' ? (
-          <Ev91SdWallet />
-        ) : activePage === 'ev91-insight' ? (
-          <VehicleTracking
-            fleetData={displayFleetData}
-            riderData={riderData}
-            loading={loading || fleetLoading}
-            includeEv91Api
-            pageTitle="Rider & Vehicle Insight"
-            pageSubtitle="Fleet + EV91 API · Rider-Vehicle Monitor with deploy/return history"
-          />
-        ) : EV91_PAGES.has(activePage) ? (
-          <Ev91DbData
-            endpoint={EV91_ENDPOINT_BY_PAGE[activePage]}
-            onboardingData={onboardingData}
-          />
-        ) : null}
-        </Suspense>
+      <main aria-busy={pagePending} className={`main-content${renderedPage === 'ev91-client-period-trend' ? ' ev91-client-trend-main' : ''}`}>
+        {pagePending && <div className="page-navigation-status" role="status">Opening page...</div>}
+        <DashboardContent
+          activePage={renderedPage}
+          riderData={riderData}
+          fleetData={fleetData}
+          weeklyData={weeklyData}
+          loading={loading}
+          fetchData={fetchData}
+          displayFleetData={displayFleetData}
+          fleetLoading={fleetLoading}
+          refreshing={refreshing}
+          dataUpdatedAt={dataUpdatedAt}
+          kycData={kycData}
+          onboardingData={onboardingData}
+          vehicleInventoryData={vehicleInventoryData}
+          refreshOrdersAfterUpload={refreshOrdersAfterUpload}
+          fleetTotalCount={fleetTotalCount}
+          fleetFormCount={fleetFormCount}
+          fleetFullLoading={fleetFullLoading}
+          fleetDataFull={fleetDataFull}
+          loadFullFleet={loadFullFleet}
+          user={user}
+          isAdmin={isAdmin}
+        />
       </main>
     </div>
   )

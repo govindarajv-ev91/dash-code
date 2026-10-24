@@ -113,7 +113,9 @@ test('HTML fallback is explained and a failed first fetch is never cached', asyn
 
 test('EV91 sidebar page and local/production wallet routes are wired before SPA fallbacks', async () => {
   const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8')
-  assert.match(app, /onClick=\{\(\) => openEv91Page\('ev91-sd'\)\}/)
+  const navigation = await readFile(new URL('../src/components/SidebarNavigation.jsx', import.meta.url), 'utf8')
+  assert.match(navigation, /id: 'ev91-sd', label: 'EV91 SD'/)
+  assert.match(app, /onSelectPage=\{setActivePage\}/)
   assert.match(app, /activePage === 'ev91-sd' \? \(\s*<Ev91SdWallet/)
   const redirects = JSON.parse(await readFile(new URL('../amplify-redirects.json', import.meta.url), 'utf8'))
   const index = redirects.findIndex((rule) => rule.source === '/api/ev91-sd-wallet')

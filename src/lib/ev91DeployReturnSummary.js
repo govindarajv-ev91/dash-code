@@ -335,9 +335,10 @@ export function normalizeEv91ReasonKey(value) {
     .replace(/\s+/g, ' ')
 }
 
-/** Ev Deployed (EV91 API Data): Reason = NEW_RIDER */
-export function isEv91ApiEvDeployReason(reason) {
-  return normalizeEv91ReasonKey(reason) === 'new rider'
+/** EV91 API deployment reasons; the combined option also includes RE_JOINER. */
+export function isEv91ApiEvDeployReason(reason, { includeRejoiners = false } = {}) {
+  const key = normalizeEv91ReasonKey(reason)
+  return key === 'new rider' || (includeRejoiners && key === 're joiner')
 }
 
 /** Return (EV91 API Data): Exiting + Shifting to Own Vehicle */
@@ -351,15 +352,16 @@ export function isEv91ApiReturnReason(reason) {
  *
  * Ev Deployed  =
  *   - api (default): Overall Status Deployed where reason = NEW_RIDER
+ *   - api-rejoiners: Overall Status Deployed where reason = NEW_RIDER or RE_JOINER
  *   - overall: every Overall Status Deployed row in range
  *   - order: brand-new EV riders (first order-done ever in range), same as IC logic
  * IC Deployed  = brand-new NON-EV riders (first order-done ever in range)
  * Return       =
- *   - api (default): Returned where reason is Exiting or Shifting to Own Vehicle
+ *   - api / api-rejoiners: Returned where reason is Exiting or Shifting to Own Vehicle
  *   - overall / order: every Overall Status Returned row in range
  * Net add on   = Total Deployed − Return
  *
- * @param {'api'|'overall'|'order'} options.evDeployedSource
+ * @param {'api'|'api-rejoiners'|'overall'|'order'} options.evDeployedSource
  */
 export function buildEv91ClientWiseSummary(
   overallRows = [],
@@ -382,7 +384,8 @@ export function buildEv91ClientWiseSummary(
   }
 
   const useOrderEv = evDeployedSource === 'order'
-  const filterByReason = evDeployedSource === 'api'
+  const includeRejoiners = evDeployedSource === 'api-rejoiners'
+  const filterByReason = evDeployedSource === 'api' || includeRejoiners
   const filterCity = city && city !== 'All' ? city : null
   const filterCityKey = filterCity ? normalizeCityKey(filterCity) : null
 
@@ -426,7 +429,7 @@ export function buildEv91ClientWiseSummary(
     if (status === 'deployed') {
       // Overall Status Deployed only when not using order-data Ev Deployed
       if (!useOrderEv) {
-        if (filterByReason && !isEv91ApiEvDeployReason(reason)) continue
+        if (filterByReason && !isEv91ApiEvDeployReason(reason, { includeRejoiners })) continue
         const stats = ensure(client)
         stats.evDeployed++
         if (evRows) {
@@ -518,7 +521,7 @@ export function buildEv91ClientWiseSummary(
     { totalDeployed: 0, evDeployed: 0, icDeployed: 0, returnCount: 0, netAddon: 0 }
   )
 
-  const sourceLabel = useOrderEv ? 'order' : filterByReason ? 'api' : 'overall'
+  const sourceLabel = useOrderEv ? 'order' : filterByReason ? evDeployedSource : 'overall'
   const result = { clients: rows, totals, eventCount, evDeployedSource: sourceLabel }
   if (includeDetails) {
     const sortEv = (a, b) => {

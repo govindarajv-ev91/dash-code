@@ -128,8 +128,10 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const [showRawData, setShowRawData] = useState(false)
   const [rawKind, setRawKind] = useState('EV') // EV | IC | Return
   const [rawClientFilter, setRawClientFilter] = useState('All')
-  /** Ev Deployed source: api = Reason NEW_RIDER / Exiting+Shifting; overall = all; order = first EV day. */
+  /** API options filter deployment reasons; overall = all; order = first EV day. */
   const [evDeployedSource, setEvDeployedSource] = useState('api')
+  const isApiEvSource = evDeployedSource === 'api' || evDeployedSource === 'api-rejoiners'
+  const apiEvReasonLabel = evDeployedSource === 'api-rejoiners' ? 'NEW_RIDER + RE_JOINER' : 'NEW_RIDER'
 
   const load = useCallback((force = false) => {
     setLoading(true)
@@ -470,7 +472,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   }
 
   const renderMetricRow = (label, rowClass, getValue, totalValue) => (
-    <tr className={rowClass}>
+    <tr key={label} className={rowClass}>
       <td className="fdv-pivot-metric-col">{label}</td>
       {tableClients.map((c) => {
         const hiddenCol = showHiddenClients && isHiddenSummaryClient(c.client)
@@ -521,11 +523,11 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
               EV91 Overall Status · Ev Deployed ={' '}
               {evDeployedSource === 'order'
                 ? 'first order-upload day (EV Type1, same as IC)'
-                : evDeployedSource === 'api'
-                  ? 'Reason NEW_RIDER'
+                : isApiEvSource
+                  ? `Reason ${apiEvReasonLabel}`
                   : 'Overall Status Deployed rows'}{' '}
               · Return ={' '}
-              {evDeployedSource === 'api'
+              {isApiEvSource
                 ? 'Exiting + Shifting to Own Vehicle'
                 : 'Overall Status Returned'}{' '}
               · IC Deployed = first order-upload day (NON-EV) · week Sun–Sat · Net = Total − Return
@@ -641,13 +643,16 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
           </label>
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </div>
-        <div className="fdv-summary-filter" style={{ minWidth: 240 }}>
+        <div className="fdv-summary-filter" style={{ gridColumn: '1 / -1', minWidth: 0 }}>
           <label>Ev Deployed source</label>
           <div
             style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.35rem',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gridTemplateRows: 'repeat(2, auto)',
+              gridAutoFlow: 'column',
+              gap: '0.35rem 1.5rem',
+              maxWidth: 800,
               padding: '0.35rem 0',
               fontSize: '0.82rem',
             }}
@@ -661,6 +666,16 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                 onChange={() => startTransition(() => setEvDeployedSource('api'))}
               />
               EV91 API Data
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="evDeployedSource"
+                value="api-rejoiners"
+                checked={evDeployedSource === 'api-rejoiners'}
+                onChange={() => startTransition(() => setEvDeployedSource('api-rejoiners'))}
+              />
+              EV91 API Data (NEW_RIDER + RE_JOINER)
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
               <input
@@ -875,14 +890,14 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                   EV Deployed ({rawDetails.evRows?.length || 0})
                   {evDeployedSource === 'order'
                     ? ' · order'
-                    : evDeployedSource === 'api'
-                      ? ' · NEW_RIDER'
+                    : isApiEvSource
+                      ? ` · ${apiEvReasonLabel}`
                       : ' · overall'}
                 </option>
                 <option value="IC">IC Deployed / New NON-EV ({rawDetails.icRows?.length || 0})</option>
                 <option value="Return">
                   Return ({rawDetails.returnRows?.length || 0})
-                  {evDeployedSource === 'api' ? ' · Exiting/Shifting' : ''}
+                  {isApiEvSource ? ' · Exiting/Shifting' : ''}
                 </option>
               </select>
             </div>

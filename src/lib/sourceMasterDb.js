@@ -22,12 +22,12 @@ export async function fetchSourceMaster({ includeInactive = false } = {}) {
 
 export function sourceMasterError(error) {
   if (error?.code === '23505') return 'This source already exists in this city. Edit or reactivate the existing entry.'
-  if (error?.code === 'PGRST116') return 'No source was changed. Refresh the list and retry. If the source still exists, run sql/fix_source_master_status_permissions.sql in Supabase to repair status-update permissions.'
+  if (error?.code === 'PGRST116') return 'No source was changed. Refresh the list and retry. If the source still exists, run sql/fix_source_master_permissions.sql in Supabase to repair source-management permissions.'
   if (error?.code === '42501') {
     if (/permission denied for (?:table|relation|sequence)/i.test(error.message || '')) {
-      return 'Source management database permissions are missing. Run sql/create_source_master.sql in Supabase. For Active/Inactive updates only, run sql/fix_source_master_status_permissions.sql.'
+      return 'Source management database permissions are missing. Ask the project owner to run sql/fix_source_master_permissions.sql in Supabase SQL Editor, then refresh and retry. The status-only repair does not enable Add source.'
     }
-    return 'Your current session is not allowed to change sources. Sign in again with an administrator account. If the error continues, run sql/fix_source_master_status_permissions.sql in Supabase.'
+    return 'Your current session is not allowed to change sources. Sign in again with an administrator account. If the error continues, run sql/fix_source_master_permissions.sql in Supabase.'
   }
   if (['PGRST301', 'PGRST303'].includes(error?.code) || error?.status === 401) return 'Your sign-in session has expired. Sign in again before changing sources.'
   if (['42P01', 'PGRST205'].includes(error?.code)) return 'Run sql/create_source_master.sql in Supabase, then refresh this page.'

@@ -1,4 +1,5 @@
 -- Run in Supabase SQL Editor as the project owner if Active/Inactive fails.
+-- For Add source, Edit or Remove, use sql/fix_source_master_permissions.sql.
 -- Safe to rerun. Changes permissions only; no source or historical data changes.
 begin;
 

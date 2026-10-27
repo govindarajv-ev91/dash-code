@@ -131,7 +131,12 @@ test('viewers see disabled status buttons and can filter sources; report reads s
 })
 
 test('status errors distinguish missing database grants, blocked rows, stale records and expired sessions', () => {
-  assert.match(db.sourceMasterError({ code: '42501', message: 'permission denied for table source_master' }), /database permissions are missing/)
+  for (const message of ['permission denied for table source_master', 'permission denied for sequence source_master_id_seq']) {
+    const error = db.sourceMasterError({ code: '42501', message })
+    assert.match(error, /database permissions are missing/)
+    assert.match(error, /sql\/fix_source_master_permissions\.sql/)
+    assert.doesNotMatch(error, /sql\/fix_source_master_status_permissions\.sql/)
+  }
   assert.match(db.sourceMasterError({ code: '42501', message: 'new row violates row-level security policy' }), /current session is not allowed/)
   const noRow = db.sourceMasterError({ code: 'PGRST116', message: 'The result contains 0 rows' })
   assert.match(noRow, /No source was changed/)

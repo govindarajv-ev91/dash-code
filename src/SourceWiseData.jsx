@@ -625,16 +625,27 @@ export default function SourceWiseData({ onboardingData = [] }) {
   }
 
   const exportExcel = () => {
-    if (!exportRows.length) return
+    if (!exportRows.length || sourcesLoading || sourceError) return
     setExporting(true)
     try {
       const wb = XLSX.utils.book_new()
+      const withSourceStatus = (rows) => rows.map((row) => ({
+        ...row,
+        'Source Status': isListedSource(sourceIndex, row.City, row.Source) ? 'Active' : 'In Active',
+      }))
+      const withStatusColumn = (columns) => columns.flatMap((column) =>
+        column === 'City' ? [column, 'Source Status'] : [column]
+      )
       const sheetName = viewTab === 'byClient' ? 'Source by Client' : 'Source Total'
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exportRows), sheetName)
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(withSourceStatus(exportRows), {
+        header: withStatusColumn(tableColumns),
+      }), sheetName)
       const rawRows = buildFullDataSourceRawOrderRows(orderRows, onboardingRows, overallRows, mappingRows, currentRows, {
         fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient', summaryRows: exportRows,
       })
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rawRows, { header: SOURCE_RAW_ORDER_COLUMNS }), 'Raw Orders')
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(withSourceStatus(rawRows), {
+        header: withStatusColumn(SOURCE_RAW_ORDER_COLUMNS),
+      }), 'Raw Orders')
       if (baseReport.activeSummary?.length) {
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(baseReport.activeSummary), 'Active Summary')
       }
@@ -665,7 +676,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
             </h1>
             <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '820px', fontSize: '0.9rem' }}>
               Source / city / client month summary with active rider counts (last 4 order days).
-              {' '}Only active listed sources appear here. Excel includes all sources.
+              {' '}Only active listed sources appear here. Excel includes all sources with their Source Status.
             </p>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -683,8 +694,8 @@ export default function SourceWiseData({ onboardingData = [] }) {
               type="button"
               className="glass"
               onClick={exportExcel}
-              disabled={exporting || loading || filtersPending || !exportRows.length}
-              title="Download all sources for the selected dates, city and client, including hidden sources"
+              disabled={exporting || loading || filtersPending || sourcesLoading || !!sourceError || !exportRows.length}
+              title={sourceError ? 'Refresh the source list before exporting source statuses' : 'Download all sources with Active / In Active status for the selected dates, city and client'}
               style={{ padding: '0.45rem 0.75rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             >
               {exporting ? <Loader size={14} className="spin" /> : <Download size={14} />}

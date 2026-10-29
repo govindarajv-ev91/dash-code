@@ -18,13 +18,32 @@ create or replace function public.distinct_order_upload_months()
 returns table (month text)
 language sql
 stable
+security invoker
+set search_path = ''
 as $$
-  select m.month
-  from public.order_upload_data m
-  where m.month is not null and btrim(m.month) <> ''
-  group by m.month
-  order by m.month desc;
+  -- Seek once per distinct month through the month index instead of grouping
+  -- every order row. Invoker security retains the caller's table/RLS policies.
+  with recursive month_keys as (
+    (
+      select m.month from public.order_upload_data m
+      where m.month > '' and btrim(m.month) <> ''
+      order by m.month limit 1
+    )
+    union all
+    select next_month.month
+    from month_keys previous_month
+    cross join lateral (
+      select m.month from public.order_upload_data m
+      where m.month > previous_month.month and btrim(m.month) <> ''
+      order by m.month limit 1
+    ) next_month
+  )
+  select month_keys.month from month_keys order by month_keys.month desc;
 $$;
 
 grant execute on function public.distinct_order_upload_months() to anon;
 grant execute on function public.distinct_order_upload_months() to authenticated;
+
+-- Refresh planner statistics for the upload page's approximate row count.
+analyze public.order_upload_data;
+notify pgrst, 'reload schema';

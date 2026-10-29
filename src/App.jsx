@@ -54,7 +54,7 @@ import {
   FLEET_FULL_PAGE_SIZE,
 } from './lib/fleetDataConfig'
 import { mergeFleetSources, splitFleetBySource, tagLegacyFleetRows } from './lib/fleetDataLoad'
-import { fetchAllOrderUploads, clearOrderUploadCache, patchOrderUploadCache } from './lib/orderUploadDb'
+import { fetchAllOrderUploads, clearOrderUploadCache } from './lib/orderUploadDb'
 import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
@@ -735,25 +735,14 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
     }
 
     try {
-      if (hasPatch) {
-        // Never block upload on full order_upload_data pull — patch cache + merge metrics only.
-        const uploadRows = patchOrderUploadCache(uploadedRows)
-        await syncMerged(uploadRows)
-        console.info(`[orders] patched after upload: +${uploadedRows.length} rows (${uploadRows.length} cached)`)
-      } else {
-        clearOrderUploadCache()
-        const uploadRows = await fetchAllOrderUploads({ force: true }).catch(() => [])
-        await syncMerged(uploadRows)
-        console.info(`[orders] refreshed after upload: ${uploadRows?.length ?? 0} uploads`)
-      }
+      // saveOrderUploadRows already patches a complete cache. Reuse it instead
+      // of pulling all orders and rider metrics twice after every file.
+      if (!hasPatch) clearOrderUploadCache()
+      const uploadRows = await fetchAllOrderUploads()
+      await syncMerged(uploadRows)
+      console.info(`[orders] refreshed after upload: ${uploadRows?.length ?? 0} uploads`)
     } catch (err) {
       console.warn('Refresh after order upload failed:', err?.message || err)
-    }
-
-    if (hasPatch) {
-      void fetchAllOrderUploads({ force: true })
-        .then((full) => syncMerged(full || []))
-        .catch((err) => console.warn('[orders] background full sync failed:', err?.message || err))
     }
   }, [])
 

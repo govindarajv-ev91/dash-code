@@ -57,6 +57,20 @@ where schemaname = 'public'
 order by tablename, policyname;
 ```
 
+### Fix Order Upload permissions after enabling sign-in
+
+If Order Upload reports `new row violates row-level security policy for table
+"order_upload_data"`, run `sql/fix_order_upload_permissions.sql` in the app's
+Supabase SQL Editor after the order table and dashboard auth setup. Refresh the
+page while signed in and retry the file, including a file containing existing
+orders. Daily uploads use upsert, so INSERT, UPDATE, and SELECT access are needed.
+
+The repair copies the existing anonymous SELECT/INSERT/UPDATE policies to
+registered dashboard accounts, preserving row filters and restrictive behavior.
+It adds table and ID-sequence privileges for those operations, keeps RLS enabled,
+and leaves order data, anonymous access, and delete permissions unchanged. It is
+safe to rerun. The earlier dashboard read repair alone does not enable uploads.
+
 Provide the intended table privileges and RLS policies to approved
 `authenticated` users. Keep existing row filters and operation restrictions;
 do not add unrestricted write policies just to make login work. The IoT table

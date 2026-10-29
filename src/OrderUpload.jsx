@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Upload,
@@ -121,6 +121,7 @@ function ResetConfirmModal({ open, title, message, confirming, onCancel, onConfi
 
 export default function OrderUpload({ onOrdersSaved }) {
   const [count, setCount] = useState(0)
+  const [countIsLowerBound, setCountIsLowerBound] = useState(false)
   const [preview, setPreview] = useState([])
   const [months, setMonths] = useState([])
   const [resetMonth, setResetMonth] = useState('')
@@ -131,40 +132,48 @@ export default function OrderUpload({ onOrdersSaved }) {
   const [resetting, setResetting] = useState(false)
   const [message, setMessage] = useState(null)
   const [resetConfirm, setResetConfirm] = useState(null)
-
-  const refreshSummary = useCallback(async () => {
-    setLoading(true)
-    try {
-      const summary = await loadOrderUploadSummary()
-      setCount(summary.count || 0)
-      setPreview(summary.preview || [])
-      setMonths(summary.months || [])
-      setLastUploadAt(summary.count > 0 ? summary.lastUploadAt || null : null)
-      setMissingTable(Boolean(summary.missingTable))
-      if (summary.missingTable) {
-        setMessage({ type: 'error', text: getOrderUploadDbSetupMessage() })
-      }
-      return summary
-    } catch (err) {
-      console.error(err)
-      setMessage({ type: 'error', text: err?.message || 'Failed to load order upload summary' })
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const [uploadProgress, setUploadProgress] = useState(null)
+  const summaryRequest = useRef(0)
 
   const applySummary = useCallback((summary) => {
     if (!summary) return
     setCount(summary.count || 0)
+    setCountIsLowerBound(Boolean(summary.countIsLowerBound))
     setPreview(summary.preview || [])
     setMonths(summary.months || [])
     setLastUploadAt(summary.count > 0 ? summary.lastUploadAt || null : null)
     setMissingTable(Boolean(summary.missingTable))
   }, [])
 
+  const refreshSummary = useCallback(async ({ background = false } = {}) => {
+    const request = ++summaryRequest.current
+    if (!background) setLoading(true)
+    try {
+      const summary = await loadOrderUploadSummary({
+        onPreview: (partial) => {
+          if (request !== summaryRequest.current || background) return
+          applySummary(partial)
+          setLoading(false)
+        },
+      })
+      if (request !== summaryRequest.current) return null
+      applySummary(summary)
+      if (summary.missingTable) setMessage({ type: 'error', text: getOrderUploadDbSetupMessage() })
+      return summary
+    } catch (err) {
+      console.error(err)
+      if (request === summaryRequest.current && !background) {
+        setMessage({ type: 'error', text: err?.message || 'Failed to load order upload summary' })
+      }
+      return null
+    } finally {
+      if (request === summaryRequest.current) setLoading(false)
+    }
+  }, [applySummary])
+
   useEffect(() => {
     refreshSummary()
+    return () => { summaryRequest.current += 1 }
   }, [refreshSummary])
 
   const handleUpload = async (e) => {
@@ -172,7 +181,10 @@ export default function OrderUpload({ onOrdersSaved }) {
     e.target.value = ''
     if (!file) return
 
+    summaryRequest.current += 1
+    setLoading(false)
     setUploading(true)
+    setUploadProgress(null)
     setMessage(null)
     try {
       const buffer = await file.arrayBuffer()
@@ -181,20 +193,15 @@ export default function OrderUpload({ onOrdersSaved }) {
         setMessage({ type: 'error', text: 'No valid order rows found. Check template headers.' })
         return
       }
-      const result = await saveOrderUploadRows(rows, { replace: false })
+      const result = await saveOrderUploadRows(rows, { replace: false, onProgress: setUploadProgress })
       const saved = result?.saved ?? 0
       const skipped = result?.skipped ?? 0
       const savedRows = result?.rows || []
 
-      // Fast summary — avoid exact COUNT(*) + full-table fetch (prod timeouts).
-      const summary = await refreshOrderUploadSummaryAfterSave(savedRows, { previousCount: count }).catch(
-        () => null
-      )
-      if (summary) applySummary(summary)
-      else {
-        setCount((c) => c + saved)
-        if (savedRows.length) setPreview(savedRows.slice(0, 25))
-      }
+      const summary = refreshOrderUploadSummaryAfterSave(savedRows, {
+        previousCount: count, previousMonths: months,
+      })
+      applySummary(summary)
 
       const dateSummary = summarizeOrderUploadDates(rows)
       const dateText = dateSummary.length
@@ -206,11 +213,11 @@ export default function OrderUpload({ onOrdersSaved }) {
           `Saved ${saved.toLocaleString()} unique rows (Date + WorkerCode + Client + order)` +
           (skipped ? ` · ${skipped.toLocaleString()} duplicate/blank rows skipped in file` : '') +
           ` · Dates in file: ${dateText}` +
-          ` · DB ~${((summary?.count ?? count) || 0).toLocaleString()} rows` +
           ` from “${sheetName || file.name}”. Previous days kept.`,
       })
+      void refreshSummary({ background: true })
       if (typeof onOrdersSaved === 'function') {
-        onOrdersSaved(savedRows)
+        Promise.resolve(onOrdersSaved(savedRows)).catch((err) => console.warn('Order dashboard refresh failed:', err))
       }
     } catch (err) {
       console.error(err)
@@ -218,7 +225,12 @@ export default function OrderUpload({ onOrdersSaved }) {
         setMissingTable(true)
         setMessage({ type: 'error', text: getOrderUploadDbSetupMessage() })
       } else {
-        setMessage({ type: 'error', text: err?.message || 'Upload failed' })
+        setMessage({
+          type: 'error',
+          text: err?.code === '42501'
+            ? 'Your account does not have permission to upload orders. Ask your dashboard administrator to update Order Upload permissions, then retry.'
+            : err?.message || 'Upload failed',
+        })
       }
     } finally {
       setUploading(false)
@@ -236,6 +248,7 @@ export default function OrderUpload({ onOrdersSaved }) {
   }
 
   const confirmReset = async () => {
+    summaryRequest.current += 1
     setResetting(true)
     setMessage(null)
     const monthCleared = resetMonth
@@ -291,8 +304,6 @@ export default function OrderUpload({ onOrdersSaved }) {
               <h1 style={{ margin: 0 }}>Order Upload</h1>
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-dim)', fontSize: '0.9rem' }}>
                 Daily order tracking (separate from rider_metrics) · unique by Date + WorkerCode · Type1 = EV / NON-EV
-                {' · '}
-                If production times out, run <code style={{ color: '#fff' }}>sql/fix_order_upload_production_timeout.sql</code> in Supabase.
               </p>
             </div>
           </div>
@@ -341,7 +352,7 @@ export default function OrderUpload({ onOrdersSaved }) {
                 (e.g. 11 and 5 for same rider both kept).
               </p>
               <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-                <strong>{loading ? '…' : count.toLocaleString()}</strong> rows in database
+                <strong>{loading ? '…' : `${count > 0 ? (countIsLowerBound ? '≥ ' : '~') : ''}${count.toLocaleString()}`}</strong> rows in database
               </p>
               {count > 0 && lastUploadAt ? (
                 <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -358,7 +369,9 @@ export default function OrderUpload({ onOrdersSaved }) {
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
             <label className="fsr-export-btn" style={{ cursor: uploading ? 'not-allowed' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
               {uploading ? <Loader size={16} className="spin" /> : <Upload size={16} />}
-              Upload file
+              {uploading
+                ? (uploadProgress ? `Saving ${uploadProgress.saved.toLocaleString()} / ${uploadProgress.total.toLocaleString()}` : 'Preparing upload…')
+                : 'Upload file'}
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv"
@@ -458,7 +471,7 @@ export default function OrderUpload({ onOrdersSaved }) {
           </div>
         )}
 
-        {!loading && !preview.length && !missingTable && (
+        {!loading && !uploading && !preview.length && !missingTable && (
           <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-dim)' }}>
             No order rows yet. Download the template, fill Client / Date / WorkerCode / delivered / City / Type1, then upload.
           </p>

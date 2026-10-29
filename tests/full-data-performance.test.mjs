@@ -45,6 +45,141 @@ const ev91Performance = await server.ssrLoadModule('/src/lib/ev91RiderPerformanc
 const { default: FullData } = await server.ssrLoadModule('/src/FullData.jsx')
 const timeout = { code: '57014', message: 'canceling statement due to statement timeout' }
 const page = (length, date = '2026-06-01') => Array.from({ length }, (_, i) => ({ id: i + 1, run_date: date }))
+
+test('Source Wise can use each client’s latest date and restore the selected-date window', () => {
+  const rows = [
+    { worker_code: 'AM1', client: 'Amazon', date_record: '2026-06-19', delivered: 5 },
+    { worker_code: 'AM1', client: 'Amazon', date_record: '2026-06-23', delivered: 7 },
+    { worker_code: 'ZO1', client: 'Zomato', date_record: '2026-06-26', delivered: 3 },
+    { worker_code: 'ZO1', client: 'Zomato', date_record: '2026-06-28', delivered: 4 },
+  ].map((row) => ({ ...row, city: 'Bengaluru' }))
+  const onboarding = ['AM1', 'ZO1'].map((id) => ({ rider_id_details: id, source_name: 'Alpha' }))
+  for (const byClient of [true, false]) {
+    const build = (useLatestClientData) => report.buildFullDataSourceMonthRows(rows, onboarding, [], [], [], {
+      fromKey: '2026-06-01', toKey: '2026-06-28', byClient, useLatestClientData,
+    })
+    const latest = build(true)
+    const fixed = build(false)
+    const total = (result, column) => result.month.reduce((sum, row) => sum + row[column], 0)
+    assert.equal(total(latest, 'Active Rider Count (last 4 days)'), 2)
+    assert.equal(total(fixed, 'Active Rider Count (last 4 days)'), 1)
+    assert.equal(total(latest, '0 Order Rider Count (last 4 days)'), 0)
+    assert.equal(total(fixed, '0 Order Rider Count (last 4 days)'), 1)
+    for (const column of ['Unique Rider Count', 'Total Order', 'Earning', 'MF Amount']) {
+      assert.equal(total(latest, column), total(fixed, column), column)
+    }
+    const amazonWindow = latest.clientWindows.find((row) => row.Client === 'Amazon')
+    assert.equal(amazonWindow['Active window end'], '2026-06-23')
+    assert.equal(amazonWindow['Active window dates'], '2026-06-19, 2026-06-20, 2026-06-21, 2026-06-22')
+    assert.match(latest.activeSummary.find((row) => row.Metric === 'Note').Value, /each client/)
+    if (byClient) {
+      assert.equal(latest.month.find((row) => row.Client === 'Amazon')['Active window end'], '2026-06-23')
+    } else {
+      assert.equal(latest.month[0]['Active window end'], '2026-06-23, 2026-06-28')
+    }
+  }
+})
+
+test('latest-client activity keeps shared rider IDs separate and deduplicates Source Total', () => {
+  const rows = [
+    { client: 'Amazon', date_record: '2026-06-18', delivered: 5 },
+    { client: 'Amazon', date_record: '2026-06-23', delivered: 0 },
+    { client: 'Zomato', date_record: '2026-06-21', delivered: 2 },
+    { client: 'Zomato', date_record: '2026-06-26', delivered: 3 },
+    { client: 'Zomato', date_record: '2026-06-28', delivered: 4 },
+    { client: 'Amazon', date_record: '2026-07-01', delivered: 10 },
+  ].map((row) => ({ ...row, worker_code: 'SHARED', city: 'Bengaluru' }))
+  const build = (byClient) => report.buildFullDataSourceMonthRows(rows, [], [], [], [], {
+    fromKey: '2026-06-01', toKey: '2026-06-28', byClient, useLatestClientData: true,
+  })
+  const amazon = build(true).month.find((row) => row.Client === 'Amazon')
+  assert.equal(amazon['Active window end'], '2026-06-23', 'zero-order upload establishes freshness; future rows are excluded')
+  assert.equal(amazon['Active Rider Count (last 4 days)'], 0, 'another client’s orders cannot activate Amazon')
+  assert.equal(amazon['0 Order Rider Count (last 4 days)'], 1)
+  const [total] = build(false).month
+  assert.equal(total['Unique Rider Count'], 1)
+  assert.equal(total['Active Rider Count (last 4 days)'], 1)
+  assert.equal(total['0 Order Rider Count (last 4 days)'], 0)
+})
+
+test('latest-client activity includes prior-month lookback without adding it to report totals', () => {
+  const rows = [
+    { date_record: '2026-05-28', delivered: 5 },
+    { date_record: '2026-06-01', delivered: 2 },
+  ].map((row) => ({ ...row, worker_code: 'AM1', client: 'Amazon', city: 'Bengaluru' }))
+  const { month: [amazon] } = report.buildFullDataSourceMonthRows(rows, [], [], [], [], {
+    fromKey: '2026-06-01', toKey: '2026-06-03', useLatestClientData: true,
+  })
+  assert.equal(amazon['Active window dates'], '2026-05-28, 2026-05-29, 2026-05-30, 2026-05-31')
+  assert.equal(amazon['Active Rider Count (last 4 days)'], 1)
+  assert.equal(amazon['Total Order'], 2)
+})
+
+test('Source Wise assigns FE10258926 to their latest working city in both reports and raw orders', () => {
+  const rows = [
+    { date_record: '2026-05-31', city: 'Chennai', delivered: 99 },
+    { date_record: '2026-06-14', city: 'Mumbai', delivered: 10 },
+    { date_record: '2026-06-15', city: 'Chennai', delivered: 20 },
+    { date_record: '2026-06-16', city: 'Mumbai', delivered: 10 },
+    { date_record: '2026-06-27', city: 'Mumbai', delivered: 5 },
+    { date_record: '2026-06-28', city: 'Mumbai', delivered: 7 },
+    { date_record: '2026-06-28', city: 'Chennai', delivered: 0 },
+    { date_record: '2026-07-01', city: 'Chennai', delivered: 100 },
+  ].map((row, index) => ({ ...row, id: index, worker_code: 'FE10258926', client: 'Blinkit', type1: 'NON-EV' }))
+  const original = structuredClone(rows)
+  const onboarding = [{ rider_id_details: 'FE10258926', source_name: 'Alpha' }]
+  for (const useLatestClientData of [false, true]) {
+    for (const byClient of [false, true]) {
+      const options = { fromKey: '2026-06-01', toKey: '2026-06-28', byClient, useLatestClientData }
+      const { month } = report.buildFullDataSourceMonthRows(rows, onboarding, [], [], [], options)
+      assert.equal(month.length, 1)
+      assert.equal(month[0].City, 'Mumbai')
+      assert.equal(month[0]['Unique Rider Count'], 1)
+      assert.equal(month[0]['Active Rider Count (last 4 days)'], 1)
+      assert.equal(month[0]['Total Order'], 52)
+      const raw = report.buildFullDataSourceRawOrderRows(rows, onboarding, [], [], [], { ...options, summaryRows: month })
+      assert.equal(raw.length, 6)
+      assert.ok(raw.every((row) => row.City === 'Mumbai'))
+      assert.equal(raw.find((row) => row.Date === '2026-06-15')['Uploaded City'], 'Chennai')
+      for (const column of ['Total Order', 'Earning', 'MF Amount']) {
+        assert.equal(Math.round(raw.reduce((sum, row) => sum + row[column], 0) * 100), Math.round(month[0][column] * 100))
+      }
+    }
+  }
+  // Historical exports only consider working dates up to their selected To.
+  const historical = report.buildFullDataSourceMonthRows(rows, onboarding, [], [], [], { fromKey: '2026-06-01', toKey: '2026-06-15' })
+  assert.equal(historical.month[0].City, 'Chennai')
+  assert.deepEqual(rows, original, 'reporting must not overwrite uploaded data')
+})
+
+test('Source Wise city conflicts are deterministic, client scoped and retain original commercial rates', () => {
+  const rows = [
+    { id: 1, date_record: '2026-06-26', city: 'Mumbai', delivered: 2 },
+    { id: 2, date_record: '2026-06-26', city: 'Chennai', delivered: 8 },
+    { id: 3, date_record: '2026-06-26', city: 'Bombay', delivered: 7 },
+    { id: 4, date_record: '2026-06-27', city: 'Chennai', delivered: 0 },
+    { id: 5, date_record: '2026-06-27', city: 'Unknown', delivered: 5 },
+    { id: 6, date_record: '2026-06-27', city: 'Chennai', delivered: 2, client: 'Amazon' },
+  ].map((row) => ({ worker_code: 'SHARED', client: 'Blinkit', ...row }))
+  const options = { fromKey: '2026-06-01', toKey: '2026-06-28' }
+  const forward = report.buildFullDataSourceMonthRows(rows, [], [], [], [], options).month
+  const reverse = report.buildFullDataSourceMonthRows([...rows].reverse(), [], [], [], [], options).month
+  assert.deepEqual(forward, reverse)
+  assert.equal(forward.find((row) => row.Client === 'Blinkit').City, 'Mumbai')
+  assert.equal(forward.find((row) => row.Client === 'Amazon').City, 'Chennai')
+  const bbRows = [
+    { worker_code: 'BB1', client: 'BB', date_record: '2026-06-25', city: 'Delhi', delivered: 10 },
+    { worker_code: 'BB1', client: 'BB', date_record: '2026-06-26', city: 'Mumbai', delivered: 10 },
+  ]
+  const { month } = report.buildFullDataSourceMonthRows(bbRows, [], [], [], [], options)
+  const raw = report.buildFullDataSourceRawOrderRows(bbRows, [], [], [], [], { ...options, summaryRows: month })
+  assert.ok(raw.every((row) => row.City === 'Mumbai'))
+  assert.equal(raw[0]['Uploaded City'], 'Delhi')
+  assert.equal(raw[0]['MF %'], 5)
+  assert.equal(raw[1]['MF %'], 6)
+  assert.equal(month[0]['MF Amount'], 51.7)
+})
+
 function fastRetries(t) {
   const original = globalThis.setTimeout
   t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => original(fn, ms >= 200 ? 0 : ms, ...args))
@@ -315,12 +450,12 @@ test('Source Wise raw orders reconcile filtered summaries and retain zero and ne
     const summary = report.buildFullDataSourceMonthRows(orderRows, onboarding, [], mapping, [],
       { fromKey: '2026-06-05', toKey: '2026-06-10', byClient }).month
     // The visible groups model city/source/search filters; the raw sheet must match them exactly.
-    const visible = summary.filter((row) => row.City === 'Chennai' && row.Source === 'Team Alpha'
+    const visible = summary.filter((row) => row.City === 'Bengaluru' && row.Source === 'Team Alpha'
       && (!byClient || row.Client === 'Blinkit'))
     const raw = report.buildFullDataSourceRawOrderRows(orderRows, onboarding, [], mapping, [], {
       fromKey: '2026-06-05', toKey: '2026-06-10', byClient, summaryRows: visible,
     })
-    assert.deepEqual(raw.map((row) => row['Order Row ID']), byClient ? [2, 3, 4, 5] : [2, 3, 4, 5, 6])
+    assert.deepEqual(raw.map((row) => row['Order Row ID']), [2, 3, 4, 5, 7])
     assert.ok(raw.every((row) => row['Rider Name'] === 'Test Rider' && row['EV91 ID'] === 'EV-963117' && row.Phone === '9876543210'))
     for (const column of ['Total Order', 'EV Order', 'Non-EV Order', 'Earning', 'EV Earning', 'Non Earning', 'MF Amount']) {
       const sum = (rows) => Math.round(rows.reduce((value, row) => value + row[column], 0) * 100) / 100

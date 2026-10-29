@@ -1,0 +1,11 @@
+/* Keep the wide, sticky-header report out of backdrop blur repaint work. */
+.source-wise-data .glass {
+  background: #1e293b;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Confine table scrolling/repainting without clipping its sticky header. */
+.source-wise-data .rp-table-scroll {
+  contain: layout paint;
+}

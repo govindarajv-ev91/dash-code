@@ -448,11 +448,11 @@ export function summarizeSourceMonthRows(rows = [], { windowEnd = '', windowDate
   return totals
 }
 
-export function buildFullDataSourceActiveSummary(monthRows = [], { windowEnd = '', windowDates = [] } = {}) {
+export function buildFullDataSourceActiveSummary(monthRows = [], { windowEnd = '', windowDates = [], useLatestClientData = false } = {}) {
   const t = summarizeSourceMonthRows(monthRows, { windowEnd, windowDates })
   return [
-    { Metric: 'Active window end date (To)', Value: t.windowEnd || '—' },
-    { Metric: 'Active window dates (4 days before To)', Value: (t.windowDates || []).join(', ') || '—' },
+    { Metric: 'Active window end date (To)', Value: useLatestClientData ? 'Per client — see Client Active Windows' : t.windowEnd || '—' },
+    { Metric: 'Active window dates (4 days before To)', Value: useLatestClientData ? 'Per client — see Client Active Windows' : (t.windowDates || []).join(', ') || '—' },
     { Metric: 'Total Active Riders', Value: t.activeRiders },
     { Metric: 'Total Active EV Riders', Value: t.activeEvRiders },
     { Metric: 'Total Active Non-EV Riders', Value: t.activeNonEvRiders },
@@ -462,7 +462,9 @@ export function buildFullDataSourceActiveSummary(monthRows = [], { windowEnd = '
     {
       Metric: 'Note',
       Value:
-        'Active = at least 1 order on any of the 4 calendar days before the To date. Example: To = Sep 01 checks Aug 28–31.',
+        useLatestClientData
+          ? 'Active = at least 1 order on any of the 4 calendar days before each client’s latest available order date, capped at To / yesterday. Example: latest Amazon date = Oct 23 checks Oct 19–22.'
+          : 'Active = at least 1 order on any of the 4 calendar days before the To date. Example: To = Sep 01 checks Aug 28–31.',
     },
   ]
 }
@@ -1520,8 +1522,36 @@ export function filterSourceMonthRows(rows = [], { cityFilter = 'All', clientFil
   return out
 }
 
+function sourceRiderCityKey(worker, client) {
+  return JSON.stringify([String(worker || '').trim().toUpperCase(), normalizeSummaryClient(client)])
+}
+
+/** One reporting city per rider/client, from their latest positive-order day in the selected range. */
+export function buildSourceRiderCityIndex(orderRows = [], { fromKey = '', toKey = '' } = {}) {
+  const latest = new Map()
+  for (const row of orderRows) {
+    const date = toMetricDateKey(row.date_record)
+    const worker = String(row.worker_code || '').trim()
+    const city = normalizeSummaryCity(row.city)
+    const orders = Number(row.delivered) || 0
+    if (!worker || !date || !city || city === 'Unknown' || orders <= 0
+      || (fromKey && date < fromKey) || (toKey && date > toKey)) continue
+    const key = sourceRiderCityKey(worker, row.client)
+    let hit = latest.get(key)
+    if (!hit || date > hit.date) {
+      hit = { date, cities: new Map() }
+      latest.set(key, hit)
+    }
+    if (date === hit.date) hit.cities.set(city, (hit.cities.get(city) || 0) + orders)
+  }
+  return new Map([...latest].map(([key, hit]) => [key,
+    // Resolve same-day conflicts by orders, then city name, never input row order.
+    [...hit.cities].sort(([a, aOrders], [b, bOrders]) => bOrders - aOrders || a.localeCompare(b))[0][0],
+  ]))
+}
+
 export const SOURCE_RAW_ORDER_COLUMNS = [
-  'Order Row ID', 'Date', 'Rider ID', 'EV91 ID', 'Rider Name', 'Phone', 'Source', 'City', 'Client',
+  'Order Row ID', 'Date', 'Rider ID', 'EV91 ID', 'Rider Name', 'Phone', 'Source', 'City', 'Uploaded City', 'Client',
   'Type (Order)', 'EV / Non-EV', 'Total Order', 'EV Order', 'Non-EV Order',
   'Per-order Rate', 'MF %', 'Earning', 'EV Earning', 'Non Earning', 'MF Amount',
 ]
@@ -1529,8 +1559,9 @@ export const SOURCE_RAW_ORDER_COLUMNS = [
 /** Order-level audit rows for exactly the source groups visible in the summary. */
 export function buildFullDataSourceRawOrderRows(
   orderRows = [], onboardingRows = [], overallRows = [], mappingRows = [], currentRows = [],
-  { fromKey = '', toKey = '', byClient = true, summaryRows = [] } = {}
+  { fromKey = '', toKey = '', byClient = true, summaryRows = [], riderCityIndex = null } = {}
 ) {
+  const cityIndex = riderCityIndex || buildSourceRiderCityIndex(orderRows, { fromKey, toKey })
   const groupKey = (source, city, client) => JSON.stringify([
     sourceNameGroupKey(source), normalizeSummaryCity(city), ...(byClient ? [normalizeSummaryClient(client)] : []),
   ])
@@ -1559,15 +1590,16 @@ export function buildFullDataSourceRawOrderRows(
     const date = toMetricDateKey(row.date_record)
     if (!date || (fromKey && date < fromKey) || (toKey && date > toKey)) continue
     const worker = String(row.worker_code || '').trim().toUpperCase()
-    const city = normalizeSummaryCity(row.city)
     const client = normalizeSummaryClient(row.client)
+    const uploadedCity = normalizeSummaryCity(row.city)
+    const city = cityIndex.get(sourceRiderCityKey(worker, client)) || uploadedCity
     const source = canonicalSourceName(lookupOnboardingSource(sourceIndex,
       { riderIds: [worker, row.worker_code, row.rider_id] }) || 'Unknown') || 'Unknown'
     if (!selectedGroups.has(groupKey(source, city, client))) continue
     const matches = [...riderIdLookupKeys(worker)].map((alias) => contacts.get(alias)).filter(Boolean)
     const orders = Number(row.delivered) || 0
     const ev = isEvType(row.type1)
-    const { earning, mf, rate, margin } = calcOrderEarningAndMf(client, city, orders)
+    const { earning, mf, rate, margin } = calcOrderEarningAndMf(client, uploadedCity, orders)
     rows.push({
       'Order Row ID': row.id ?? '',
       Date: date,
@@ -1577,6 +1609,7 @@ export function buildFullDataSourceRawOrderRows(
       Phone: matches.find((contact) => contact.phone)?.phone || pickContact(row.mob_number),
       Source: source,
       City: city,
+      'Uploaded City': uploadedCity,
       Client: client,
       'Type (Order)': row.type1 || '',
       'EV / Non-EV': ev ? 'EV' : 'Non-EV',
@@ -1605,18 +1638,52 @@ export function buildFullDataSourceMonthRows(
   overallRows = [],
   mappingRows = [],
   currentRows = [],
-  { fromKey = '', toKey = '', byClient = true } = {}
+  { fromKey = '', toKey = '', byClient = true, useLatestClientData = false, riderCityIndex = null } = {}
 ) {
+  const cityIndex = riderCityIndex || buildSourceRiderCityIndex(orderRows, { fromKey, toKey })
   const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
   const ev91Index = buildEv91PublicRiderIndex(overallRows, mappingRows)
   const deployIndexes = buildEv91OverallIntervalIndexes(overallRows)
   mergeCurrentStatusIntoIndexes(deployIndexes, currentRows)
   const { riderAssignments } = deployIndexes
-  const orderIndex = buildOrderDeliveredIndex(orderRows)
+  const orderIndex = useLatestClientData ? new Map() : buildOrderDeliveredIndex(orderRows)
   const activeWindowEnd = resolveSourceActiveWindowEnd(fromKey, toKey)
   const activeWindowValid =
     Boolean(activeWindowEnd) && sourceActiveWindowHasOrders(orderIndex, activeWindowEnd)
   const activeWindowDates = activeWindowEnd ? sourceActiveWindowDateKeys(activeWindowEnd) : []
+
+  // Upload delays belong to the client, independently of city/source filters.
+  // Keep client orders separate so a shared worker ID cannot make another
+  // client's rider active. Zero-delivery rows still establish upload freshness.
+  const clientActivity = new Map()
+  if (useLatestClientData && activeWindowEnd) {
+    const dateCache = new Map()
+    for (const row of orderRows) {
+      const dateKey = toMetricDateKey(row.date_record)
+      if (!dateKey || dateKey > activeWindowEnd) continue
+      const client = normalizeSummaryClient(row.client)
+      if (!clientActivity.has(client)) clientActivity.set(client, { end: '', orders: new Map() })
+      const activity = clientActivity.get(client)
+      if (dateKey > activity.end) activity.end = dateKey
+      addOrderDeliveredRow(activity.orders, row, dateCache)
+    }
+  }
+  const clientWindows = [...clientActivity].map(([client, activity]) => ({
+    Client: client,
+    'Active window end': activity.end,
+    'Active window dates': sourceActiveWindowDateKeys(activity.end).join(', '),
+  })).sort((a, b) => a.Client.localeCompare(b.Client))
+  const windowsForClients = (clients) => {
+    if (!useLatestClientData) return {
+      end: activeWindowValid ? activeWindowEnd : '',
+      dates: activeWindowValid ? activeWindowDates.join(', ') : '',
+    }
+    const ends = [...new Set([...clients].map((client) => clientActivity.get(client)?.end).filter(Boolean))].sort()
+    return {
+      end: ends.join(', '),
+      dates: [...new Set(ends.flatMap(sourceActiveWindowDateKeys))].sort().join(', '),
+    }
+  }
 
   const monthBySource = new Map()
   const monthRidersByKey = new Map()
@@ -1628,9 +1695,10 @@ export function buildFullDataSourceMonthRows(
     if (fromKey && dateKey < fromKey) continue
     if (toKey && dateKey > toKey) continue
 
-    const city = normalizeSummaryCity(row.city)
     const client = normalizeSummaryClient(row.client)
     const worker = (row.worker_code || '').toString().trim().toUpperCase()
+    const uploadedCity = normalizeSummaryCity(row.city)
+    const city = cityIndex.get(sourceRiderCityKey(worker, client)) || uploadedCity
     const delivered = Number(row.delivered) || 0
     const isEv = isEvType(row.type1)
     const source = canonicalSourceName(
@@ -1645,6 +1713,7 @@ export function buildFullDataSourceMonthRows(
         source,
         city,
         client: byClient ? client : '',
+        clients: new Set(),
         riders: new Set(),
         evRiders: new Set(),
         nonEvRiders: new Set(),
@@ -1658,12 +1727,13 @@ export function buildFullDataSourceMonthRows(
       })
     }
     const m = monthBySource.get(monthKey)
+    m.clients.add(client)
     m.totalOrder += delivered
     if (isEv) m.evOrder += delivered
     else m.nonEvOrder += delivered
 
     if (delivered > 0) {
-      const { earning, mf } = calcOrderEarningAndMf(client, city, delivered)
+      const { earning, mf } = calcOrderEarningAndMf(client, uploadedCity, delivered)
       m.earning += earning
       m.mfAmount += mf
       if (isEv) m.evEarning += earning
@@ -1674,17 +1744,24 @@ export function buildFullDataSourceMonthRows(
       m.riders.add(worker)
       if (isEv) m.evRiders.add(worker)
       else m.nonEvRiders.add(worker)
-      if (!monthRidersByKey.has(monthKey)) monthRidersByKey.set(monthKey, new Set())
-      monthRidersByKey.get(monthKey).add(worker)
+      if (!monthRidersByKey.has(monthKey)) monthRidersByKey.set(monthKey, new Map())
+      const riders = monthRidersByKey.get(monthKey)
+      if (!riders.has(worker)) riders.set(worker, new Set())
+      riders.get(worker).add(client)
     }
   }
 
   const activeCountsByMonthKey = new Map()
-  if (activeWindowValid && activeWindowEnd) {
+  if ((useLatestClientData || activeWindowValid) && activeWindowEnd) {
     for (const [monthKey, riders] of monthRidersByKey) {
       const counts = { activeTotal: 0, activeEv: 0, activeNonEv: 0, zeroOrder: 0, zeroOrderEv: 0, zeroOrderNonEv: 0 }
-      for (const worker of riders) {
-        if (workerZeroOrdersInSourceWindow(orderIndex, worker, activeWindowEnd)) {
+      for (const [worker, clients] of riders) {
+        const windows = useLatestClientData
+          ? [...clients].map((client) => clientActivity.get(client)).filter(Boolean)
+          : [{ end: activeWindowEnd, orders: orderIndex }]
+        if (!windows.length) continue
+        const orderDaysInWindow = windows.flatMap(({ orders, end }) => workerOrderDaysInSourceWindow(orders, worker, end))
+        if (!orderDaysInWindow.length) {
           counts.zeroOrder += 1
           let identityKeys = identityCache.get(worker)
           if (!identityKeys) {
@@ -1692,12 +1769,12 @@ export function buildFullDataSourceMonthRows(
             identityKeys = riderDeployIdentityKeys(worker, mappedEv91)
             identityCache.set(worker, identityKeys)
           }
-          if (isRiderEvOnDate(riderAssignments, identityKeys, activeWindowEnd, '')) counts.zeroOrderEv += 1
+          const zeroOrderDate = windows.map(({ end }) => end).sort().pop()
+          if (isRiderEvOnDate(riderAssignments, identityKeys, zeroOrderDate, '')) counts.zeroOrderEv += 1
           else counts.zeroOrderNonEv += 1
           continue
         }
         counts.activeTotal += 1
-        const orderDaysInWindow = workerOrderDaysInSourceWindow(orderIndex, worker, activeWindowEnd)
         const lastActiveDay = orderDaysInWindow.sort().pop()
         let riderIsEv = false
         if (lastActiveDay) {
@@ -1729,6 +1806,7 @@ export function buildFullDataSourceMonthRows(
         zeroOrderEv: 0,
         zeroOrderNonEv: 0,
       }
+      const window = windowsForClients(m.clients)
       const row = {
         Source: m.source,
         City: m.city || '',
@@ -1741,8 +1819,8 @@ export function buildFullDataSourceMonthRows(
         '0 Order Rider Count (last 4 days)': active.zeroOrder,
         '0 Order EV Rider Count (last 4 days)': active.zeroOrderEv,
         '0 Order Non-EV Rider Count (last 4 days)': active.zeroOrderNonEv,
-        'Active window end': activeWindowValid ? activeWindowEnd : '',
-        'Active window dates': activeWindowValid ? activeWindowDates.join(', ') : '',
+        'Active window end': window.end,
+        'Active window dates': window.dates,
         'Total Order': m.totalOrder,
         'EV Order': m.evOrder,
         'Non-EV Order': m.nonEvOrder,
@@ -1765,11 +1843,13 @@ export function buildFullDataSourceMonthRows(
   const activeSummary = buildFullDataSourceActiveSummary(month, {
     windowEnd: activeWindowValid ? activeWindowEnd : '',
     windowDates: activeWindowValid ? activeWindowDates : [],
+    useLatestClientData,
   })
 
   return {
     month,
     activeSummary,
+    clientWindows,
     windowEnd: activeWindowValid ? activeWindowEnd : '',
     windowDates: activeWindowValid ? activeWindowDates : [],
   }

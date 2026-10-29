@@ -13,12 +13,13 @@ import {
   RefreshCw,
   ChevronDown,
 } from 'lucide-react'
-import * as XLSX from 'xlsx'
 import { fetchOrderUploadMonths, fetchOrderUploadsForDateRange } from './lib/orderUploadDb'
 import { fetchEv91OverallStatusAll, fetchEv91CurrentStatusAll } from './lib/ev91EvLookup'
 import {
   buildFullDataSourceMonthRows,
   buildFullDataSourceRawOrderRows,
+  buildFullDataSourceActiveSummary,
+  buildSourceRiderCityIndex,
   SOURCE_RAW_ORDER_COLUMNS,
   filterSourceMonthRows,
   summarizeSourceMonthRows,
@@ -30,18 +31,20 @@ import {
 import { fetchRiderOnboardingRows } from './lib/riderOnboardingDb'
 import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
 import { dedupeCanonicalCities } from './lib/citySummaryAliases'
+import { normalizeSummaryClient } from './lib/clientSummaryClients'
 import { useSourceMaster } from './lib/useSourceMaster'
 import { isListedSource } from './lib/sourceMaster'
+import './source-wise-data.css'
 
 const ROWS_PER_PAGE = 50
 const DATE_LOAD_DEBOUNCE_MS = 350
 const ACTIVE_LOOKBACK_DAYS = 4
 
 function orderFetchStart(fromKey, toKey) {
-  if (!toKey) return fromKey
-  const lookback = format(subDays(parseISO(toKey), ACTIVE_LOOKBACK_DAYS), 'yyyy-MM-dd')
-  if (!fromKey || lookback < fromKey) return lookback
-  return fromKey
+  const start = fromKey || toKey
+  if (!start) return ''
+  // A delayed client's window can precede From, including the previous month.
+  return format(subDays(parseISO(start), ACTIVE_LOOKBACK_DAYS), 'yyyy-MM-dd')
 }
 
 const TABLE_COLUMNS_BY_CLIENT = [
@@ -58,6 +61,7 @@ const TABLE_COLUMNS_BY_CLIENT = [
   '0 Order EV Rider Count (last 4 days)',
   '0 Order Non-EV Rider Count (last 4 days)',
   'Active window end',
+  'Active window dates',
   'Total Order',
   'EV Order',
   'Non-EV Order',
@@ -80,6 +84,7 @@ const TABLE_COLUMNS_BY_SOURCE = [
   '0 Order EV Rider Count (last 4 days)',
   '0 Order Non-EV Rider Count (last 4 days)',
   'Active window end',
+  'Active window dates',
   'Total Order',
   'EV Order',
   'Non-EV Order',
@@ -91,9 +96,11 @@ const TABLE_COLUMNS_BY_SOURCE = [
 
 const MONEY_COLUMNS = new Set(['Earning', 'EV Earning', 'Non Earning', 'MF Amount'])
 
-const TEXT_COLUMNS = new Set(['Source', 'City', 'Client', 'Active window end'])
+const TEXT_COLUMNS = new Set(['Source', 'City', 'Client', 'Active window end', 'Active window dates'])
 
 const DEFAULT_SORT_KEY = 'Unique Rider Count'
+const COUNT_FORMAT = new Intl.NumberFormat('en-IN')
+const MONEY_FORMAT = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 function compareSourceRows(a, b, key, dir) {
   const av = a[key]
@@ -116,15 +123,15 @@ function formatCell(key, value) {
   if (value == null || value === '') return '—'
   if (typeof value === 'number') {
     if (MONEY_COLUMNS.has(key)) {
-      return value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      return MONEY_FORMAT.format(value)
     }
-    return value.toLocaleString('en-IN')
+    return COUNT_FORMAT.format(value)
   }
   return String(value)
 }
 
 function formatMoney(value) {
-  return (Number(value) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return MONEY_FORMAT.format(Number(value) || 0)
 }
 
 const selectStyle = {
@@ -172,25 +179,38 @@ const SearchableSelect = memo(function SearchableSelect({
     if (left + menuWidth > window.innerWidth - 8) {
       left = Math.max(8, window.innerWidth - menuWidth - 8)
     }
-    setMenuStyle({
+    const nextStyle = {
       position: 'fixed',
       top,
       left,
       width: menuWidth,
       maxHeight: Math.max(160, maxHeight),
       zIndex: 10050,
-    })
+    }
+    setMenuStyle((previous) => previous && Object.keys(nextStyle).every((key) => previous[key] === nextStyle[key])
+      ? previous : nextStyle)
   }, [minWidth])
 
   useEffect(() => {
     if (!isOpen) return undefined
     updateMenuPosition()
-    const onScrollOrResize = () => updateMenuPosition()
-    window.addEventListener('scroll', onScrollOrResize, true)
+    let frame = null
+    const onScrollOrResize = (event) => {
+      // Scrolling the menu or the report table cannot move this button.
+      // Only scrolling an ancestor (or resizing) needs a new position.
+      if (event.type === 'scroll' && event.target instanceof Node && !event.target.contains(buttonRef.current)) return
+      if (frame !== null) return
+      frame = window.requestAnimationFrame(() => {
+        frame = null
+        updateMenuPosition()
+      })
+    }
+    window.addEventListener('scroll', onScrollOrResize, { capture: true, passive: true })
     window.addEventListener('resize', onScrollOrResize)
     return () => {
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
+      if (frame !== null) window.cancelAnimationFrame(frame)
     }
   }, [isOpen, updateMenuPosition])
 
@@ -369,6 +389,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
   const [searchTerm, setSearchTerm] = useState('')
   const [viewTab, setViewTab] = useState('byClient')
   const [showSummaryCards, setShowSummaryCards] = useState(false)
+  const [useLatestClientData, setUseLatestClientData] = useState(true)
   const [sortKey, setSortKey] = useState(DEFAULT_SORT_KEY)
   const [sortDir, setSortDir] = useState('desc')
 
@@ -499,19 +520,28 @@ export default function SourceWiseData({ onboardingData = [] }) {
     loadOrdersForRange(dateFrom, dateTo, { force: true })
   }, [dateFrom, dateTo, loadOrdersForRange, refreshSources])
 
+  const clientOrderRows = useMemo(() => deferredClient === 'All'
+    ? orderRows
+    : orderRows.filter((row) => normalizeSummaryClient(row.client) === deferredClient),
+  [orderRows, deferredClient])
+
+  const riderCityIndex = useMemo(() => buildSourceRiderCityIndex(clientOrderRows, {
+    fromKey: dateFrom, toKey: dateTo,
+  }), [clientOrderRows, dateFrom, dateTo])
+
   const baseReport = useMemo(() => {
-    if (!dateFrom || !dateTo || dateFrom > dateTo || !orderRows.length) {
+    if (!dateFrom || !dateTo || dateFrom > dateTo || !clientOrderRows.length) {
       return { month: [], activeSummary: [], windowEnd: '', windowDates: [] }
     }
     return buildFullDataSourceMonthRows(
-      orderRows,
+      clientOrderRows,
       onboardingRows,
       overallRows,
       mappingRows,
       currentRows,
-      { fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient' }
+      { fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient', useLatestClientData, riderCityIndex }
     )
-  }, [orderRows, onboardingRows, overallRows, mappingRows, currentRows, dateFrom, dateTo, viewTab])
+  }, [clientOrderRows, onboardingRows, overallRows, mappingRows, currentRows, dateFrom, dateTo, viewTab, useLatestClientData, riderCityIndex])
 
   const exportMonthRows = useMemo(
     () =>
@@ -610,7 +640,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchTerm, cityFilter, clientFilter, sourceFilter, dateFrom, dateTo, orderRows.length, viewTab, sortKey, sortDir, sourceIndex])
+  }, [searchTerm, cityFilter, clientFilter, sourceFilter, dateFrom, dateTo, orderRows.length, viewTab, sortKey, sortDir, sourceIndex, useLatestClientData])
 
   const toggleSort = (col) => {
     if (TEXT_COLUMNS.has(col) && col !== 'Active window end') return
@@ -624,11 +654,25 @@ export default function SourceWiseData({ onboardingData = [] }) {
     })
   }
 
-  const exportExcel = () => {
-    if (!exportRows.length || sourcesLoading || sourceError) return
+  const exportExcel = async () => {
+    if (exporting || !exportRows.length || sourcesLoading || sourceError) return
     setExporting(true)
     try {
-      const wb = XLSX.utils.book_new()
+      const { downloadSourceWiseExcel } = await import('./lib/sourceWiseExcelExport')
+      // Build the other view only on download; scrolling/filtering the page
+      // still calculates just the currently visible report.
+      const reportForView = (byClient) => (byClient === (viewTab === 'byClient'))
+        ? baseReport
+        : buildFullDataSourceMonthRows(clientOrderRows, onboardingRows, overallRows, mappingRows, currentRows, {
+          fromKey: dateFrom, toKey: dateTo, byClient, useLatestClientData, riderCityIndex,
+        })
+      const clientReport = reportForView(true)
+      const sourceReport = reportForView(false)
+      const prepareRows = (report) => [...filterSourceMonthRows(report.month, { cityFilter: deferredCity })]
+        .sort((a, b) => compareSourceRows(a, b, sortKey, sortDir))
+      const clientRows = viewTab === 'byClient' ? exportRows : prepareRows(clientReport)
+      const sourceRows = viewTab === 'bySource' ? exportRows : prepareRows(sourceReport)
+      const sheets = []
       const withSourceStatus = (rows) => rows.map((row) => ({
         ...row,
         'Source Status': isListedSource(sourceIndex, row.City, row.Source) ? 'Active' : 'In Active',
@@ -636,21 +680,29 @@ export default function SourceWiseData({ onboardingData = [] }) {
       const withStatusColumn = (columns) => columns.flatMap((column) =>
         column === 'City' ? [column, 'Source Status'] : [column]
       )
-      const sheetName = viewTab === 'byClient' ? 'Source by Client' : 'Source Total'
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(withSourceStatus(exportRows), {
-        header: withStatusColumn(tableColumns),
-      }), sheetName)
-      const rawRows = buildFullDataSourceRawOrderRows(orderRows, onboardingRows, overallRows, mappingRows, currentRows, {
-        fromKey: dateFrom, toKey: dateTo, byClient: viewTab === 'byClient', summaryRows: exportRows,
+      for (const [sheetName, rows, columns] of [
+        ['Source by Client', clientRows, TABLE_COLUMNS_BY_CLIENT],
+        ['Source Total', sourceRows, TABLE_COLUMNS_BY_SOURCE],
+      ]) {
+        sheets.push({
+          name: sheetName, rows: withSourceStatus(rows), headers: withStatusColumn(columns), highlightActiveRiders: true,
+        })
+      }
+      const rawRows = buildFullDataSourceRawOrderRows(clientOrderRows, onboardingRows, overallRows, mappingRows, currentRows, {
+        fromKey: dateFrom, toKey: dateTo, byClient: true, summaryRows: clientRows, riderCityIndex,
       })
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(withSourceStatus(rawRows), {
-        header: withStatusColumn(SOURCE_RAW_ORDER_COLUMNS),
-      }), 'Raw Orders')
-      if (baseReport.activeSummary?.length) {
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(baseReport.activeSummary), 'Active Summary')
+      sheets.push({ name: 'Raw Orders', rows: withSourceStatus(rawRows), headers: withStatusColumn(SOURCE_RAW_ORDER_COLUMNS) })
+      const activeSummary = buildFullDataSourceActiveSummary(sourceRows, {
+        windowEnd: sourceReport.windowEnd, windowDates: sourceReport.windowDates, useLatestClientData,
+      })
+      sheets.push({ name: 'Active Summary', rows: activeSummary })
+      const exportClients = new Set(clientRows.map((row) => row.Client))
+      const clientWindows = (clientReport.clientWindows || []).filter((row) => exportClients.has(row.Client))
+      if (useLatestClientData && clientWindows.length) {
+        sheets.push({ name: 'Client Active Windows', rows: clientWindows })
       }
       const suffix = `${dateFrom}_${dateTo}_${cityFilter}_${clientFilter}_All_Sources`.replace(/\s+/g, '_')
-      XLSX.writeFile(wb, `Source_Wise_Data_${suffix}.xlsx`)
+      await downloadSourceWiseExcel(sheets, `Source_Wise_Data_${suffix}.xlsx`)
     } catch (err) {
       setError(err.message || 'Failed to export Excel')
     } finally {
@@ -666,7 +718,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
   const onSearchChange = (e) => startTransition(() => setSearchTerm(e.target.value))
 
   return (
-    <div className="dashboard-container" style={{ paddingBottom: '2rem' }}>
+    <div className="dashboard-container source-wise-data" style={{ paddingBottom: '2rem' }}>
       <header className="header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '1rem', overflow: 'visible' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
@@ -675,8 +727,9 @@ export default function SourceWiseData({ onboardingData = [] }) {
               Source Wise Data
             </h1>
             <p style={{ margin: '0.5rem 0 0', color: 'var(--text-dim)', maxWidth: '820px', fontSize: '0.9rem' }}>
-              Source / city / client month summary with active rider counts (last 4 order days).
+              Source / city / client month summary with active rider counts (4 calendar days before the window end).
               {' '}Only active listed sources appear here. Excel includes all sources with their Source Status.
+              {' '}City follows each rider/client’s latest working city in the selected dates.
             </p>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -695,7 +748,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
               className="glass"
               onClick={exportExcel}
               disabled={exporting || loading || filtersPending || sourcesLoading || !!sourceError || !exportRows.length}
-              title={sourceError ? 'Refresh the source list before exporting source statuses' : 'Download all sources with Active / In Active status for the selected dates, city and client'}
+              title={sourceError ? 'Refresh the source list before exporting source statuses' : 'Download both By Client and Source Total sheets for the selected dates, city and client, including all source statuses'}
               style={{ padding: '0.45rem 0.75rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             >
               {exporting ? <Loader size={14} className="spin" /> : <Download size={14} />}
@@ -759,17 +812,15 @@ export default function SourceWiseData({ onboardingData = [] }) {
           searchPlaceholder="Search cities…"
         />
 
-        {viewTab === 'byClient' && (
-          <SearchableSelect
-            label="Client"
-            icon={Briefcase}
-            options={clientOptions}
-            value={clientFilter}
-            onChange={onClientChange}
-            minWidth={160}
-            searchPlaceholder="Search clients…"
-          />
-        )}
+        <SearchableSelect
+          label="Client"
+          icon={Briefcase}
+          options={clientOptions}
+          value={clientFilter}
+          onChange={onClientChange}
+          minWidth={160}
+          searchPlaceholder="Search clients…"
+        />
 
         <SearchableSelect
           label="Source"
@@ -793,6 +844,37 @@ export default function SourceWiseData({ onboardingData = [] }) {
             style={{ ...selectStyle, width: '100%' }}
           />
         </label>
+      </div>
+
+      <div className="glass" style={{ padding: '0.75rem 1rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={useLatestClientData}
+          aria-label="Use latest available data per client"
+          aria-describedby="source-wise-activity-help"
+          onClick={() => setUseLatestClientData((enabled) => !enabled)}
+          style={{
+            width: '42px', height: '24px', borderRadius: '12px', padding: '3px', flexShrink: 0,
+            border: '1px solid var(--border-color)', cursor: 'pointer',
+            background: useLatestClientData ? '#2563eb' : '#475569',
+          }}
+        >
+          <span aria-hidden="true" style={{
+            display: 'block', width: '16px', height: '16px', borderRadius: '50%', background: '#fff',
+            transform: useLatestClientData ? 'translateX(18px)' : 'translateX(0)', transition: 'transform 0.15s',
+          }} />
+        </button>
+        <div>
+          <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+            Use latest available data per client: {useLatestClientData ? 'On' : 'Off'}
+          </div>
+          <p id="source-wise-activity-help" style={{ margin: '0.25rem 0 0', fontSize: '0.78rem', color: 'var(--text-dim)' }}>
+            {useLatestClientData
+              ? 'Active and 0-order riders use the 4 days before each client’s latest uploaded order date, up to To / yesterday. Example: Amazon last date 23rd uses 19th–22nd. Order and earning totals follow From / To.'
+              : 'Active and 0-order riders use the same 4 days before To (capped at yesterday) for all clients.'}
+          </p>
+        </div>
       </div>
 
       {error && (
@@ -824,7 +906,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
             {showSummaryCards ? 'Hide summary cards' : 'Show summary cards'}
           </button>
           <div id="source-wise-summary-cards" hidden={!showSummaryCards}>
-          {stats.windowEnd && stats.windowDates?.length > 0 && (
+          {(useLatestClientData || (stats.windowEnd && stats.windowDates?.length > 0)) && (
             <div
               className="glass"
               style={{
@@ -834,8 +916,11 @@ export default function SourceWiseData({ onboardingData = [] }) {
                 color: 'var(--text-dim)',
               }}
             >
-              Active riders use the <strong style={{ color: '#fff' }}>4 days before To ({stats.windowEnd})</strong>
-              : {stats.windowDates.join(', ')}
+              {useLatestClientData ? (
+                <>Active riders use each client’s latest available date. See <strong style={{ color: '#fff' }}>Active window end / dates</strong> in the table; Source Total combines the client windows.</>
+              ) : (
+                <>Active riders use the <strong style={{ color: '#fff' }}>4 days before To ({stats.windowEnd})</strong>: {stats.windowDates.join(', ')}</>
+              )}
             </div>
           )}
           <div className="stats-grid" style={{ marginBottom: '1rem' }}>
@@ -916,7 +1001,8 @@ export default function SourceWiseData({ onboardingData = [] }) {
               <>
                 {format(new Date(`${dateFrom}T12:00:00`), 'dd MMM yyyy')} –{' '}
                 {format(new Date(`${dateTo}T12:00:00`), 'dd MMM yyyy')} · City: {cityFilter}
-                {viewTab === 'byClient' ? ` · Client: ${clientLabel}` : ' · All clients rolled up'}
+                {` · Client: ${clientLabel}`}
+                {viewTab === 'bySource' ? ' · Rolled up by source' : ''}
                 {' · Source: '}
                 {sourceFilter} · {sortedRows.length.toLocaleString('en-IN')} rows
                 {ordersLoading ? ' · Loading orders…' : ''}

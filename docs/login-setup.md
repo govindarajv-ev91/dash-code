@@ -71,6 +71,24 @@ It adds table and ID-sequence privileges for those operations, keeps RLS enabled
 and leaves order data, anonymous access, and delete permissions unchanged. It is
 safe to rerun. The earlier dashboard read repair alone does not enable uploads.
 
+### Fix Rider Payment Upload permissions after enabling sign-in
+
+If Rider Payment Upload reports `new row violates row-level security policy for
+table "rider_payment_data"`, the original payment setup allows INSERT only for
+`anon`. Signed-in requests use `authenticated`; the dashboard read repair adds
+SELECT access only and cannot authorize uploads.
+
+Run `sql/fix_rider_payment_permissions.sql` in the app's Supabase SQL Editor
+after the payment table and dashboard auth setup, then refresh and retry while
+signed in with a registered dashboard account. This repair copies existing
+anonymous SELECT/INSERT policies to dashboard members, retaining source row
+filters and restrictive behavior, and grants the required table/ID-sequence
+privileges. It leaves RLS enabled and does not change payment rows, anonymous
+policies, or existing UPDATE/DELETE permissions. The page skips duplicate rows
+using `ON CONFLICT DO NOTHING RETURNING id`, so UPDATE access is unnecessary.
+The script is safe to rerun. The timeout repair is separate from this permission
+repair. Use the policy inspection query above to confirm the live configuration.
+
 Provide the intended table privileges and RLS policies to approved
 `authenticated` users. Keep existing row filters and operation restrictions;
 do not add unrestricted write policies just to make login work. The IoT table

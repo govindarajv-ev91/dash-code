@@ -19,6 +19,8 @@ import {
   clearRiderPaymentDataByMonth,
   getRiderPaymentDbSetupMessage,
   getRiderPaymentTimeoutMessage,
+  getRiderPaymentPermissionMessage,
+  isRiderPaymentPermissionError,
   isMissingRiderPaymentTable,
 } from './lib/riderPaymentDb'
 import {
@@ -411,6 +413,8 @@ export default function RiderPaymentUpload() {
     } catch (err) {
       const text = isMissingRiderPaymentTable(err)
         ? getRiderPaymentDbSetupMessage()
+        : isRiderPaymentPermissionError(err)
+          ? getRiderPaymentPermissionMessage()
         : isStatementTimeout(err)
           ? getRiderPaymentTimeoutMessage()
           : err instanceof TypeError && /failed to fetch/i.test(err.message || '')

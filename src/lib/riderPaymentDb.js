@@ -469,3 +469,14 @@ export function getRiderPaymentDbSetupMessage() {
 export function getRiderPaymentTimeoutMessage() {
   return 'Upload timed out on a large table. Run sql/fix_rider_payment_timeout.sql in Supabase SQL Editor, then try again. Prefer uploading one month at a time.'
 }
+
+export function isRiderPaymentPermissionError(error) {
+  const message = (error?.message || '').toLowerCase()
+  return error?.code === '42501' ||
+    (message.includes(RIDER_PAYMENT_TABLE) &&
+      (message.includes('row-level security') || message.includes('permission denied')))
+}
+
+export function getRiderPaymentPermissionMessage() {
+  return 'The database rejected this upload because your account does not have permission to insert or read rider payments. Run sql/fix_rider_payment_permissions.sql in Supabase SQL Editor, then refresh and retry while signed in with a registered dashboard account. If it still fails, review the table policies and account membership.'
+}

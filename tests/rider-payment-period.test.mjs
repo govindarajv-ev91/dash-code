@@ -38,6 +38,15 @@ after(async () => { await server.close(); delete globalThis.__paymentPeriodTestC
 const db = await server.ssrLoadModule('/src/lib/riderPaymentDb.js')
 beforeEach(() => { queries.length = 0; monthError = null; db.clearRiderPaymentCache() })
 
+test('payment permission errors point to the permission repair rather than timeout setup', () => {
+  assert.equal(db.isRiderPaymentPermissionError({ code: '42501', message: 'permission denied' }), true)
+  assert.equal(db.isRiderPaymentPermissionError({ message: 'new row violates row-level security policy for table "rider_payment_data"' }), true)
+  assert.equal(db.isRiderPaymentPermissionError({ code: '57014', message: 'statement timeout' }), false)
+  assert.equal(db.isRiderPaymentPermissionError({ message: 'Failed to fetch' }), false)
+  assert.equal(db.isRiderPaymentPermissionError(null), false)
+  assert.match(db.getRiderPaymentPermissionMessage(), /sql\/fix_rider_payment_permissions\.sql/)
+})
+
 function page(query, rows, cap = Infinity) {
   const cursor = query.or?.[0].match(/period_start\.eq\.([^,]+),id\.gt\.(\d+)/)
   return rows.filter((row) =>

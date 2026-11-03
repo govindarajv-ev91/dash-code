@@ -4,7 +4,7 @@ import AccountMenu from './AccountMenu'
 import './admin.css'
 
 export default function AdminPage({ user, onSignOut, signingOut, signOutError, access,
-  loginEnabled, settingsError, onLoginSettingChange }) {
+  loginEnabled, loginLogoEnabled, settingsError, onLoginSettingChange, onLoginLogoSettingChange }) {
   const [users, setUsers] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -75,6 +75,17 @@ export default function AdminPage({ user, onSignOut, signingOut, signOutError, a
     finally { setBusy(false) }
   }
 
+  async function saveLoginLogoSetting(enabled) {
+    if (busy) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const savedEnabled = await access.setLoginLogoEnabled(enabled)
+      onLoginLogoSettingChange(savedEnabled)
+      setNotice(savedEnabled ? 'FleetPro full logo is now enabled in the sidebar.' : 'FleetPro full logo is now disabled; the text mark is shown.')
+    } catch (failure) { setError(failure.message) }
+    finally { setBusy(false) }
+  }
+
   return <main className="admin-page">
     <header className="admin-header">
       <div><div className="auth-brand"><Layout size={26} />FleetPro</div>
@@ -120,6 +131,14 @@ export default function AdminPage({ user, onSignOut, signingOut, signOutError, a
         <div className="admin-actions"><button className="admin-button danger" disabled={busy} onClick={() => saveLoginSetting(false)}>Confirm disable login</button>
           <button className="admin-button secondary" disabled={busy} onClick={() => setConfirmPublic(false)}>Cancel</button></div>
       </div>}
+      <div className="admin-setting"><div><h2>Show FleetPro full logo in sidebar</h2>
+        <p>{loginLogoEnabled ? 'Enabled — full logo is shown at the top of the sidebar.' : 'Disabled — sidebar shows the FleetPro text mark.'}</p>
+        <p>Default: Off.</p></div>
+        <button className="admin-button" type="button" role="switch" aria-checked={loginLogoEnabled}
+          aria-label="Show FleetPro full logo in sidebar" disabled={busy || !!settingsError}
+          onClick={() => saveLoginLogoSetting(!loginLogoEnabled)}>
+          {loginLogoEnabled ? 'Turn logo off' : 'Turn logo on'}
+        </button></div>
     </section>
     <div id="user-management-panel" role="tabpanel" aria-labelledby="user-management-tab" hidden={activeTab !== 'users'}>
     <section className="admin-panel" aria-labelledby="create-user-title">

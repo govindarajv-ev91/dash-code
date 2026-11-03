@@ -274,7 +274,7 @@ async function fetchPaymentPeriodRange(columns, { fromDate, toDate }) {
 /** Slim revenue/overview cache for General Overview. */
 let cachedRevenue = null
 let revenueInflight = null
-const REVENUE_CACHE_VERSION = 3
+const REVENUE_CACHE_VERSION = 4
 let cachedRevenueVersion = 0
 
 export async function fetchAllRiderPayments({ force = false } = {}) {
@@ -393,12 +393,49 @@ export async function fetchRiderPaymentsForRevenue({ force = false } = {}) {
       cachedRevenueVersion = REVENUE_CACHE_VERSION
       return cachedRevenue
     }
-    const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_REVENUE_COLUMNS, 'id', {
-      useKeyset: true,
-      maxRetries: 10,
-      pageSize: 1000,
-    })
-    cachedRevenue = data || []
+    const { data: groupedData, error: groupedError } = await supabase.rpc(
+      'rider_payment_revenue_overview',
+    )
+    if (!groupedError && Array.isArray(groupedData)) {
+      cachedRevenue = groupedData.map((row) => ({
+        id: row.id ?? `${row.month || ''}-${row.client_name || ''}-${row.rider_id || ''}`,
+        month: row.month,
+        client_name: row.client_name,
+        rider_id: row.rider_id,
+        orders: Number(row.orders || 0),
+        gross_payout: Number(row.gross_payout || 0),
+        final_net_payout: Number(row.final_net_payout || 0),
+      }))
+      cachedRevenueVersion = REVENUE_CACHE_VERSION
+      return cachedRevenue
+    }
+
+    // Fallback for databases that have not yet installed the overview RPC.
+    // Load month by month so large uploads do not trigger a full-table timeout.
+    const months = await fetchRiderPaymentMonths({ requireComplete: true })
+    const pages = new Array(months.length)
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(4, months.length) }, async () => {
+      while (next < months.length) {
+        const index = next++
+        const { data, error } = await fetchAllData(
+          RIDER_PAYMENT_TABLE,
+          RIDER_PAYMENT_REVENUE_COLUMNS,
+          'id',
+          {
+            useKeyset: true,
+            throwOnError: true,
+            untilEmpty: true,
+            maxRetries: 3,
+            pageSize: 1000,
+            queryModifier: (query) => query.eq('month', months[index]),
+          },
+        )
+        if (error) throw error
+        pages[index] = data || []
+      }
+    }))
+    cachedRevenue = pages.flat()
     cachedRevenueVersion = REVENUE_CACHE_VERSION
     return cachedRevenue
   })().finally(() => {

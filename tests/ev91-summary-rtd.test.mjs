@@ -38,6 +38,7 @@ after(async () => {
 })
 const operational = await server.ssrLoadModule('/src/lib/ev91OperationalSummary.js')
 const summaryLib = await server.ssrLoadModule('/src/lib/ev91DeployReturnSummary.js')
+const sourceLib = await server.ssrLoadModule('/src/lib/onboardingSourceLookup.js')
 const targetsLib = await server.ssrLoadModule('/src/lib/fleetClientTargets.js')
 const { default: Summary } = await server.ssrLoadModule('/src/Ev91DeployReturnSummary.jsx')
 const vehicle = (id, status = 'Available', city = 'Chennai') => ({ id,
@@ -102,6 +103,41 @@ test('inventory RTD uses nested hub cities, normalizes aliases and counts unique
   assert.equal(operational.getCityRtdAvailableCount(counts, 'Bengaluru'), 1)
   assert.equal(operational.getCityRtdAvailableCount(counts, 'Chennai'), 2)
   assert.equal(operational.getCityRtdAvailableCount(counts, 'Mumbai'), 0)
+})
+
+test('audit source names match rider IDs and phones, fall back to row sources and preserve counts', () => {
+  const onboardingSourceIndex = sourceLib.buildOnboardingSourceLookupIndex([
+    { merge: 'voiceFE123456', source_name: 'Alpha Team' },
+    { rider_id_details: 'CHE-26-R002008', source_name: 'Beta Team' },
+    { rider_mobile_number: '9876543210', source_name: 'Phone Team' },
+    { rider_id: 'IC1', source_name: 'IC Team' },
+  ])
+  const options = { startDate: '2026-10-25', endDate: '2026-10-31', evDeployedSource: 'overall' }
+  const event = (id, extra = {}) => ({ vehicleNumber: `TN-${id}`, vehicleStatus: 'Deployed',
+    statusDate: '2026-10-26', cityName: 'Chennai', clientName: 'Blinkit', clientId: id, ...extra })
+  const events = [event('123456.0', { source: 'API fallback' }),
+    event('other', { ev91RiderId: 'CHE_26_R002008' }),
+    event('return', { vehicleStatus: 'Returned', riderContact: '+91 98765 43210' }),
+    event('fallback', { sourceName: '-', source_name: 'Raw source' }),
+    event('missing', { source: 'Unknown', riderName: 'Alpha Team' })]
+  const orders = [{ worker_code: 'IC1', date_record: '2026-10-26', city: 'Chennai', client: 'Blinkit', type1: 'NON-EV' },
+    { worker_code: 'EV1', mob_number: '9876543210', date_record: '2026-10-26', city: 'Chennai', client: 'Blinkit', type1: 'EV' }]
+  const summary = summaryLib.buildEv91ClientWiseSummary(events, orders, options)
+  const enriched = summaryLib.buildEv91ClientWiseSummary(events, orders, { ...options, includeDetails: true, onboardingSourceIndex })
+  assert.deepEqual(enriched.totals, summary.totals)
+  const sources = new Map(enriched.details.evRows.map((row) => [row.riderId, row.sourceName]))
+  assert.equal(sources.get('123456.0'), 'Alpha Team')
+  assert.equal(sources.get('other'), 'Beta Team')
+  assert.equal(sources.get('fallback'), 'Raw source')
+  assert.equal(sources.get('missing'), '')
+  assert.equal(enriched.details.returnRows[0].sourceName, 'Phone Team')
+  assert.equal(enriched.details.icRows[0].sourceName, 'Ic Team')
+  assert.equal(enriched.details.icRows[0].source, 'order_upload')
+  const orderDetails = summaryLib.buildEv91SummaryRawDetails(events, summaryLib.buildFirstOrderIndex(orders), {
+    ...options, evDeployedSource: 'order', onboardingSourceIndex,
+  })
+  assert.equal(orderDetails.evRows[0].sourceName, 'Phone Team')
+  assert.equal(orderDetails.evRows[0].source, 'order_upload')
 })
 
 async function waitFor(predicate) {
@@ -182,6 +218,9 @@ test('combined option updates the summary, audit rows, summary CSV and all-citie
   await waitFor(() => !!button('Refresh EV91'))
   // Refresh bypasses any Overall Status cache populated by the inventory test.
   await act(async () => button('Refresh EV91').click())
+  await waitFor(() => total('Ev Deployed') === '3')
+  assert.equal(container.querySelector('input[value="api-rejoiners"]').checked, true)
+  await act(async () => container.querySelector('input[value="api"]').click())
   await waitFor(() => total('Ev Deployed') === '1')
   const combined = container.querySelector('input[value="api-rejoiners"]')
   assert.ok(combined)
@@ -218,4 +257,59 @@ test('combined option updates the summary, audit rows, summary CSV and all-citie
   await act(async () => container.querySelector('input[value="api"]').click())
   assert.equal(total('Ev Deployed'), '1')
   assert.equal(container.querySelectorAll('.ev91-raw-preview tbody tr').length, 1)
+})
+
+test('raw tables and CSV include source names for API EV, Return, IC and order EV, and update with onboarding data', async (t) => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => { await act(async () => root.unmount()); container.remove() })
+  const range = summaryLib.weekKeyToEv91SummaryDateRange(targetsLib.dateToWeekKey(new Date()))
+  t.mock.method(globalThis, 'fetch', async (url) => String(url).includes('/api/ev91-vehicles')
+    ? Response.json({ success: true, vehicles: [], pagination: { totalPages: 1, hasNextPage: false } })
+    : Response.json({ success: true, data: deploymentEvents(range.startDate), pagination: { hasMore: false } }))
+  const csvBlobs = []
+  t.mock.method(URL, 'createObjectURL', (blob) => { csvBlobs.push(blob); return 'blob:source-test' })
+  t.mock.method(URL, 'revokeObjectURL', () => {})
+  t.mock.method(dom.window.HTMLAnchorElement.prototype, 'click', () => {})
+  const props = { onboardingData: [
+    { rider_id: 'R1', source_name: 'API Team' },
+    { rider_id: 'R4', source_name: 'Return Team' },
+    { worker_code: 'IC1', source_name: 'Referral, "Team"' },
+    { worker_code: 'EV1', source_name: 'Order Team' },
+  ], riderData: [
+    { worker_code: 'IC1', date_record: range.startDate, city: 'Chennai', client: 'Blinkit', type1: 'NON-EV', _data_source: 'order_upload' },
+    { worker_code: 'EV1', date_record: range.startDate, city: 'Chennai', client: 'Blinkit', type1: 'EV', _data_source: 'order_upload' },
+  ] }
+  const button = (text) => [...container.querySelectorAll('button')].find((node) => node.textContent.includes(text))
+  await act(async () => root.render(createElement(Summary, props)))
+  await waitFor(() => !!button('Refresh EV91'))
+  await act(async () => button('Refresh EV91').click())
+  await act(async () => button('Raw data').click())
+  const preview = () => container.querySelector('.ev91-raw-preview')
+  const checkSource = async (source) => {
+    assert.ok([...preview().querySelectorAll('th')].some((node) => node.textContent === 'Source Name'))
+    assert.ok([...preview().querySelectorAll('tbody td')].some((node) => node.textContent === source))
+    await act(async () => button('Export raw CSV').click())
+    const csv = XLSX.utils.sheet_to_json(XLSX.read(await csvBlobs.at(-1).text(), { type: 'string' }).Sheets.Sheet1)
+    assert.ok(csv.some((row) => row['Source Name'] === source))
+  }
+  const selectKind = async (kind) => act(async () => {
+    const select = preview().querySelector('select')
+    select.value = kind
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await checkSource('Api Team')
+  await act(async () => root.render(createElement(Summary, { ...props,
+    onboardingData: [{ rider_id: 'R1', source_name: 'Updated Team' }, ...props.onboardingData.slice(1)],
+  })))
+  await checkSource('Updated Team')
+  await selectKind('Return')
+  await checkSource('Return Team')
+  await selectKind('IC')
+  await checkSource('Referral, "team"')
+  assert.match(preview().textContent, /order_upload/)
+  await selectKind('EV')
+  await act(async () => container.querySelector('input[value="order"]').click())
+  await checkSource('Order Team')
 })

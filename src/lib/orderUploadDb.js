@@ -22,6 +22,8 @@ const MONTH_ABBR = {
 }
 
 const MONTH_LABEL = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const firstPositiveHistoryCache = new Map()
+const firstPositiveHistoryInflight = new Map()
 
 /** Month labels (Jul-2026) covering a yyyy-MM-dd range — for scoped order_upload fetches. */
 export function orderUploadMonthLabelsForRange(dateFrom, dateTo) {
@@ -80,6 +82,79 @@ export async function fetchOrderUploadsForDateRange(dateFrom, dateTo, { force = 
   }
 
   return filterMappedOrderRowsToDateRange(mapped, from, to)
+}
+
+/**
+ * Load complete historical order rows for a known rider ID set.
+ * This is separate from the report window: FL calculation must find the rider's
+ * earliest positive order from the entire available history.
+ */
+export async function fetchFirstPositiveOrderHistoryForWorkers(workerCodes = [], { force = false } = {}) {
+  const codes = [...new Set(
+    (workerCodes || [])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+  )]
+  if (!codes.length) return []
+  const cacheKey = codes.slice().sort().join('\t')
+  if (force) {
+    firstPositiveHistoryCache.delete(cacheKey)
+  } else if (firstPositiveHistoryCache.has(cacheKey)) {
+    return firstPositiveHistoryCache.get(cacheKey)
+  }
+
+  const chunks = []
+  for (let index = 0; index < codes.length; index += 25) {
+    chunks.push(codes.slice(index, index + 25))
+  }
+
+  const results = []
+  for (const chunk of chunks) {
+    const rows = []
+    let pageSize = 500
+    for (let offset = 0; ; offset += pageSize) {
+      let data = null
+      let error = null
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const response = await supabase
+          .from(ORDER_UPLOAD_TABLE)
+          .select(ORDER_HISTORY_COLUMNS)
+          .in('worker_code', chunk)
+          .gt('delivered', 0)
+          .order('date_record', { ascending: true })
+          .range(offset, offset + pageSize - 1)
+        data = response.data
+        error = response.error
+        if (!error) break
+        if (!isStatementTimeout(error) || attempt === 3) break
+        pageSize = Math.max(100, Math.floor(pageSize / 2))
+        await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)))
+      }
+      if (error) {
+        throw error
+      }
+      if (!data?.length) break
+      rows.push(...data)
+      if (data.length < pageSize) break
+    }
+    results.push(rows)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+
+  const byId = new Map()
+  for (const row of results.flat()) {
+    const key = String(row?.id ?? '').trim() ||
+      `${row.worker_code}_${row.date_record}_${row.delivered}_${row.client}_${row.city}`
+    byId.set(key, row)
+  }
+
+  const mapped = []
+  for (const row of byId.values()) {
+    const metric = mapOrderUploadToRiderMetric(row)
+    if (metric) mapped.push(metric)
+  }
+  firstPositiveHistoryCache.set(cacheKey, mapped)
+  return mapped
 }
 
 export function isMissingOrderUploadTable(error) {

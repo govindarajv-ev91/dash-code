@@ -20,7 +20,7 @@ export default function AuthenticatedApp({ auth = supabase.auth, access = dashbo
   const [sessionError, setSessionError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
   const [signOutError, setSignOutError] = useState('')
-  const [settings, setSettings] = useState({ loading: true, enabled: true, error: '' })
+  const [settings, setSettings] = useState({ loading: true, enabled: true, logoEnabled: false, error: '' })
   const [profile, setProfile] = useState({ userId: null, data: null, error: '' })
   const [adminRequested, setAdminRequested] = useState(() => window.location.hash === '#admin')
   const [profileRetry, setProfileRetry] = useState(0)
@@ -39,11 +39,14 @@ export default function AuthenticatedApp({ auth = supabase.auth, access = dashbo
     const refresh = async () => {
       const version = ++settingsVersion.current
       try {
-        const enabled = await access.getLoginEnabled()
-        if (active && version === settingsVersion.current) setSettings({ loading: false, enabled, error: '' })
+        const [enabled, logoEnabled] = await Promise.all([
+          access.getLoginEnabled(),
+          access.getLoginLogoEnabled(),
+        ])
+        if (active && version === settingsVersion.current) setSettings({ loading: false, enabled, logoEnabled, error: '' })
       } catch {
         if (active && version === settingsVersion.current) setSettings({
-          loading: false, enabled: true, error: 'Login settings are unavailable. Contact your administrator.',
+          loading: false, enabled: true, logoEnabled: false, error: 'Login settings are unavailable. Contact your administrator.',
         })
       }
     }
@@ -74,7 +77,12 @@ export default function AuthenticatedApp({ auth = supabase.auth, access = dashbo
 
   function applyLoginSetting(enabled) {
     settingsVersion.current += 1
-    setSettings({ loading: false, enabled, error: '' })
+    setSettings((current) => ({ ...current, loading: false, enabled, error: '' }))
+  }
+
+  function applyLoginLogoSetting(logoEnabled) {
+    settingsVersion.current += 1
+    setSettings((current) => ({ ...current, loading: false, logoEnabled, error: '' }))
   }
 
   useEffect(() => {
@@ -123,7 +131,7 @@ export default function AuthenticatedApp({ auth = supabase.auth, access = dashbo
   if (requiresLogin && !user) return <LoginPage auth={auth}
     adminLogin={adminRequested} sessionError={sessionError || settings.error} />
   if (requiresLogin && profile.userId !== userId) return <AuthLoading>Checking your account...</AuthLoading>
-  const accountProps = { user, onSignOut: signOut, signingOut, signOutError }
+  const accountProps = { user, onSignOut: signOut, signingOut, signOutError, logoEnabled: settings.logoEnabled }
   if (requiresLogin && (!profile.data || (adminRequested && profile.data.role !== 'admin'))) {
     return <main className="auth-page"><section className="auth-card">
       <h1>{adminRequested ? 'Administrator access required' : 'Account unavailable'}</h1>
@@ -139,7 +147,8 @@ export default function AuthenticatedApp({ auth = supabase.auth, access = dashbo
     <Suspense fallback={<AuthLoading>Opening your dashboard...</AuthLoading>}>
       {adminRequested
         ? <Admin {...accountProps} access={access} loginEnabled={settings.enabled}
-            settingsError={settings.error} onLoginSettingChange={applyLoginSetting} />
+            loginLogoEnabled={settings.logoEnabled} settingsError={settings.error}
+            onLoginSettingChange={applyLoginSetting} onLoginLogoSettingChange={applyLoginLogoSetting} />
         : <Dashboard key={userId ?? 'public'} {...accountProps} isAdmin={isAdmin} />}
     </Suspense>
   )

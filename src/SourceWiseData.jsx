@@ -13,7 +13,11 @@ import {
   RefreshCw,
   ChevronDown,
 } from 'lucide-react'
-import { fetchOrderUploadMonths, fetchOrderUploadsForDateRange } from './lib/orderUploadDb'
+import {
+  fetchOrderUploadMonths,
+  fetchOrderUploadsForDateRange,
+  fetchFirstPositiveOrderHistoryForWorkers,
+} from './lib/orderUploadDb'
 import { fetchEv91OverallStatusAll, fetchEv91CurrentStatusAll } from './lib/ev91EvLookup'
 import {
   buildFullDataSourceMonthRows,
@@ -27,10 +31,12 @@ import {
   monthDaysFromLabel,
   trimOverallRowsForMonth,
   formatClientFilterLabel,
+  buildSourceWiseFlLast10Counts,
+  attachSourceWiseFlLast10Counts,
 } from './lib/fullDataMonthReport'
 import { fetchRiderOnboardingRows } from './lib/riderOnboardingDb'
 import { fetchEv91ClientMappingAll } from './lib/ev91OnboardingPending'
-import { dedupeCanonicalCities } from './lib/citySummaryAliases'
+import { dedupeCanonicalCities, normalizeSummaryCity } from './lib/citySummaryAliases'
 import { normalizeSummaryClient } from './lib/clientSummaryClients'
 import { useSourceMaster } from './lib/useSourceMaster'
 import { isListedSource } from './lib/sourceMaster'
@@ -39,18 +45,22 @@ import './source-wise-data.css'
 const ROWS_PER_PAGE = 50
 const DATE_LOAD_DEBOUNCE_MS = 350
 const ACTIVE_LOOKBACK_DAYS = 4
+const FL_FIRST_ORDER_LOOKBACK_DAYS = 9
 
 function orderFetchStart(fromKey, toKey) {
   const start = fromKey || toKey
   if (!start) return ''
   // A delayed client's window can precede From, including the previous month.
-  return format(subDays(parseISO(start), ACTIVE_LOOKBACK_DAYS), 'yyyy-MM-dd')
+  const activeStart = format(subDays(parseISO(start), ACTIVE_LOOKBACK_DAYS), 'yyyy-MM-dd')
+  const flStart = toKey ? format(subDays(parseISO(toKey), FL_FIRST_ORDER_LOOKBACK_DAYS), 'yyyy-MM-dd') : activeStart
+  return activeStart < flStart ? activeStart : flStart
 }
 
 const TABLE_COLUMNS_BY_CLIENT = [
   'Source',
   'City',
   'Client',
+  'FL Count (first order, last 10 days)',
   'Unique Rider Count',
   'Unique EV rider Count',
   'Unique Non-EV rider Count',
@@ -74,6 +84,7 @@ const TABLE_COLUMNS_BY_CLIENT = [
 const TABLE_COLUMNS_BY_SOURCE = [
   'Source',
   'City',
+  'FL Count (first order, last 10 days)',
   'Unique Rider Count',
   'Unique EV rider Count',
   'Unique Non-EV rider Count',
@@ -376,7 +387,7 @@ const SearchableSelect = memo(function SearchableSelect({
   )
 })
 
-export default function SourceWiseData({ onboardingData = [] }) {
+export default function SourceWiseData({ onboardingData = [], kycData = [] }) {
   const { sourceIndex, sourcesLoading, sourceError, refreshSources } = useSourceMaster()
   const [months, setMonths] = useState([])
   const [selectedMonth, setSelectedMonth] = useState('')
@@ -398,6 +409,7 @@ export default function SourceWiseData({ onboardingData = [] }) {
   const [currentRows, setCurrentRows] = useState([])
   const [onboardingRows, setOnboardingRows] = useState([])
   const [mappingRows, setMappingRows] = useState([])
+  const [flHistoryRows, setFlHistoryRows] = useState([])
 
   const overallAllRef = useRef([])
 
@@ -515,6 +527,40 @@ export default function SourceWiseData({ onboardingData = [] }) {
     return () => clearTimeout(timer)
   }, [dateFrom, dateTo, staticLoading, loadOrdersForRange])
 
+  useEffect(() => {
+    if (!onboardingRows.length && !kycData.length) {
+      setFlHistoryRows([])
+      return undefined
+    }
+    let cancelled = false
+    const riderCodes = new Set()
+    for (const row of [...onboardingRows, ...(kycData || [])]) {
+      for (const value of [
+        row.rider_id_details,
+        row.rider_id,
+        row.worker_code,
+        row.client_rider_id,
+      ]) {
+        const code = String(value ?? '').trim()
+        if (code) riderCodes.add(code)
+      }
+    }
+
+    fetchFirstPositiveOrderHistoryForWorkers([...riderCodes])
+      .then((rows) => {
+        if (!cancelled) setFlHistoryRows(rows || [])
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn('[FL history] Complete rider history could not be loaded:', err?.message || err)
+          setFlHistoryRows([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [onboardingRows, kycData])
+
   const refreshAll = useCallback(() => {
     refreshSources()
     loadOrdersForRange(dateFrom, dateTo, { force: true })
@@ -552,15 +598,39 @@ export default function SourceWiseData({ onboardingData = [] }) {
     [baseReport.month, deferredCity, deferredClient, viewTab]
   )
 
-  const monthRows = useMemo(() => exportMonthRows.filter((row) =>
-    isListedSource(sourceIndex, row.City, row.Source)
-  ), [exportMonthRows, sourceIndex])
+  const flLast10Counts = useMemo(
+    () => buildSourceWiseFlLast10Counts(
+      [...orderRows, ...flHistoryRows],
+      onboardingRows,
+      kycData,
+      dateTo
+    ),
+    [orderRows, flHistoryRows, onboardingRows, kycData, dateTo]
+  )
+
+  const monthRows = useMemo(() => {
+    const listedRows = exportMonthRows.filter((row) =>
+      isListedSource(sourceIndex, row.City, row.Source)
+    )
+    return attachSourceWiseFlLast10Counts(
+      listedRows,
+      flLast10Counts,
+      viewTab === 'byClient'
+    )
+  }, [exportMonthRows, sourceIndex, flLast10Counts, viewTab])
 
   // Source visibility/search only affects the page. Exports retain every source
   // within the selected dates, city and client, including inactive/unknown ones.
-  const exportRows = useMemo(() => [...exportMonthRows].sort((a, b) =>
-    compareSourceRows(a, b, sortKey, sortDir)
-  ), [exportMonthRows, sortKey, sortDir])
+  const exportRows = useMemo(() => {
+    const countedRows = attachSourceWiseFlLast10Counts(
+      exportMonthRows,
+      flLast10Counts,
+      viewTab === 'byClient'
+    )
+    return countedRows.sort((a, b) =>
+      compareSourceRows(a, b, sortKey, sortDir)
+    )
+  }, [exportMonthRows, flLast10Counts, viewTab, sortKey, sortDir])
 
   const filterOptions = useMemo(
     () => collectFullDataFilterOptions(orderRows, overallRows),
@@ -670,8 +740,16 @@ export default function SourceWiseData({ onboardingData = [] }) {
       const sourceReport = reportForView(false)
       const prepareRows = (report) => [...filterSourceMonthRows(report.month, { cityFilter: deferredCity })]
         .sort((a, b) => compareSourceRows(a, b, sortKey, sortDir))
-      const clientRows = viewTab === 'byClient' ? exportRows : prepareRows(clientReport)
-      const sourceRows = viewTab === 'bySource' ? exportRows : prepareRows(sourceReport)
+      const clientRows = attachSourceWiseFlLast10Counts(
+        viewTab === 'byClient' ? exportRows : prepareRows(clientReport),
+        flLast10Counts,
+        true
+      )
+      const sourceRows = attachSourceWiseFlLast10Counts(
+        viewTab === 'bySource' ? exportRows : prepareRows(sourceReport),
+        flLast10Counts,
+        false
+      )
       const sheets = []
       const withSourceStatus = (rows) => rows.map((row) => ({
         ...row,
@@ -696,6 +774,13 @@ export default function SourceWiseData({ onboardingData = [] }) {
         windowEnd: sourceReport.windowEnd, windowDates: sourceReport.windowDates, useLatestClientData,
       })
       sheets.push({ name: 'Active Summary', rows: activeSummary })
+      const flRawRows = (flLast10Counts.rawRows || []).filter((row) => {
+        const cityMatches = deferredCity === 'All' || normalizeSummaryCity(row.City) === normalizeSummaryCity(deferredCity)
+        const clientMatches = viewTab === 'bySource' || deferredClient === 'All' ||
+          normalizeSummaryClient(row.Client) === normalizeSummaryClient(deferredClient)
+        return cityMatches && clientMatches
+      })
+      sheets.push({ name: 'FL Raw', rows: flRawRows })
       const exportClients = new Set(clientRows.map((row) => row.Client))
       const clientWindows = (clientReport.clientWindows || []).filter((row) => exportClients.has(row.Client))
       if (useLatestClientData && clientWindows.length) {

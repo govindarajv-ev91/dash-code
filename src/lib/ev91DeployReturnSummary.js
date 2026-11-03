@@ -10,8 +10,21 @@ import { parseFleetDate } from './fleetDeployReturnExport'
 import { SUMMARY_METRICS } from './fleetMasterSheet'
 import { normalizeTargetEvType, weekKeyToDateRange } from './fleetClientTargets'
 import { rowDateKey } from './ev91MisApi'
+import { isMissingSourceName, lookupOnboardingSource } from './onboardingSourceLookup'
 
 export { SUMMARY_METRICS, splitSummaryClients }
+
+function rawSourceName(row, onboardingSourceIndex) {
+  const onboardingSource = lookupOnboardingSource(onboardingSourceIndex, {
+    riderIds: [row.clientId, row.clientRiderId, row.ev91RiderId, row.worker_code],
+    phone: row.riderContact || row.mob_number,
+  })
+  if (!isMissingSourceName(onboardingSource)) return onboardingSource
+  for (const value of [row.sourceName, row.source_name, row.source]) {
+    if (!isMissingSourceName(value)) return String(value).trim()
+  }
+  return ''
+}
 
 /**
  * Ops week for EV91 summary: Sunday–Saturday covering the ISO week key.
@@ -228,7 +241,7 @@ export function buildFirstOrderIndex(orderRows = []) {
  */
 function buildOrderFirstDeployByClient(
   orderRowsOrIndex = [],
-  { city = 'All', startDate = '', endDate = '', kind = 'IC' } = {}
+  { city = 'All', startDate = '', endDate = '', kind = 'IC', onboardingSourceIndex } = {}
 ) {
   const filterCity = city && city !== 'All' ? city : null
   const firstGlobal =
@@ -259,6 +272,7 @@ function buildOrderFirstDeployByClient(
       fl: info.fl || '—',
       type1: info.type1,
       source: info.source || 'order_upload',
+      sourceName: rawSourceName(info.row, onboardingSourceIndex),
     })
   }
 
@@ -282,13 +296,14 @@ function buildOrderFirstDeployByClient(
  */
 export function buildIcDeployedByClient(
   orderRowsOrIndex = [],
-  { city = 'All', startDate = '', endDate = '' } = {}
+  { city = 'All', startDate = '', endDate = '', onboardingSourceIndex } = {}
 ) {
   return buildOrderFirstDeployByClient(orderRowsOrIndex, {
     city,
     startDate,
     endDate,
     kind: 'IC',
+    onboardingSourceIndex,
   })
 }
 
@@ -297,13 +312,14 @@ export function buildIcDeployedByClient(
  */
 export function buildEvDeployedByClient(
   orderRowsOrIndex = [],
-  { city = 'All', startDate = '', endDate = '' } = {}
+  { city = 'All', startDate = '', endDate = '', onboardingSourceIndex } = {}
 ) {
   return buildOrderFirstDeployByClient(orderRowsOrIndex, {
     city,
     startDate,
     endDate,
     kind: 'EV',
+    onboardingSourceIndex,
   })
 }
 
@@ -314,7 +330,7 @@ export function buildEvDeployedByClient(
 export function buildEv91SummaryRawDetails(
   overallRows = [],
   riderDataOrIndex = [],
-  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'api' } = {}
+  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'api', onboardingSourceIndex } = {}
 ) {
   const summary = buildEv91ClientWiseSummary(overallRows, riderDataOrIndex, {
     city,
@@ -322,6 +338,7 @@ export function buildEv91SummaryRawDetails(
     endDate,
     includeDetails: true,
     evDeployedSource,
+    onboardingSourceIndex,
   })
   return summary.details || { evRows: [], returnRows: [], icRows: [] }
 }
@@ -372,6 +389,7 @@ export function buildEv91ClientWiseSummary(
     endDate = '',
     includeDetails = false,
     evDeployedSource = 'api',
+    onboardingSourceIndex,
   } = {}
 ) {
   if (!startDate || !endDate) {
@@ -445,6 +463,7 @@ export function buildEv91ClientWiseSummary(
             ev91RiderId: (row.ev91RiderId || '').toString().trim(),
             riderName: (row.riderName || '').toString().trim(),
             contact: (row.riderContact || '').toString().trim(),
+            sourceName: rawSourceName(row, onboardingSourceIndex),
             reason,
             statusDate: row.statusDate || dKey,
           })
@@ -467,6 +486,7 @@ export function buildEv91ClientWiseSummary(
           ev91RiderId: (row.ev91RiderId || '').toString().trim(),
           riderName: (row.riderName || '').toString().trim(),
           contact: (row.riderContact || '').toString().trim(),
+          sourceName: rawSourceName(row, onboardingSourceIndex),
           reason,
           statusDate: row.statusDate || dKey,
         })
@@ -480,6 +500,7 @@ export function buildEv91ClientWiseSummary(
       city,
       startDate,
       endDate,
+      onboardingSourceIndex,
     })
     orderEvRows = orderEv
     for (const [client, count] of evByClient) {
@@ -491,6 +512,7 @@ export function buildEv91ClientWiseSummary(
     city,
     startDate,
     endDate,
+    onboardingSourceIndex,
   })
   for (const [client, count] of icByClient) {
     ensure(client).icDeployed = count

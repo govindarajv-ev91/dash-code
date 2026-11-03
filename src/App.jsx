@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, Suspense, lazy, startTransition, useRef, useDeferredValue } from 'react'
+import { Layout } from 'lucide-react'
 import Dashboard from './Dashboard'
 import RiderAttendance from './RiderAttendance'
 import TempSourceActive from './TempSourceActive'
@@ -60,7 +61,6 @@ import { mergeRiderMetricSources } from './lib/mergeRiderMetrics'
 /** Bump when merge shape changes (e.g. FL=1 IC-only rows) so old caches are ignored. */
 const RIDER_MERGED_CACHE_KEY = 'rider_metrics_merged_v4'
 import { clearIotRiderOrderCache } from './lib/iotDataDb'
-import { Layout } from 'lucide-react'
 import './index.css'
 
 const EV91_PAGES = new Set([
@@ -369,7 +369,7 @@ const DashboardContent = React.memo(function DashboardContent({
     ) : activePage === 'fulldata' ? (
       <FullDataPage onboardingData={onboardingData} riderData={riderData} />
     ) : activePage === 'sourcewise' ? (
-      <SourceWiseData onboardingData={onboardingData} />
+      <SourceWiseData onboardingData={onboardingData} kycData={kycData} />
     ) : activePage === 'fleetdata' ? (
       <FleetDataViewer
         fleetData={displayFleetData}
@@ -443,7 +443,7 @@ const DashboardContent = React.memo(function DashboardContent({
         refreshData={() => fetchData({ bypassCache: true })}
       />
     ) : activePage === 'ev91-summary' ? (
-      <Ev91DeployReturnSummary riderData={riderData} loading={loading} />
+      <Ev91DeployReturnSummary riderData={riderData} onboardingData={onboardingData} loading={loading} />
     ) : activePage === 'ev91-operational' ? (
       <Ev91OperationalStatus />
     ) : activePage === 'ev91-client-period-trend' ? (
@@ -473,7 +473,7 @@ const DashboardContent = React.memo(function DashboardContent({
   )
 })
 
-function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
+function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled = false }) {
   const [activePage, setActivePage] = useState(getSavedActivePage)
   const renderedPage = useDeferredValue(activePage)
   const pagePending = renderedPage !== activePage
@@ -776,8 +776,9 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin }) {
       <div className="sidebar-shell">
         <aside className="sidebar">
           <div className="sidebar-logo">
-            <Layout className="text-primary" />
-            <span>FleetPro</span>
+            {logoEnabled
+              ? <img src="/fleetpro-logo.png" alt="FleetPro" />
+              : <><Layout className="text-primary" /><span>FleetPro</span></>}
           </div>
           {user ? <AccountMenu user={user} onSignOut={onSignOut} signingOut={signingOut} signOutError={signOutError} isAdmin={isAdmin} />
             : <a className="public-admin-link" href="#admin">Admin sign in</a>}

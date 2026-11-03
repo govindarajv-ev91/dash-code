@@ -38,6 +38,7 @@ import {
   weekKeyToEv91SummaryDateRange,
 } from './lib/ev91DeployReturnSummary'
 import { isHiddenSummaryClient } from './lib/clientSummaryClients'
+import { buildOnboardingSourceLookupIndex } from './lib/onboardingSourceLookup'
 import {
   buildWeekOptions,
   dateToWeekKey,
@@ -107,7 +108,9 @@ function buildAllCitiesMatrixAoA(citySummaries, clientCols) {
   return rows
 }
 
-export default function Ev91DeployReturnSummary({ riderData = [], loading: riderLoading = false }) {
+const EMPTY_ONBOARDING_ROWS = []
+
+export default function Ev91DeployReturnSummary({ riderData = [], onboardingData = EMPTY_ONBOARDING_ROWS, loading: riderLoading = false }) {
   const initialWeek = dateToWeekKey(new Date()) || ''
   const initialRange = weekKeyToEv91SummaryDateRange(initialWeek)
 
@@ -129,7 +132,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   const [rawKind, setRawKind] = useState('EV') // EV | IC | Return
   const [rawClientFilter, setRawClientFilter] = useState('All')
   /** API options filter deployment reasons; overall = all; order = first EV day. */
-  const [evDeployedSource, setEvDeployedSource] = useState('api')
+  const [evDeployedSource, setEvDeployedSource] = useState('api-rejoiners')
   const isApiEvSource = evDeployedSource === 'api' || evDeployedSource === 'api-rejoiners'
   const apiEvReasonLabel = evDeployedSource === 'api-rejoiners' ? 'NEW_RIDER + RE_JOINER' : 'NEW_RIDER'
 
@@ -235,6 +238,11 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
   )
 
   // Only build raw audit rows when the panel is open
+  const onboardingSourceIndex = useMemo(
+    () => showRawData ? buildOnboardingSourceLookupIndex(onboardingData) : null,
+    [showRawData, onboardingData]
+  )
+
   const rawDetails = useMemo(() => {
     if (!showRawData) return { evRows: [], returnRows: [], icRows: [] }
     return buildEv91SummaryRawDetails(rows, firstOrderIndex, {
@@ -242,8 +250,9 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
       startDate: deferredStart,
       endDate: deferredEnd,
       evDeployedSource: deferredEvSource,
+      onboardingSourceIndex,
     })
-  }, [showRawData, rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd, deferredEvSource])
+  }, [showRawData, rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd, deferredEvSource, onboardingSourceIndex])
 
   const weekTargetRows = useMemo(
     () => getTargetsForWeek(allTargets, selectedWeek),
@@ -440,23 +449,23 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
     const lines = []
     const useOrderEvRaw = rawKind === 'EV' && evDeployedSource === 'order'
     if (rawKind === 'IC' || useOrderEvRaw) {
-      lines.push(['Kind', 'Date', 'City', 'Client', 'Client Raw', 'WorkerCode', 'Delivered', 'Type1', 'Source'].map(escapeCsv).join(','))
+      lines.push(['Kind', 'Date', 'City', 'Client', 'Client Raw', 'WorkerCode', 'Delivered', 'Type1', 'Source', 'Source Name'].map(escapeCsv).join(','))
       for (const r of filteredRawRows) {
         lines.push(
-          [r.kind, r.date, r.city, r.client, r.clientRaw, r.workerCode, r.delivered, r.type1, r.source]
+          [r.kind, r.date, r.city, r.client, r.clientRaw, r.workerCode, r.delivered, r.type1, r.source, r.sourceName]
             .map(escapeCsv)
             .join(',')
         )
       }
     } else {
       lines.push(
-        ['Kind', 'Status', 'Reason', 'Date', 'City', 'Client', 'Client Raw', 'Vehicle', 'Rider ID', 'EV91 Rider ID', 'Rider Name', 'Contact']
+        ['Kind', 'Status', 'Reason', 'Date', 'City', 'Client', 'Client Raw', 'Vehicle', 'Rider ID', 'EV91 Rider ID', 'Rider Name', 'Contact', 'Source Name']
           .map(escapeCsv)
           .join(',')
       )
       for (const r of filteredRawRows) {
         lines.push(
-          [r.kind, r.status, r.reason, r.date, r.city, r.client, r.clientRaw, r.vehicle, r.riderId, r.ev91RiderId, r.riderName, r.contact]
+          [r.kind, r.status, r.reason, r.date, r.city, r.client, r.clientRaw, r.vehicle, r.riderId, r.ev91RiderId, r.riderName, r.contact, r.sourceName]
             .map(escapeCsv)
             .join(',')
         )
@@ -942,12 +951,13 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                     <th>Delivered</th>
                     <th>Type1</th>
                     <th>Source</th>
+                    <th>Source Name</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleRawRows.length === 0 ? (
                     <tr>
-                      <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
+                      <td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
                         No {rawKind === 'EV' ? 'EV order' : 'IC'} rows for this filter
                       </td>
                     </tr>
@@ -963,6 +973,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                         <td>{r.delivered}</td>
                         <td>{r.type1}</td>
                         <td>{r.source}</td>
+                        <td>{r.sourceName || '—'}</td>
                       </tr>
                     ))
                   )}
@@ -984,12 +995,13 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                     <th>EV91 Rider ID</th>
                     <th>Rider Name</th>
                     <th>Contact</th>
+                    <th>Source Name</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleRawRows.length === 0 ? (
                     <tr>
-                      <td colSpan={12} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
+                      <td colSpan={13} style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
                         No {rawKind} rows for this filter
                       </td>
                     </tr>
@@ -1008,6 +1020,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], loading: rider
                         <td>{r.ev91RiderId || '—'}</td>
                         <td>{r.riderName || '—'}</td>
                         <td>{r.contact || '—'}</td>
+                        <td>{r.sourceName || '—'}</td>
                       </tr>
                     ))
                   )}

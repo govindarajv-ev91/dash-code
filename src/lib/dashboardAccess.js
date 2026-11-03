@@ -7,6 +7,11 @@ export const dashboardAccess = {
     if (error || typeof data !== 'boolean') throw new Error('Login settings are unavailable. Contact your administrator.')
     return data
   },
+  async getLoginLogoEnabled() {
+    const { data, error } = await supabase.rpc('dashboard_login_logo_enabled')
+    if (error || typeof data !== 'boolean') return false
+    return data
+  },
   async getProfile(userId) {
     const { data, error } = await supabase.from('dashboard_users')
       .select('id,email,display_name,role').eq('id', userId).maybeSingle()
@@ -21,6 +26,15 @@ export const dashboardAccess = {
       throw new Error('The sign-in setting could not be saved. Please try again.')
     }
     if (typeof data !== 'boolean') throw new Error('The sign-in setting could not be confirmed. Please try again.')
+    return data
+  },
+  async setLoginLogoEnabled(enabled) {
+    const { data, error } = await supabase.rpc('set_dashboard_login_logo_enabled', { p_enabled: enabled })
+    if (error) {
+      if (error.code === '42501') throw new Error('Only administrators can change the logo setting.')
+      throw new Error('The logo setting could not be saved. Please try again.')
+    }
+    if (typeof data !== 'boolean') throw new Error('The logo setting could not be confirmed. Please try again.')
     return data
   },
   async adminAction(body) {

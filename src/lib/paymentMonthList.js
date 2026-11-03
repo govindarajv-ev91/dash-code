@@ -42,7 +42,7 @@ export function mergeMonthLists(...lists) {
 export function isStatementTimeout(error) {
   return (
     error?.code === '57014' ||
-    /statement timeout|canceling statement/i.test(error?.message || '')
+    /statement timeout|canceling statement|timed out acquiring connection|acquiring connection from connection pool/i.test(error?.message || '')
   )
 }
 

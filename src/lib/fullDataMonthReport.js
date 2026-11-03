@@ -358,6 +358,198 @@ function isD1ZeroOrderClient(clientName) {
   return false
 }
 
+export function buildSourceWiseFlLast10Counts(orderRows = [], onboardingRows = [], kycRows = [], endDateKey = '') {
+  const firstText = (...values) => {
+    for (const value of values) {
+      const text = String(value ?? '').trim()
+      if (text && !['-', '—', 'N/A', 'NA', 'null', 'unknown'].includes(text.toLowerCase())) return text
+    }
+    return ''
+  }
+  const endKey = endDateKey && /^\d{4}-\d{2}-\d{2}/.test(endDateKey)
+    ? endDateKey.slice(0, 10)
+    : format(new Date(), 'yyyy-MM-dd')
+  const endDate = startOfDay(parseISO(endKey))
+  if (Number.isNaN(endDate.getTime())) return { byClient: new Map(), bySource: new Map() }
+  const startKey = format(subDays(endDate, 9), 'yyyy-MM-dd')
+  const sourceIndex = buildOnboardingSourceLookupIndex(onboardingRows)
+  const byClient = new Map()
+  const bySource = new Map()
+  const firstPositiveByRider = new Map()
+  const riderFirstRows = new Map()
+  const rawRowsByRider = new Map()
+  const onboardingByAlias = new Map()
+  const onboardingByPhone = new Map()
+
+  const normalizePhone = (value) => {
+    const digits = String(value ?? '').replace(/\D/g, '')
+    return digits.length >= 10 ? digits.slice(-10) : digits
+  }
+
+  for (const onboardingRow of onboardingRows || []) {
+    const phone = normalizePhone(
+      onboardingRow.rider_mobile_number || onboardingRow.mobile || onboardingRow.phone
+    )
+    if (phone) onboardingByPhone.set(phone, onboardingRow)
+    for (const value of [
+      onboardingRow.rider_id_details, onboardingRow.rider_id, onboardingRow.worker_code,
+      onboardingRow.client_rider_id, onboardingRow.merge,
+    ]) {
+      if (!value) continue
+      for (const alias of riderIdLookupKeys(value)) onboardingByAlias.set(alias, onboardingRow)
+    }
+  }
+
+  const addFlRider = (
+    riderKey,
+    ids,
+    phone,
+    fallbackCity,
+    fallbackClient,
+    fallbackSource = '',
+    { flDate = '', basis = '', riderName = '', delivered = 0 } = {}
+  ) => {
+    if (!riderKey && !ids.length && !phone) return
+    let onboardingRow = null
+    if (phone) onboardingRow = onboardingByPhone.get(normalizePhone(phone)) || null
+    if (!onboardingRow) {
+      for (const id of ids) {
+        for (const alias of riderIdLookupKeys(id)) {
+          onboardingRow = onboardingByAlias.get(alias)
+          if (onboardingRow) break
+        }
+        if (onboardingRow) break
+      }
+    }
+    const source = canonicalSourceName(
+      lookupOnboardingSource(sourceIndex, { riderIds: ids, phone }) ||
+      fallbackSource ||
+      onboardingRow?.source_name ||
+      'Unknown'
+    ) || 'Unknown'
+    const city = normalizeSummaryCity(
+      fallbackCity || onboardingRow?.city || onboardingRow?.city_name || onboardingRow?.hub_name
+    )
+    const client = normalizeSummaryClient(
+      fallbackClient || onboardingRow?.client || onboardingRow?.client_name
+    )
+    const clientKey = `${sourceNameGroupKey(source)}\t${sourceNameGroupKey(city)}\t${sourceNameGroupKey(client)}`
+    const sourceKey = `${sourceNameGroupKey(source)}\t${sourceNameGroupKey(city)}`
+    const key = riderKey || [...riderIdLookupKeys(ids[0] || '')][0] || ids[0]?.toString().trim().toUpperCase()
+    if (!key) return
+    if (!byClient.has(clientKey)) byClient.set(clientKey, new Set())
+    if (!bySource.has(sourceKey)) bySource.set(sourceKey, new Set())
+    byClient.get(clientKey).add(key)
+    bySource.get(sourceKey).add(key)
+    const previousRaw = rawRowsByRider.get(key)
+    if (!previousRaw || (flDate && flDate < previousRaw['FL Date'])) {
+      rawRowsByRider.set(key, {
+        'Rider ID': firstText(...ids) || key,
+        'Rider Name': firstText(riderName, onboardingRow?.rider_name),
+        Mobile: phone ? normalizePhone(phone) : '',
+        Source: source,
+        City: normalizeSummaryCity(city),
+        Client: normalizeSummaryClient(client),
+        'FL Date': flDate,
+        'FL Basis': basis,
+        'Delivered Orders': Number(delivered) || 0,
+      })
+    }
+  }
+
+  for (const row of orderRows || []) {
+    const dateKey = toMetricDateKey(row.date_record)
+    const delivered = Number(row.delivered) || 0
+    const worker = firstText(row.worker_code, row.rider_id)
+    if (!dateKey || delivered <= 0 || !worker) continue
+
+    const riderAliases = [...riderIdLookupKeys(worker)]
+    const riderKey = riderAliases[0] || worker.trim().toUpperCase()
+    const previous = firstPositiveByRider.get(riderKey)
+    if (!previous || dateKey < previous) {
+      firstPositiveByRider.set(riderKey, dateKey)
+      riderFirstRows.set(riderKey, row)
+    }
+  }
+
+  for (const [riderKey, firstDate] of firstPositiveByRider) {
+    if (firstDate < startKey || firstDate > endKey) continue
+    const row = riderFirstRows.get(riderKey)
+    if (!row) continue
+
+    const ids = [
+      row.worker_code, row.rider_id, row.worker_id,
+      row.rider_mobile_number, row.mobile, row.phone, row.mob_number,
+    ].filter(Boolean)
+    const phone = firstText(row.rider_mobile_number, row.mobile, row.phone, row.mob_number)
+    addFlRider(
+      riderKey, ids, phone, row.city || row.city_name || row.hub_name,
+      row.client || row.client_name, row.source_name || row.source || row.rider_source,
+      {
+        flDate: firstDate,
+        basis: 'First Positive Order',
+        riderName: row.worker_name || row.rider_name || '',
+        delivered: Number(row.delivered) || 0,
+      }
+    )
+  }
+
+  for (const row of kycRows || []) {
+    const dateKey = rowDateKey(row, 'created_at') ||
+      rowDateKey(row, 'updated_at') ||
+      rowDateKey(row, 'kyc_date') ||
+      rowDateKey(row, 'fl_date') ||
+      rowDateKey(row, 'timestamp')
+    if (!dateKey || dateKey < startKey || dateKey > endKey) continue
+
+    const ids = [
+      row.rider_id, row.worker_code, row.rider_id_details, row.client_rider_id,
+      row.merge, row.rider_mobile_number, row.mobile, row.phone, row.mob_number,
+    ].filter(Boolean)
+    const phone = firstText(row.rider_mobile_number, row.mobile, row.phone, row.mob_number)
+    const riderKey = ids.map((id) => [...riderIdLookupKeys(id)][0]).find(Boolean) ||
+      normalizePhone(phone) ||
+      ''
+    const hasHistoricalPositiveOrder = [...new Set(ids.flatMap((id) => [...riderIdLookupKeys(id)]))]
+      .some((alias) => firstPositiveByRider.has(alias))
+    if (hasHistoricalPositiveOrder) continue
+    addFlRider(
+      riderKey, ids, phone, row.city || row.city_name || row.rider_location,
+      row.client || row.client_name, row.source_name || row.source || row.rider_source,
+      {
+        flDate: dateKey,
+        basis: 'KYC / Login',
+        riderName: row.rider_name || row.worker_name || '',
+      }
+    )
+  }
+
+  return {
+    byClient,
+    bySource,
+    rawRows: [...rawRowsByRider.values()].sort((a, b) =>
+      String(a['FL Date']).localeCompare(String(b['FL Date'])) ||
+      String(a.Source).localeCompare(String(b.Source)) ||
+      String(a['Rider ID']).localeCompare(String(b['Rider ID']))
+    ),
+    startDate: startKey,
+    endDate: endKey,
+  }
+}
+
+export function attachSourceWiseFlLast10Counts(rows = [], counts, byClient = false) {
+  return (rows || []).map((row) => {
+    const source = sourceNameGroupKey(row.Source)
+    const city = sourceNameGroupKey(row.City)
+    const client = sourceNameGroupKey(row.Client)
+    const key = byClient
+      ? `${source}\t${city}\t${client}`
+      : `${source}\t${city}`
+    const riders = (byClient ? counts?.byClient : counts?.bySource)?.get(key)
+    return { ...row, 'FL Count (first order, last 10 days)': riders?.size || 0 }
+  })
+}
+
 /** Source Wise: 4 calendar days immediately before end date (e.g. Sep 01 → Aug 28–31). */
 export function sourceActiveWindowDateKeys(endDateKey) {
   const endDate = startOfDay(parseISO(endDateKey))

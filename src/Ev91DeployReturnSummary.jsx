@@ -33,12 +33,15 @@ import {
   compareEv91SummaryClients,
   getCitiesFromEv91Rows,
   mergeEv91SummaryWithTargets,
+  normalizeEv91ReasonKey,
   SUMMARY_METRICS,
   splitSummaryClients,
   weekKeyToEv91SummaryDateRange,
 } from './lib/ev91DeployReturnSummary'
 import { isHiddenSummaryClient } from './lib/clientSummaryClients'
 import { buildOnboardingSourceLookupIndex } from './lib/onboardingSourceLookup'
+import { fetchSourceMaster } from './lib/sourceMasterDb'
+import { buildSourceMasterEmailIndex } from './lib/sourceMaster'
 import {
   buildWeekOptions,
   dateToWeekKey,
@@ -121,6 +124,8 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
   const [rows, setRows] = useState([])
   const [vehicleRows, setVehicleRows] = useState([])
   const [rtdError, setRtdError] = useState('')
+  const [sourceMasterRows, setSourceMasterRows] = useState([])
+  const [sourceMasterError, setSourceMasterError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [allTargets, setAllTargets] = useState({})
@@ -140,16 +145,22 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
     setLoading(true)
     setError('')
     setRtdError('')
+    setSourceMasterError('')
     return Promise.all([
       fetchEv91OverallStatusAll({ force }),
       fetchAllEv91Vehicles({ force }).then((data) => ({ data })).catch((err) => {
         setRtdError(`Could not load RTD from EV91 Vehicles: ${err?.message || 'Vehicle inventory unavailable'}`)
         return { data: [] }
       }),
+      fetchSourceMaster({ includeInactive: true }).catch((err) => {
+        setSourceMasterError(`Could not load Source List email mappings: ${err?.message || 'Source List unavailable'}`)
+        return []
+      }),
     ])
-      .then(([overall, inventory]) => {
+      .then(([overall, inventory, sources]) => {
         setRows(overall.data || [])
         setVehicleRows(inventory.data || [])
+        setSourceMasterRows(sources)
       })
       .catch((err) => {
         console.warn('EV91 summary load failed:', err)
@@ -243,6 +254,11 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
     [showRawData, onboardingData]
   )
 
+  const sourceMasterEmailIndex = useMemo(
+    () => showRawData ? buildSourceMasterEmailIndex(sourceMasterRows) : null,
+    [showRawData, sourceMasterRows]
+  )
+
   const rawDetails = useMemo(() => {
     if (!showRawData) return { evRows: [], returnRows: [], icRows: [] }
     return buildEv91SummaryRawDetails(rows, firstOrderIndex, {
@@ -251,8 +267,9 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
       endDate: deferredEnd,
       evDeployedSource: deferredEvSource,
       onboardingSourceIndex,
+      sourceMasterEmailIndex,
     })
-  }, [showRawData, rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd, deferredEvSource, onboardingSourceIndex])
+  }, [showRawData, rows, firstOrderIndex, deferredCity, deferredStart, deferredEnd, deferredEvSource, onboardingSourceIndex, sourceMasterEmailIndex])
 
   const weekTargetRows = useMemo(
     () => getTargetsForWeek(allTargets, selectedWeek),
@@ -323,6 +340,17 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
     if (rawClientFilter === 'All') return rawSourceRows
     return rawSourceRows.filter((r) => r.client === rawClientFilter)
   }, [rawSourceRows, rawClientFilter])
+
+  const rawEvReasonCounts = useMemo(() => {
+    if (rawKind !== 'EV' || !isApiEvSource) return null
+    const counts = { newRider: 0, reJoiner: 0 }
+    for (const row of filteredRawRows) {
+      const reason = normalizeEv91ReasonKey(row.reason)
+      if (reason === 'new rider') counts.newRider++
+      else if (reason === 're joiner') counts.reJoiner++
+    }
+    return counts
+  }, [filteredRawRows, rawKind, isApiEvSource])
 
   const RAW_PAGE_SIZE = 300
   const visibleRawRows = useMemo(
@@ -891,6 +919,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
 
       {showRawData && (
         <div className="fdv-summary-preview glass ev91-raw-preview">
+          {sourceMasterError && <p role="alert" className="fdv-summary-preview-note">{sourceMasterError}</p>}
           <div className="fdv-summary-filters" style={{ marginBottom: '0.75rem' }}>
             <div className="fdv-summary-filter">
               <label>Type</label>
@@ -935,6 +964,10 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
               : ''}{' '}
             {rawKind} row(s) for the same city/date filters as the summary
             {filteredRawRows.length > RAW_PAGE_SIZE ? ' (first 300 — export CSV for full list)' : ''}.
+            {rawEvReasonCounts && <span className="ev91-raw-reason-counts">
+              {' '}NEW_RIDER: <strong>{rawEvReasonCounts.newRider.toLocaleString()}</strong>
+              {' · '}RE_JOINER: <strong>{rawEvReasonCounts.reJoiner.toLocaleString()}</strong>
+            </span>}
           </p>
 
           <div className="fdv-summary-preview-scroll">

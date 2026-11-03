@@ -6,7 +6,8 @@ export async function fetchSourceMaster({ includeInactive = false } = {}) {
   // Continue to an empty page even when the server caps responses below 1000.
   while (true) {
     let query = supabase.from('source_master')
-      .select('id,city,source_name,is_active')
+      // Keep existing source lists readable before the contact-fields migration is applied.
+      .select('*')
       .order('id', { ascending: true }).limit(1000)
     if (!includeInactive) query = query.eq('is_active', true)
     if (cursor !== null) query = query.gt('id', cursor)
@@ -21,6 +22,7 @@ export async function fetchSourceMaster({ includeInactive = false } = {}) {
 }
 
 export function sourceMasterError(error) {
+  if (['42703', 'PGRST204'].includes(error?.code) && /email_id|phone_number/i.test(error.message || '')) return 'Run sql/add_source_master_email.sql in Supabase SQL Editor to enable Mail ID and phone number, then refresh and retry.'
   if (error?.code === '23505') return 'This source already exists in this city. Edit or reactivate the existing entry.'
   if (error?.code === 'PGRST116') return 'No source was changed. Refresh the list and retry. If the source still exists, run sql/fix_source_master_permissions.sql in Supabase to repair source-management permissions.'
   if (error?.code === '42501') {
@@ -34,20 +36,23 @@ export function sourceMasterError(error) {
   return error?.message || 'Unable to save source changes. Please try again.'
 }
 
-export async function saveSourceMaster({ id, city, source_name, is_active = true }) {
+export async function saveSourceMaster({ id, city, source_name, email_id = '', phone_number = '', is_active = true }) {
   const cleanCity = String(city || '').trim().replace(/\s+/g, ' ')
   // Store the seeded spelling for city aliases to keep duplicate checks useful.
   const aliases = { bengaluru: 'Bangalore', bangalore: 'Bangalore', mysuru: 'Mysore', mysore: 'Mysore' }
   const values = {
     city: aliases[cleanCity.toLowerCase()] || cleanCity,
     source_name: String(source_name || '').trim().replace(/\s+/g, ' '),
+    email_id: String(email_id || '').trim(),
+    phone_number: String(phone_number || '').trim(),
     is_active: is_active === true,
   }
   if (!values.city || !values.source_name) throw new Error('City and source name are required.')
+  if (values.email_id && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email_id)) throw new Error('Enter a valid Mail ID or leave it blank.')
   const query = id == null
     ? supabase.from('source_master').insert(values)
     : supabase.from('source_master').update(values).eq('id', id)
-  const { data, error } = await query.select('id,city,source_name,is_active').single()
+  const { data, error } = await query.select('id,city,source_name,email_id,phone_number,is_active').single()
   if (error) throw error
   return data
 }

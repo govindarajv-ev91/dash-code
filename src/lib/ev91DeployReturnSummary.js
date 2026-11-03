@@ -11,6 +11,7 @@ import { SUMMARY_METRICS } from './fleetMasterSheet'
 import { normalizeTargetEvType, weekKeyToDateRange } from './fleetClientTargets'
 import { rowDateKey } from './ev91MisApi'
 import { isMissingSourceName, lookupOnboardingSource } from './onboardingSourceLookup'
+import { lookupSourceMasterNameByEmail } from './sourceMaster'
 
 export { SUMMARY_METRICS, splitSummaryClients }
 
@@ -330,7 +331,7 @@ export function buildEvDeployedByClient(
 export function buildEv91SummaryRawDetails(
   overallRows = [],
   riderDataOrIndex = [],
-  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'api', onboardingSourceIndex } = {}
+  { city = 'All', startDate = '', endDate = '', evDeployedSource = 'api', onboardingSourceIndex, sourceMasterEmailIndex } = {}
 ) {
   const summary = buildEv91ClientWiseSummary(overallRows, riderDataOrIndex, {
     city,
@@ -340,7 +341,12 @@ export function buildEv91SummaryRawDetails(
     evDeployedSource,
     onboardingSourceIndex,
   })
-  return summary.details || { evRows: [], returnRows: [], icRows: [] }
+  const details = summary.details || { evRows: [], returnRows: [], icRows: [] }
+  if (!sourceMasterEmailIndex?.size) return details
+  return Object.fromEntries(Object.entries(details).map(([kind, rows]) => [kind, rows.map((row) => ({
+    ...row,
+    sourceName: lookupSourceMasterNameByEmail(sourceMasterEmailIndex, row.sourceName, row.city) || row.sourceName,
+  }))]))
 }
 
 /** Normalize EV91 Overall Status `reason` for matching. */

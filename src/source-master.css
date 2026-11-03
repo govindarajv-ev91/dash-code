@@ -19,5 +19,6 @@
 .source-master-message { padding: 1rem; margin-bottom: 1rem; }
 .source-master-error, .source-master-page .source-master-danger { color: #f87171; }
 .source-master-table-wrap td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; min-width: 150px; }
+.source-master-table-wrap .source-master-email { white-space: normal; overflow-wrap: anywhere; min-width: 200px; }
 .source-master-table-wrap { overflow-x: auto; }
 .source-master-page button:disabled { opacity: .5; cursor: not-allowed; }

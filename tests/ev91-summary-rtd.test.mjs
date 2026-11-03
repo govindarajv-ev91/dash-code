@@ -23,6 +23,13 @@ const server = await createServer({
         export const writeFile = (book) => { globalThis.__summaryWorkbook = book }`
     },
     transform(_code, id) {
+    if (id.replaceAll('\\', '/').endsWith('/src/lib/sourceMasterDb.js')) return `
+      export const fetchSourceMaster = async (options) => {
+        globalThis.__summarySourceOptions = options;
+        if (globalThis.__summarySourceError) throw globalThis.__summarySourceError;
+        return globalThis.__summarySources || [];
+      };
+    `
     if (id.replaceAll('\\', '/').endsWith('/src/lib/supabaseClient.js')) return `
       export const supabase = { from() {
         const query = { select() { return query }, order() { return query }, limit() { return query },
@@ -34,11 +41,12 @@ const server = await createServer({
 })
 after(async () => {
   await server.close(); dom.window.close()
-  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'Event', 'localStorage', 'IS_REACT_ACT_ENVIRONMENT', '__summaryXlsxUtils', '__summaryWorkbook']) delete globalThis[key]
+  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'Event', 'localStorage', 'IS_REACT_ACT_ENVIRONMENT', '__summaryXlsxUtils', '__summaryWorkbook', '__summarySources', '__summarySourceOptions', '__summarySourceError']) delete globalThis[key]
 })
 const operational = await server.ssrLoadModule('/src/lib/ev91OperationalSummary.js')
 const summaryLib = await server.ssrLoadModule('/src/lib/ev91DeployReturnSummary.js')
 const sourceLib = await server.ssrLoadModule('/src/lib/onboardingSourceLookup.js')
+const sourceMasterLib = await server.ssrLoadModule('/src/lib/sourceMaster.js')
 const targetsLib = await server.ssrLoadModule('/src/lib/fleetClientTargets.js')
 const { default: Summary } = await server.ssrLoadModule('/src/Ev91DeployReturnSummary.jsx')
 const vehicle = (id, status = 'Available', city = 'Chennai') => ({ id,
@@ -148,6 +156,28 @@ async function waitFor(predicate) {
   assert.ok(predicate(), 'Summary did not finish rendering')
 }
 
+test('raw email sources resolve from Source List across all kinds without changing audit counts', () => {
+  const sourceMasterEmailIndex = sourceMasterLib.buildSourceMasterEmailIndex([
+    { city: 'CHN', email_id: 'team@example.com', source_name: 'Chennai Source', is_active: false },
+    { city: 'Bangalore', email_id: 'team@example.com', source_name: 'Bangalore Source', is_active: true },
+  ])
+  const event = { vehicleNumber: 'TN-1', vehicleStatus: 'Deployed', statusDate: '2026-10-26',
+    cityName: 'Chennai', clientName: 'Blinkit', clientId: 'R1', reason: 'NEW_RIDER', source: ' TEAM@Example.com ' }
+  const events = [event, { ...event, vehicleStatus: 'Returned', reason: 'Exiting' }]
+  const orders = ['EV', 'NON-EV'].map((type1) => ({ worker_code: type1, type1, date_record: '2026-10-26',
+    city: 'Chennai', client: 'Blinkit', source_name: 'team@example.com' }))
+  const options = { startDate: '2026-10-25', endDate: '2026-10-31', sourceMasterEmailIndex }
+  for (const evDeployedSource of ['api', 'api-rejoiners', 'overall', 'order']) {
+    const plain = summaryLib.buildEv91SummaryRawDetails(events, orders, { ...options, evDeployedSource, sourceMasterEmailIndex: null })
+    const details = summaryLib.buildEv91SummaryRawDetails(events, orders, { ...options, evDeployedSource })
+    for (const kind of ['evRows', 'icRows', 'returnRows']) {
+      assert.equal(details[kind].length, plain[kind].length)
+      assert.ok(details[kind].length > 0)
+      assert.ok(details[kind].every((row) => row.sourceName === 'Chennai Source'))
+    }
+  }
+})
+
 test('summary loads every EV91 Vehicles page, filters cities and refreshes RTD without Current Status', async (t) => {
   const container = document.createElement('div')
   document.body.appendChild(container)
@@ -236,6 +266,12 @@ test('combined option updates the summary, audit rows, summary CSV and all-citie
   await act(async () => button('Raw data').click())
   assert.match(container.querySelector('.ev91-raw-preview').textContent, /RE_JOINER/)
   assert.equal(container.querySelectorAll('.ev91-raw-preview tbody tr').length, 3)
+  const breakdown = () => container.querySelector('.ev91-raw-reason-counts')?.textContent
+  assert.match(breakdown(), /NEW_RIDER: 1 · RE_JOINER: 2/)
+  const rawClientSelect = container.querySelectorAll('.ev91-raw-preview select')[1]
+  await act(async () => { rawClientSelect.value = 'Zepto'; rawClientSelect.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.match(breakdown(), /NEW_RIDER: 0 · RE_JOINER: 1/)
+  await act(async () => { rawClientSelect.value = 'All'; rawClientSelect.dispatchEvent(new Event('change', { bubbles: true })) })
   await act(async () => button('Export raw CSV').click())
   assert.match(await csvBlobs.at(-1).text(), /"RE_JOINER"/)
   await act(async () => button('Export Summary').click())
@@ -254,16 +290,28 @@ test('combined option updates the summary, audit rows, summary CSV and all-citie
   await act(async () => { citySelect.value = 'Chennai'; citySelect.dispatchEvent(new Event('change', { bubbles: true })) })
   assert.equal(total('Ev Deployed'), '2')
   assert.equal(container.querySelectorAll('.ev91-raw-preview tbody tr').length, 2)
+  assert.match(breakdown(), /NEW_RIDER: 1 · RE_JOINER: 1/)
   await act(async () => container.querySelector('input[value="api"]').click())
   assert.equal(total('Ev Deployed'), '1')
   assert.equal(container.querySelectorAll('.ev91-raw-preview tbody tr').length, 1)
+  assert.match(breakdown(), /NEW_RIDER: 1 · RE_JOINER: 0/)
+  const rawTypeSelect = container.querySelector('.ev91-raw-preview select')
+  await act(async () => { rawTypeSelect.value = 'Return'; rawTypeSelect.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.equal(breakdown(), undefined)
 })
 
-test('raw tables and CSV include source names for API EV, Return, IC and order EV, and update with onboarding data', async (t) => {
+test('raw tables and CSV resolve onboarding email sources from Source List for EV, Return, IC and order EV', async (t) => {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
   t.after(async () => { await act(async () => root.unmount()); container.remove() })
+  globalThis.__summarySources = [
+    { city: 'Chennai', email_id: 'api@example.com', source_name: 'API Listed Team', is_active: true },
+    { city: 'Chennai', email_id: 'return@example.com', source_name: 'Return Listed Team', is_active: false },
+    { city: 'Chennai', email_id: 'ic@example.com', source_name: 'Referral, "Team"', is_active: true },
+    { city: 'Chennai', email_id: 'order@example.com', source_name: 'Order Listed Team', is_active: true },
+  ]
+  t.after(() => { delete globalThis.__summarySources; delete globalThis.__summarySourceError })
   const range = summaryLib.weekKeyToEv91SummaryDateRange(targetsLib.dateToWeekKey(new Date()))
   t.mock.method(globalThis, 'fetch', async (url) => String(url).includes('/api/ev91-vehicles')
     ? Response.json({ success: true, vehicles: [], pagination: { totalPages: 1, hasNextPage: false } })
@@ -273,10 +321,10 @@ test('raw tables and CSV include source names for API EV, Return, IC and order E
   t.mock.method(URL, 'revokeObjectURL', () => {})
   t.mock.method(dom.window.HTMLAnchorElement.prototype, 'click', () => {})
   const props = { onboardingData: [
-    { rider_id: 'R1', source_name: 'API Team' },
-    { rider_id: 'R4', source_name: 'Return Team' },
-    { worker_code: 'IC1', source_name: 'Referral, "Team"' },
-    { worker_code: 'EV1', source_name: 'Order Team' },
+    { rider_id: 'R1', source_name: ' API@Example.com ' },
+    { rider_id: 'R4', source_name: 'return@example.com' },
+    { worker_code: 'IC1', source_name: 'ic@example.com' },
+    { worker_code: 'EV1', source_name: 'order@example.com' },
   ], riderData: [
     { worker_code: 'IC1', date_record: range.startDate, city: 'Chennai', client: 'Blinkit', type1: 'NON-EV', _data_source: 'order_upload' },
     { worker_code: 'EV1', date_record: range.startDate, city: 'Chennai', client: 'Blinkit', type1: 'EV', _data_source: 'order_upload' },
@@ -299,17 +347,27 @@ test('raw tables and CSV include source names for API EV, Return, IC and order E
     select.value = kind
     select.dispatchEvent(new Event('change', { bubbles: true }))
   })
-  await checkSource('Api Team')
+  assert.deepEqual(globalThis.__summarySourceOptions, { includeInactive: true })
+  await checkSource('API Listed Team')
+  globalThis.__summarySources = globalThis.__summarySources.map((row) => ({ ...row,
+    source_name: row.email_id === 'api@example.com' ? 'Renamed Listed Team' : row.source_name,
+  }))
+  await act(async () => button('Refresh EV91').click())
+  await checkSource('Renamed Listed Team')
   await act(async () => root.render(createElement(Summary, { ...props,
     onboardingData: [{ rider_id: 'R1', source_name: 'Updated Team' }, ...props.onboardingData.slice(1)],
   })))
   await checkSource('Updated Team')
   await selectKind('Return')
-  await checkSource('Return Team')
+  await checkSource('Return Listed Team')
   await selectKind('IC')
-  await checkSource('Referral, "team"')
+  await checkSource('Referral, "Team"')
   assert.match(preview().textContent, /order_upload/)
   await selectKind('EV')
   await act(async () => container.querySelector('input[value="order"]').click())
-  await checkSource('Order Team')
+  await checkSource('Order Listed Team')
+  globalThis.__summarySourceError = new Error('Source List unavailable')
+  await act(async () => button('Refresh EV91').click())
+  await checkSource('Order@example.com')
+  assert.match(preview().querySelector('[role="alert"]').textContent, /Source List unavailable/)
 })

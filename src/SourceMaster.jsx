@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader, Pencil, Plus, RefreshCw, Search, Trash2, Users } from 'lucide-react'
+import { Download, Loader, Pencil, Plus, RefreshCw, Search, Trash2, Users } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { deleteSourceMaster, fetchSourceMaster, saveSourceMaster, setSourceMasterActive, sourceMasterError } from './lib/sourceMasterDb'
 import { normalizeSummaryCity } from './lib/citySummaryAliases'
 import './source-master.css'
 
-const EMPTY_FORM = { city: '', source_name: '', is_active: true }
+const EMPTY_FORM = { city: '', source_name: '', email_id: '', phone_number: '', is_active: true }
 const CITIES = ['Bangalore', 'Chennai', 'Delhi', 'Hyderabad', 'Mumbai', 'Mysore']
 
 export default function SourceMaster({ canManage = false }) {
@@ -45,7 +46,7 @@ export default function SourceMaster({ canManage = false }) {
   const visible = useMemo(() => rows.filter((row) =>
     (city === 'All' || normalizeSummaryCity(row.city) === city) &&
     (status === 'All' || row.is_active === (status === 'Active')) &&
-    `${row.city} ${row.source_name}`.toLowerCase().includes(search.trim().toLowerCase())
+    `${row.city} ${row.source_name} ${row.email_id || ''} ${row.phone_number || ''}`.toLowerCase().includes(search.trim().toLowerCase())
   ).sort((a, b) => a.city.localeCompare(b.city) || a.source_name.localeCompare(b.source_name)), [rows, city, status, search])
 
   async function change(action, message) {
@@ -69,7 +70,7 @@ export default function SourceMaster({ canManage = false }) {
   }
 
   function edit(row) {
-    setForm({ id: row.id, city: row.city, source_name: row.source_name, is_active: row.is_active })
+    setForm({ id: row.id, city: row.city, source_name: row.source_name, email_id: row.email_id || '', phone_number: row.phone_number || '', is_active: row.is_active })
     setNotice(''); setError('')
     formRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
     formRef.current?.querySelector('input')?.focus()
@@ -83,13 +84,38 @@ export default function SourceMaster({ canManage = false }) {
     }, active ? 'Source activated.' : 'Source deactivated.')
   }
 
+  function exportSources() {
+    try {
+      const sheet = XLSX.utils.json_to_sheet(visible.map((row) => ({
+        City: row.city,
+        'Source name': row.source_name,
+        'Mail ID': row.email_id || '',
+        'Phone number': row.phone_number || '',
+        Status: row.is_active ? 'Active' : 'Inactive',
+      })))
+      sheet['!cols'] = [{ wch: 18 }, { wch: 38 }, { wch: 38 }, { wch: 22 }, { wch: 12 }]
+      sheet['!autofilter'] = { ref: sheet['!ref'] }
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, sheet, 'Source List')
+      XLSX.writeFile(workbook, 'source_list.xlsx')
+    } catch (failure) {
+      setError(failure?.message || 'Unable to export sources. Please try again.')
+    }
+  }
+
   return <div className="page-container source-master-page">
     <header className="header">
       <div><h1><Users size={24} /> Source List</h1>
-        <p>Manage city-wise sources shown in Source Wise Data and EV91 Client Period Trend. Exports include all sources.</p></div>
-      <button type="button" className="fsr-export-btn" disabled={loading || busy} onClick={load}>
-        {loading ? <Loader size={16} className="spin" /> : <RefreshCw size={16} />} Refresh
-      </button>
+        <p>Manage city-wise sources shown in Source Wise Data and EV91 Client Period Trend. Export Excel follows the filters below.</p></div>
+      <div className="source-master-actions">
+        <button type="button" className="fsr-export-btn" disabled={loading || busy || !visible.length} onClick={exportSources}
+          title="Export sources matching the current search, city and status filters">
+          <Download size={16} /> Export Excel
+        </button>
+        <button type="button" className="fsr-export-btn" disabled={loading || busy} onClick={load}>
+          {loading ? <Loader size={16} className="spin" /> : <RefreshCw size={16} />} Refresh
+        </button>
+      </div>
     </header>
     {error && <div className="glass source-master-message source-master-error" role="alert">{error}</div>}
     {notice && <div className="glass source-master-message" role="status">{notice}</div>}
@@ -101,6 +127,10 @@ export default function SourceMaster({ canManage = false }) {
       <datalist id="source-master-city-list">{[...new Set([...CITIES, ...rows.map((row) => row.city)])].sort().map((value) => <option key={value} value={value} />)}</datalist>
       <label className="source-master-name">Source name<input required value={form.source_name} disabled={busy}
         onChange={(event) => setForm({ ...form, source_name: event.target.value })} placeholder="Enter source name" /></label>
+      <label className="source-master-name">Mail ID<input type="email" value={form.email_id} disabled={busy}
+        onChange={(event) => setForm({ ...form, email_id: event.target.value })} placeholder="Enter email address (optional)" /></label>
+      <label className="source-master-name">Phone number<input type="tel" value={form.phone_number} disabled={busy}
+        onChange={(event) => setForm({ ...form, phone_number: event.target.value })} placeholder="Enter phone number (optional)" /></label>
       <div className="source-master-status-field"><span>Source status</span>
         <div className="source-master-status-buttons" role="group" aria-label="Source form status">
           {[true, false].map((active) => <button key={String(active)} type="button" aria-pressed={form.is_active === active}
@@ -114,7 +144,7 @@ export default function SourceMaster({ canManage = false }) {
       {form.id != null && <button type="button" className="fsr-export-btn" disabled={busy} onClick={() => setForm(EMPTY_FORM)}>Cancel edit</button>}
     </form>}
     <div className="glass source-master-filters">
-      <label className="source-master-name"><span><Search size={14} /> Search sources</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Source name or city" /></label>
+      <label className="source-master-name"><span><Search size={14} /> Search sources</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Source name, city, mail ID or phone" /></label>
       <label>Filter city<select value={city} onChange={(event) => setCity(event.target.value)}><option value="All">All cities</option>{cities.map((value) => <option key={value}>{value}</option>)}</select></label>
       <div className="source-master-status-field"><span>Filter status</span>
         <div className="source-master-status-buttons" role="group" aria-label="Filter sources by status">
@@ -136,9 +166,9 @@ export default function SourceMaster({ canManage = false }) {
       </div>
     </div>}
     <div className="glass source-master-table-wrap" aria-busy={loading}>
-      <table className="data-table"><thead><tr><th>City</th><th>Source name</th><th>Status</th>{canManage && <th>Actions</th>}</tr></thead>
-        <tbody>{loading ? <tr><td colSpan={canManage ? 4 : 3}>Loading sources...</td></tr> : visible.length ? visible.map((row) =>
-          <tr key={row.id}><td>{row.city}</td><td>{row.source_name}</td><td>
+      <table className="data-table"><thead><tr><th>City</th><th>Source name</th><th>Mail ID</th><th>Phone number</th><th>Status</th>{canManage && <th>Actions</th>}</tr></thead>
+        <tbody>{loading ? <tr><td colSpan={canManage ? 6 : 5}>Loading sources...</td></tr> : visible.length ? visible.map((row) =>
+          <tr key={row.id}><td>{row.city}</td><td>{row.source_name}</td><td className="source-master-email">{row.email_id || '—'}</td><td>{row.phone_number || '—'}</td><td>
             <div className="source-master-status-buttons" role="group" aria-label={`Status for ${row.source_name}`}>
               {[true, false].map((active) => <button type="button" key={String(active)}
                 aria-pressed={row.is_active === active} data-status={active ? 'active' : 'inactive'}
@@ -151,7 +181,7 @@ export default function SourceMaster({ canManage = false }) {
               <button type="button" className="fsr-export-btn" disabled={busy} onClick={() => edit(row)}><Pencil size={14} /> Edit</button>
               <button type="button" className="fsr-export-btn source-master-danger" disabled={busy} onClick={() => setPendingRemove(row)}><Trash2 size={14} /> Remove</button>
             </div></td>}
-          </tr>) : <tr><td colSpan={canManage ? 4 : 3}>{rows.length ? 'No sources match these filters.' : 'No sources yet.'}</td></tr>}</tbody>
+          </tr>) : <tr><td colSpan={canManage ? 6 : 5}>{rows.length ? 'No sources match these filters.' : 'No sources yet.'}</td></tr>}</tbody>
       </table>
     </div>
   </div>

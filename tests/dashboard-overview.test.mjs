@@ -14,7 +14,7 @@ const { createRoot } = await import('react-dom/client')
 
 const server = await createServer({
   cacheDir: 'node_modules/.vite-tests/dashboard-overview',
-  server: { middlewareMode: true, hmr: false },
+  server: { middlewareMode: true, hmr: false, ws: false },
   optimizeDeps: { noDiscovery: true, include: [] },
   plugins: [{
     name: 'overview-test-environment', enforce: 'pre',
@@ -28,7 +28,7 @@ const server = await createServer({
         export const currentStatusDistributionSeries = () => [];
         export const countOverallDeployReturnInRange = () => ({ deployed: 0, returned: 0 });
         export const fetchEv91OverallStatusAll = async () => ({ data: [] });
-        export const fetchRiderPaymentsForRevenue = async () => [];
+        export const fetchRiderPaymentsForRevenue = async (options) => globalThis.__overviewPaymentLoad ? globalThis.__overviewPaymentLoad(options) : [];
         export const fetchIotDataInRange = async () => [];
       `
       // jsdom has no layout. Supply dimensions while using the real Recharts
@@ -413,5 +413,47 @@ test('attrition hover content shows counts with bracketed percentages and their 
   assert.match(container.textContent, /Non-EV: 0 \(N\/A\)/)
   await act(async () => root.render(createElement(RiderAttritionTooltip, { active: false, payload, label: 'Sep 2026' })))
   assert.equal(container.textContent, '')
+  assert.deepEqual(errors, [])
+})
+
+test('overview payment progress, complete month charts and targeted retry preserve the last good data', async (t) => {
+  let resolve, reject, progress
+  let pending = new Promise((yes, no) => { resolve = yes; reject = no })
+  const requests = []
+  globalThis.__overviewPaymentLoad = (options) => {
+    requests.push(options.force)
+    progress = options.onProgress
+    return pending
+  }
+  t.after(() => { delete globalThis.__overviewPaymentLoad })
+  t.mock.method(console, 'warn', () => {})
+  const { container, root, errors } = mount(t)
+  await act(async () => root.render(createElement(Dashboard, { loading: false })))
+  const section = [...container.querySelectorAll('h3')].find((node) => node.textContent === 'Rider Payment Data').closest('.glass')
+  const refresh = () => [...section.querySelectorAll('button')].find((node) => /payment data/.test(node.textContent))
+  assert.equal(refresh().disabled, true)
+  await act(async () => progress({ loadedRows: 1000, total: 2002 }))
+  assert.match(section.querySelector('[role="status"]').textContent, /1,000 of 2,002/)
+  const rows = [
+    { id: 'apr', month: 'Apr-2026', rider_id: '001', client_name: 'Client A', gross_payout: 100, orders: 10 },
+    { id: 'oct', month: 'Oct-2026', rider_id: '002', client_name: 'Client A', gross_payout: 600, orders: 60 },
+  ]
+  await act(async () => resolve(rows))
+  await waitFor(() => section.querySelectorAll('.recharts-bar-rectangle').length > 0)
+  assert.match(section.textContent, /Oct-26/)
+  assert.match(section.textContent, /Total ₹700/)
+  const bars = section.querySelectorAll('.recharts-bar-rectangle').length
+  pending = new Promise((yes, no) => { resolve = yes; reject = no })
+  await act(async () => refresh().click())
+  assert.equal(section.querySelectorAll('.recharts-bar-rectangle').length, bars)
+  await act(async () => reject(new Error('Payment request timed out')))
+  assert.match(section.querySelector('[role="alert"]').textContent, /last successfully loaded payment data/)
+  assert.equal(section.querySelectorAll('.recharts-bar-rectangle').length, bars)
+  assert.match(refresh().textContent, /Retry payment data/)
+  pending = Promise.resolve([...rows, { ...rows[1], id: 'nov', month: 'Nov-2026', gross_payout: 300 }])
+  await act(async () => refresh().click())
+  await waitFor(() => section.textContent.includes('Nov-26'))
+  assert.equal(section.querySelector('[role="alert"]'), null)
+  assert.deepEqual(requests, [false, true, true])
   assert.deepEqual(errors, [])
 })

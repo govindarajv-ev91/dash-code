@@ -12,6 +12,8 @@ import {
 
 export const MANUAL_COLLATION_TABLE = 'manual_collation_data'
 export const MANUAL_COLLATION_COLUMNS = '*'
+export const MANUAL_COLLATION_SD_RENT_COLUMNS =
+  'id,rider_id,rider_name,city,month,purpose,deposits,withdrawals,vehicle_number'
 
 export function isMissingManualCollationTable(error) {
   const msg = (error?.message || '').toLowerCase()
@@ -71,40 +73,77 @@ export async function saveManualCollationRows(rows, { replace = true } = {}) {
 
   const chunkSize = 500
   let inserted = 0
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, i + chunkSize)
-    const { error } = await supabase.from(MANUAL_COLLATION_TABLE).insert(chunk)
-    if (error) throw error
-    inserted += chunk.length
+  try {
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      const chunk = rows.slice(i, i + chunkSize)
+      const { error } = await supabase.from(MANUAL_COLLATION_TABLE).insert(chunk)
+      if (error) throw error
+      inserted += chunk.length
+    }
+  } finally {
+    // Earlier batches can have succeeded even if a later batch fails.
+    clearManualCollationCache()
   }
-  clearManualCollationCache()
   return inserted
 }
 
 let cachedCollation = null
 let collationInflight = null
+let collationCacheGeneration = 0
+let cachedSdRentCollation = null
+let sdRentCollationInflight = null
 
 export async function fetchAllManualCollation({ force = false } = {}) {
   if (!force && cachedCollation) return cachedCollation
   if (!force && collationInflight) return collationInflight
 
-  collationInflight = (async () => {
+  const generation = collationCacheGeneration
+  const request = (async () => {
     const probe = await supabase.from(MANUAL_COLLATION_TABLE).select('id').limit(1)
     if (probe.error) throw probe.error
     const { data } = await fetchAllData(MANUAL_COLLATION_TABLE, MANUAL_COLLATION_COLUMNS, 'id', {
       useKeyset: true,
       maxRetries: 10,
+      throwOnError: true,
+      untilEmpty: true,
     })
-    cachedCollation = data || []
-    return cachedCollation
+    const rows = data || []
+    if (generation === collationCacheGeneration && collationInflight === request) cachedCollation = rows
+    return rows
   })().finally(() => {
-    collationInflight = null
+    if (collationInflight === request) collationInflight = null
   })
 
-  return collationInflight
+  collationInflight = request
+  return request
+}
+
+/** Complete manual history with only the fields needed by SD & EV Rent. */
+export async function fetchManualCollationForSdRent({ force = false } = {}) {
+  if (sdRentCollationInflight) return sdRentCollationInflight
+  if (!force && cachedSdRentCollation) return cachedSdRentCollation
+  if (!force && cachedCollation) return cachedCollation
+
+  const generation = collationCacheGeneration
+  const request = (async () => {
+    const { data } = await fetchAllData(MANUAL_COLLATION_TABLE, MANUAL_COLLATION_SD_RENT_COLUMNS, 'id', {
+      pageSize: 1000, useKeyset: true, untilEmpty: true, throwOnError: true,
+      maxRetries: 2, requestTimeoutMs: 15000,
+    })
+    const rows = data || []
+    if (generation === collationCacheGeneration && sdRentCollationInflight === request) cachedSdRentCollation = rows
+    return rows
+  })().finally(() => {
+    if (sdRentCollationInflight === request) sdRentCollationInflight = null
+  })
+  sdRentCollationInflight = request
+  return request
 }
 
 export function clearManualCollationCache() {
+  collationCacheGeneration++
+  cachedSdRentCollation = null
+  sdRentCollationInflight = null
   cachedCollation = null
   collationInflight = null
 }

@@ -12,6 +12,39 @@ import { mergeFleetSources } from './fleetDataLoad'
 const DEFAULT_PAGE_SIZE = 1000
 const WIDE_PAGE_SIZE = 250
 
+export async function readSupabasePage(query, table, timeoutMs, signal) {
+  if (signal?.aborted) throw signal.reason
+  if (!(timeoutMs > 0) && !signal) return query
+
+  const controller = new AbortController()
+  let timer
+  let onAbort
+  const timeout = new Promise((_, reject) => {
+    onAbort = () => {
+      reject(signal.reason)
+      controller.abort(signal.reason)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (timeoutMs > 0) timer = setTimeout(() => {
+      const error = Object.assign(
+        new Error(`Loading ${table} timed out after ${Math.ceil(timeoutMs / 1000)} seconds. Please retry.`),
+        { name: 'TimeoutError', code: 'REQUEST_TIMEOUT' },
+      )
+      reject(error)
+      controller.abort(error)
+    }, timeoutMs)
+  })
+
+  try {
+    // The query promise includes reading/parsing the response body. Racing it
+    // also bounds SDK/auth stalls that do not respond to fetch cancellation.
+    return await Promise.race([Promise.resolve(query.abortSignal(controller.signal)), timeout])
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+  }
+}
+
 const DEPLOY_RETURN_STATUS_FILTER = [
   'vehicle_status.eq.Deployee',
   'vehicle_status.eq.Return',
@@ -36,12 +69,13 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
 
   const allData = []
   let consecutiveErrors = 0
-  let cursor = null
+  let cursor = options.initialCursor ?? null
   let offset = 0
   let pageNum = 0
 
   while (true) {
     try {
+      if (options.signal?.aborted) throw options.signal.reason
       let query = supabase.from(table).select(columns)
       if (options.queryModifier) query = options.queryModifier(query)
       if (orderBy) query = query.order(orderBy, { ascending: true })
@@ -54,7 +88,7 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
         query = query.range(offset, offset + pageSize - 1)
       }
 
-      const { data, error } = await query
+      const { data, error } = await readSupabasePage(query, table, options.requestTimeoutMs, options.signal)
       if (error) throw error
 
       if (!data?.length) break
@@ -78,10 +112,13 @@ export async function fetchAllData(table, columns = '*', orderBy = 'id', options
         offset += data.length
       }
 
+      options.onPage?.(data)
+
       // Some Supabase projects cap responses below the requested page size.
       // Complete scans must advance the cursor until the server returns no rows.
       if (!options.untilEmpty && data.length < pageSize) break
     } catch (err) {
+      if (options.signal?.aborted) throw options.signal.reason
       if (err?.code === 'INVALID_CURSOR') throw err
       const isTimeout = err?.code === '57014'
       const isBadColumn = err?.code === '42703' || err?.message?.includes('does not exist')

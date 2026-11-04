@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, startTransition } from 'react'
 import { Shield, Zap, Search, Download, Landmark, Receipt, Wallet, RefreshCw } from 'lucide-react'
-import * as XLSX from 'xlsx'
-import { fetchAllRiderPayments } from './lib/riderPaymentDb'
-import { fetchAllManualCollation } from './lib/manualCollationDb'
+import { fetchRiderPaymentsForSdRent } from './lib/riderPaymentDb'
+import { fetchManualCollationForSdRent } from './lib/manualCollationDb'
 import { fetchEv91SdWallet, getCachedEv91SdWallet } from './lib/ev91SdWalletApi'
 import { fetchFleetSdRows } from './lib/fleetSdFetch'
 import { fetchEv91OverallStatusAll } from './lib/ev91EvLookup'
 import { fetchEv91ClientMappingAll, buildEv91PublicRiderIndex } from './lib/ev91OnboardingPending'
+import { clearEv91AllCache } from './lib/ev91MisApi'
 import {
   buildSdPaymentReport,
   buildEvRentMonthReport,
@@ -19,6 +19,43 @@ import {
 
 const ROWS_PER_PAGE = 100
 const EMPTY_SD_ROWS = []
+const EMPTY_SD_REPORT = { rows: EMPTY_SD_ROWS, paymentWeekLabels: [] }
+
+const loadOverallRows = (options) => fetchEv91OverallStatusAll(options).then((result) => result.data)
+const loadMappingRows = ({ force } = {}) => {
+  if (force) clearEv91AllCache('client-mapping-history')
+  return fetchEv91ClientMappingAll().then((result) => result.data)
+}
+
+// Each complete source becomes usable independently. Failed scans never become
+// empty financial datasets, and retries preserve the last successful result.
+function useReportSource(load, label) {
+  const [result, setResult] = useState({ rows: EMPTY_SD_ROWS, loaded: false, loading: true, error: '' })
+  const [revision, setRevision] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    let lastProgressAt = -Infinity
+    load({ force: revision > 0, onProgress: (progress) => {
+      // Several ranges finish pages together; avoid rebuilding the visible
+      // table for every network batch while still showing live progress.
+      const now = performance.now()
+      if (cancelled || (!progress.complete && now - lastProgressAt < 250)) return
+      lastProgressAt = now
+      setResult((previous) => ({ ...previous, progress }))
+    } }).then((rows) => {
+      if (!cancelled) startTransition(() => setResult({ rows: rows || EMPTY_SD_ROWS, loaded: true, loading: false, error: '' }))
+    }).catch((error) => {
+      if (!cancelled) setResult((previous) => ({ ...previous, loading: false,
+        error: error?.message || `Unable to load ${label.toLowerCase()}.` }))
+    })
+    return () => { cancelled = true }
+  }, [load, label, revision])
+  const reload = () => {
+    setResult((previous) => ({ ...previous, loading: true, error: '' }))
+    setRevision((value) => value + 1)
+  }
+  return { ...result, label, reload }
+}
 
 function SdPaidScreenshotLink({ url }) {
   if (!isViewableFleetUrl(url)) return '—'
@@ -46,61 +83,31 @@ function StatCard({ label, value, icon: Icon, color = 'var(--accent-blue)', icon
 
 export default function SdPaymentViewer() {
   const [activeTab, setActiveTab] = useState('sd')
-  const [paymentRows, setPaymentRows] = useState([])
-  const [collationRows, setCollationRows] = useState([])
+  const payments = useReportSource(fetchRiderPaymentsForSdRent, 'Payment history')
+  const collation = useReportSource(fetchManualCollationForSdRent, 'Manual collections')
+  const overall = useReportSource(loadOverallRows, 'Vehicle history')
+  const mapping = useReportSource(loadMappingRows, 'Rider mapping')
+  const fleet = useReportSource(fetchFleetSdRows, 'Fleet SD')
+  const paymentRows = payments.rows
+  const collationRows = collation.rows
+  const overallRows = overall.rows
+  const mappingRows = mapping.rows
+  const fleetRows = fleet.rows
+  const sources = [payments, collation, overall, mapping, fleet]
+  const sourcesLoading = sources.some((source) => source.loading)
+  const sourcesLoaded = sources.every((source) => source.loaded)
   const [walletResult, setWalletResult] = useState(() => ({ wallet: getCachedEv91SdWallet(), loading: true, error: '' }))
   const [walletReload, setWalletReload] = useState(0)
   const ev91SdRows = walletResult.wallet?.rows || EMPTY_SD_ROWS
   const walletAvailable = Boolean(walletResult.wallet)
-  const [overallRows, setOverallRows] = useState([])
-  const [mappingRows, setMappingRows] = useState([])
-  const [fleetRows, setFleetRows] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [fleetLoading, setFleetLoading] = useState(true)
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
-  const deferredFleet = useDeferredValue(fleetRows)
   const [selectedCity, setSelectedCity] = useState('')
   const [selectedMonth, setSelectedMonth] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [linkSearchByPhone, setLinkSearchByPhone] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-
-    Promise.all([
-      fetchAllRiderPayments().catch(() => []),
-      fetchAllManualCollation().catch(() => []),
-      fetchEv91OverallStatusAll().then((r) => r?.data || []).catch(() => []),
-      fetchEv91ClientMappingAll().then((r) => r?.data || []).catch(() => []),
-    ])
-      .then(([payments, collation, overall, mapping]) => {
-        if (cancelled) return
-        setPaymentRows(payments)
-        setCollationRows(collation)
-        setOverallRows(overall)
-        setMappingRows(mapping)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    fetchFleetSdRows()
-      .then((rows) => {
-        if (!cancelled) startTransition(() => setFleetRows(rows || []))
-      })
-      .catch(() => {
-        if (!cancelled) startTransition(() => setFleetRows([]))
-      })
-      .finally(() => {
-        if (!cancelled) setFleetLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -119,15 +126,15 @@ export default function SdPaymentViewer() {
   )
 
   const sdReport = useMemo(
-    () => buildSdPaymentReport(paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex, overallRows),
-    [paymentRows, collationRows, deferredFleet, ev91SdRows, publicRiderIndex, overallRows]
+    () => activeTab === 'sd' ? buildSdPaymentReport(paymentRows, collationRows, fleetRows, ev91SdRows, publicRiderIndex, overallRows) : EMPTY_SD_REPORT,
+    [activeTab, paymentRows, collationRows, fleetRows, ev91SdRows, publicRiderIndex, overallRows]
   )
   const sdRows = sdReport.rows
   const paymentWeekLabels = sdReport.paymentWeekLabels
 
   const evRentRows = useMemo(
-    () => buildEvRentMonthReport(paymentRows, collationRows, deferredFleet, overallRows, publicRiderIndex),
-    [paymentRows, collationRows, deferredFleet, overallRows, publicRiderIndex]
+    () => activeTab === 'evrent' ? buildEvRentMonthReport(paymentRows, collationRows, fleetRows, overallRows, publicRiderIndex) : EMPTY_SD_ROWS,
+    [activeTab, paymentRows, collationRows, fleetRows, overallRows, publicRiderIndex]
   )
 
   const cityOptions = useMemo(() => {
@@ -141,8 +148,8 @@ export default function SdPaymentViewer() {
   )
 
   const sdPhoneLinkIndex = useMemo(
-    () => buildSdPhoneLinkIndex(deferredFleet, sdRows),
-    [deferredFleet, sdRows]
+    () => activeTab === 'sd' && linkSearchByPhone ? buildSdPhoneLinkIndex(fleetRows, sdRows) : null,
+    [activeTab, linkSearchByPhone, fleetRows, sdRows]
   )
 
   const filteredSd = useMemo(
@@ -167,6 +174,9 @@ export default function SdPaymentViewer() {
   )
 
   const activeRows = activeTab === 'sd' ? filteredSd : filteredEvRent
+  const reportComplete = sourcesLoaded && (activeTab !== 'sd' || walletAvailable)
+  const exportReady = reportComplete && !sourcesLoading && !sources.some((source) => source.error)
+    && (activeTab !== 'sd' || (!walletResult.loading && !walletResult.error))
 
   const sdTotals = useMemo(() => {
     let fleetPaid = 0
@@ -210,79 +220,81 @@ export default function SdPaymentViewer() {
   }, [filteredEvRent])
 
   const totalPages = Math.max(1, Math.ceil(activeRows.length / ROWS_PER_PAGE))
+  const visiblePage = Math.min(currentPage, totalPages)
   const paginated = useMemo(() => {
-    const start = (currentPage - 1) * ROWS_PER_PAGE
+    const start = (visiblePage - 1) * ROWS_PER_PAGE
     return activeRows.slice(start, start + ROWS_PER_PAGE)
-  }, [activeRows, currentPage])
+  }, [activeRows, visiblePage])
 
   useEffect(() => {
     setCurrentPage(1)
   }, [activeTab, search, selectedCity, selectedMonth, linkSearchByPhone])
 
-  const exportExcel = useCallback(() => {
-    if (activeTab === 'sd' && !walletAvailable) return
-    if (activeTab === 'sd') {
-      const week1Label = paymentWeekLabels[0] || 'Recent 1'
-      const week2Label = paymentWeekLabels[1] || 'Recent 2'
-      const rows = filteredSd.map((r) => ({
-        'Rider ID (First Deployee)': r.riderId,
-        'Rider Name': r.riderName,
-        Phone: r.riderPhone,
-        'First Deployee Date': r.firstDeployeeDate,
-        City: r.city,
-        Client: r.client,
-        Vehicle: r.vehicleNumber,
-        'Vehicle Deployed At': r.vehicleDeployedAt,
-        'Fleet SD Total': r.fleetSdTotal,
-        'Fleet SD Paid': r.fleetSdPaid,
-        'Fleet SD Pending': r.fleetSdPending,
-        'EV91 PublicRiderId': r.ev91PublicRiderId,
-        'EV91 ClientRiderId': r.ev91ClientRiderId,
-        'EV91 TotalSd': r.ev91TotalSd,
-        'EV91 PendingSd': r.ev91PendingSd,
-        'EV91 FixedDeposit': r.ev91FixedDeposit,
-        'SD UTR': r.sdUtr,
-        'SD Paid Screenshot (Last Deployee)': r.sdPaidScreenshot,
-        [`Payment SD Ded. (${r.paymentSdLastWeekLabel || week1Label})`]: r.paymentSdLastWeek,
-        [`Payment SD Ded. (${r.paymentSdPrevWeekLabel || week2Label})`]: r.paymentSdPrevWeek,
-        'Payment SD Ded. (2 wks)': r.paymentSdDeduction2Wks,
-        'Payment SD Ded. (Total)': r.paymentSdDeductionTotal,
-        'Manual SD Paid': r.manualSdPaid,
-        Gap: r.sdGap,
-      }))
-      const ws = XLSX.utils.json_to_sheet(rows)
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, 'SD Payment')
-      XLSX.writeFile(wb, `SD_Payment_${new Date().toISOString().slice(0, 10)}.xlsx`)
-    } else {
-      const rows = filteredEvRent.map((r) => ({
-        Type: r.rowType === 'manual' ? 'Manual' : r.type || 'Payment',
-        Month: r.month,
-        Week: r.week,
-        'Rider ID': r.riderId,
-        'Rider Name': r.riderName,
-        City: r.city,
-        Client: r.client,
-        Vehicle: r.vehicleNumber,
-        Purpose: r.purpose,
-        'Payment EV Rent': r.paymentEvRent,
-        'Manual EV Rent': r.manualEvRent,
-        'Total EV Rent': r.totalEvRent,
-      }))
-      const ws = XLSX.utils.json_to_sheet(rows)
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, 'EV Rent')
-      XLSX.writeFile(wb, `EV_Rent_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  const exportExcel = useCallback(async () => {
+    if (!exportReady || exporting) return
+    setExporting(true)
+    setExportError('')
+    try {
+      const XLSX = await import('xlsx')
+      if (activeTab === 'sd') {
+        const week1Label = paymentWeekLabels[0] || 'Recent 1'
+        const week2Label = paymentWeekLabels[1] || 'Recent 2'
+        const rows = filteredSd.map((r) => ({
+          'Rider ID (First Deployee)': r.riderId,
+          'Rider Name': r.riderName,
+          Phone: r.riderPhone,
+          'First Deployee Date': r.firstDeployeeDate,
+          City: r.city,
+          Client: r.client,
+          Vehicle: r.vehicleNumber,
+          'Vehicle Deployed At': r.vehicleDeployedAt,
+          'Fleet SD Total': r.fleetSdTotal,
+          'Fleet SD Paid': r.fleetSdPaid,
+          'Fleet SD Pending': r.fleetSdPending,
+          'EV91 PublicRiderId': r.ev91PublicRiderId,
+          'EV91 ClientRiderId': r.ev91ClientRiderId,
+          'EV91 TotalSd': r.ev91TotalSd,
+          'EV91 PendingSd': r.ev91PendingSd,
+          'EV91 FixedDeposit': r.ev91FixedDeposit,
+          'SD UTR': r.sdUtr,
+          'SD Paid Screenshot (Last Deployee)': r.sdPaidScreenshot,
+          [`Payment SD Ded. (${r.paymentSdLastWeekLabel || week1Label})`]: r.paymentSdLastWeek,
+          [`Payment SD Ded. (${r.paymentSdPrevWeekLabel || week2Label})`]: r.paymentSdPrevWeek,
+          'Payment SD Ded. (2 wks)': r.paymentSdDeduction2Wks,
+          'Payment SD Ded. (Total)': r.paymentSdDeductionTotal,
+          'Manual SD Paid': r.manualSdPaid,
+          Gap: r.sdGap,
+        }))
+        const ws = XLSX.utils.json_to_sheet(rows)
+        const wb = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(wb, ws, 'SD Payment')
+        XLSX.writeFile(wb, `SD_Payment_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      } else {
+        const rows = filteredEvRent.map((r) => ({
+          Type: r.rowType === 'manual' ? 'Manual' : r.type || 'Payment',
+          Month: r.month,
+          Week: r.week,
+          'Rider ID': r.riderId,
+          'Rider Name': r.riderName,
+          City: r.city,
+          Client: r.client,
+          Vehicle: r.vehicleNumber,
+          Purpose: r.purpose,
+          'Payment EV Rent': r.paymentEvRent,
+          'Manual EV Rent': r.manualEvRent,
+          'Total EV Rent': r.totalEvRent,
+        }))
+        const ws = XLSX.utils.json_to_sheet(rows)
+        const wb = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(wb, ws, 'EV Rent')
+        XLSX.writeFile(wb, `EV_Rent_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      }
+    } catch (error) {
+      setExportError(error?.message || 'Unable to export the report. Please retry.')
+    } finally {
+      setExporting(false)
     }
-  }, [activeTab, filteredSd, filteredEvRent, paymentWeekLabels, walletAvailable])
-
-  if (loading) {
-    return (
-      <div className="loading-container">
-        <span className="loader" />
-      </div>
-    )
-  }
+  }, [activeTab, filteredSd, filteredEvRent, paymentWeekLabels, exportReady, exporting])
 
   return (
     <div className="dashboard-container">
@@ -298,17 +310,22 @@ export default function SdPaymentViewer() {
             </div>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <button type="button" className="glass-btn" disabled={sourcesLoading} onClick={() => sources.forEach((source) => source.reload())}>
+            <RefreshCw size={16} className={sourcesLoading ? 'ev91-spin' : undefined} /> Refresh report
+          </button>
           {activeTab === 'sd' && <button type="button" className="glass-btn" disabled={walletResult.loading} onClick={() => {
             setWalletResult((previous) => ({ ...previous, loading: true, error: '' }))
             setWalletReload((value) => value + 1)
           }}><RefreshCw size={16} className={walletResult.loading ? 'ev91-spin' : undefined} /> Refresh EV91 SD</button>}
-          <button type="button" onClick={exportExcel} disabled={activeTab === 'sd' && !walletAvailable} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
+          <button type="button" onClick={exportExcel} disabled={!exportReady || exporting} title={exportReady ? 'Export complete report' : 'Wait for every report source to load successfully before exporting'} className="glass" style={{ padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#fff', cursor: 'pointer' }}>
             <Download size={18} />
             Export Excel
           </button>
           </div>
         </div>
       </header>
+      {exporting && <p role="status">Preparing Excel export...</p>}
+      {exportError && <p role="alert">Excel export failed: {exportError}</p>}
 
       <div className="fdv-tab-bar glass" style={{ marginBottom: '1rem' }}>
         <button
@@ -329,6 +346,24 @@ export default function SdPaymentViewer() {
         </button>
       </div>
 
+      <div aria-label="Report data status" className="glass" style={{ padding: '0.75rem', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', fontSize: '0.85rem' }}>
+          {sources.map((source) => <span key={source.label}>
+            {source.label}: {source.loading ? (source.progress?.loadedRows
+              ? `${source.progress.loadedRows.toLocaleString('en-IN')} records loaded...`
+              : source.loaded ? 'Refreshing...' : 'Loading...') : source.error ? 'Unavailable' : `${source.rows.length.toLocaleString('en-IN')} records`}
+          </span>)}
+        </div>
+        {!exportReady && <p role="status" style={{ marginBottom: 0 }}>
+          Report incomplete or refreshing. Available records appear below; totals and Excel export become available after all required sources load successfully.
+        </p>}
+        {sources.map((source) => source.error && <div key={source.label} role="alert" style={{ marginTop: '0.5rem' }}>
+          {source.label}: {source.error} {source.loaded ? 'Showing the last successfully loaded records.' : 'These records are unavailable.'}
+          {source.progress?.loadedRows > 0 && !source.progress.complete && ` ${source.progress.loadedRows.toLocaleString('en-IN')} records are ready; retry continues from the saved batches.`}
+          {' '}<button type="button" className="glass-btn" onClick={source.reload}>Retry {source.label.toLowerCase()}</button>
+        </div>)}
+      </div>
+
       {activeTab === 'sd' && <div style={{ marginBottom: '1rem' }}>
         {walletResult.loading && <p role="status">{walletAvailable ? 'Refreshing EV91 SD wallet…' : 'Loading EV91 SD wallet…'}</p>}
         {walletResult.wallet && <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>
@@ -341,29 +376,24 @@ export default function SdPaymentViewer() {
 
       {activeTab === 'sd' ? (
         <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
-          <StatCard label="EV Riders" value={sdTotals.riders.toLocaleString('en-IN')} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
-          <StatCard label="Fleet SD Paid" value={formatInr(sdTotals.fleetPaid)} icon={Landmark} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
-          <StatCard label="EV91 Total SD" value={walletAvailable ? formatInr(sdTotals.ev91Total) : '—'} icon={Shield} color="#c4b5fd" iconBg="rgba(196, 181, 253, 0.12)" />
-          <StatCard label="EV91 Pending SD" value={walletAvailable ? formatInr(sdTotals.ev91Pending) : '—'} icon={Wallet} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
-          <StatCard label="Payment SD Ded. (2 wks)" value={formatInr(sdTotals.paymentDed2Wks)} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
-          <StatCard label="Payment SD Ded. (Total)" value={formatInr(sdTotals.paymentDedTotal)} icon={Receipt} color="#f97316" iconBg="rgba(249, 115, 22, 0.12)" />
-          <StatCard label="Manual SD Paid" value={formatInr(sdTotals.manualPaid)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
+          <StatCard label="EV Riders" value={exportReady ? sdTotals.riders.toLocaleString('en-IN') : '—'} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
+          <StatCard label="Fleet SD Paid" value={exportReady ? formatInr(sdTotals.fleetPaid) : '—'} icon={Landmark} color="#4ade80" iconBg="rgba(74, 222, 128, 0.12)" />
+          <StatCard label="EV91 Total SD" value={exportReady ? formatInr(sdTotals.ev91Total) : '—'} icon={Shield} color="#c4b5fd" iconBg="rgba(196, 181, 253, 0.12)" />
+          <StatCard label="EV91 Pending SD" value={exportReady ? formatInr(sdTotals.ev91Pending) : '—'} icon={Wallet} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
+          <StatCard label="Payment SD Ded. (2 wks)" value={exportReady ? formatInr(sdTotals.paymentDed2Wks) : '—'} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
+          <StatCard label="Payment SD Ded. (Total)" value={exportReady ? formatInr(sdTotals.paymentDedTotal) : '—'} icon={Receipt} color="#f97316" iconBg="rgba(249, 115, 22, 0.12)" />
+          <StatCard label="Manual SD Paid" value={exportReady ? formatInr(sdTotals.manualPaid) : '—'} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
         </section>
       ) : (
         <section className="rp-stats-grid" style={{ marginBottom: '1rem' }}>
-          <StatCard label="Rows" value={evTotals.rows.toLocaleString('en-IN')} icon={Zap} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
-          <StatCard label="Unique Riders" value={evTotals.riders.toLocaleString('en-IN')} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
-          <StatCard label="Payment EV Rent" value={formatInr(evTotals.paymentRent)} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
-          <StatCard label="Manual EV Rent" value={formatInr(evTotals.manualRent)} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
+          <StatCard label="Rows" value={exportReady ? evTotals.rows.toLocaleString('en-IN') : '—'} icon={Zap} color="#fbbf24" iconBg="rgba(251, 191, 36, 0.12)" />
+          <StatCard label="Unique Riders" value={exportReady ? evTotals.riders.toLocaleString('en-IN') : '—'} icon={Shield} color="#a78bfa" iconBg="rgba(167, 139, 250, 0.12)" />
+          <StatCard label="Payment EV Rent" value={exportReady ? formatInr(evTotals.paymentRent) : '—'} icon={Receipt} color="#fb923c" iconBg="rgba(251, 146, 60, 0.12)" />
+          <StatCard label="Manual EV Rent" value={exportReady ? formatInr(evTotals.manualRent) : '—'} icon={Wallet} color="var(--accent-blue)" iconBg="rgba(56, 189, 248, 0.12)" />
         </section>
       )}
 
       <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-        {fleetLoading && (
-          <div className="status-badge" style={{ padding: '0.5rem 0.9rem', color: 'var(--text-dim)' }}>
-            Loading fleet SD…
-          </div>
-        )}
         {search !== deferredSearch && (
           <div className="status-badge" style={{ padding: '0.5rem 0.9rem', color: 'var(--text-dim)' }}>
             Filtering…
@@ -490,28 +520,28 @@ export default function SdPaymentViewer() {
                       <td>{r.client}</td>
                       <td>{r.vehicleNumber || '—'}</td>
                       <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{r.vehicleDeployedAt || '—'}</td>
-                      <td>{formatInr(r.fleetSdTotal)}</td>
-                      <td style={{ color: '#4ade80', fontWeight: 600 }}>{formatInr(r.fleetSdPaid)}</td>
-                      <td>{formatInr(r.fleetSdPending)}</td>
+                      <td>{fleet.loaded ? formatInr(r.fleetSdTotal) : '—'}</td>
+                      <td style={{ color: '#4ade80', fontWeight: 600 }}>{fleet.loaded ? formatInr(r.fleetSdPaid) : '—'}</td>
+                      <td>{fleet.loaded ? formatInr(r.fleetSdPending) : '—'}</td>
                       <td style={{ fontSize: '0.75rem' }}>{r.ev91PublicRiderId || '—'}</td>
-                      <td style={{ color: '#c4b5fd', fontWeight: 600 }}>{walletAvailable ? formatInr(r.ev91TotalSd) : '—'}</td>
-                      <td style={{ color: '#fbbf24', fontWeight: 600 }}>{walletAvailable ? formatInr(r.ev91PendingSd) : '—'}</td>
-                      <td>{walletAvailable ? formatInr(r.ev91FixedDeposit) : '—'}</td>
+                      <td style={{ color: '#c4b5fd', fontWeight: 600 }}>{reportComplete ? formatInr(r.ev91TotalSd) : '—'}</td>
+                      <td style={{ color: '#fbbf24', fontWeight: 600 }}>{reportComplete ? formatInr(r.ev91PendingSd) : '—'}</td>
+                      <td>{reportComplete ? formatInr(r.ev91FixedDeposit) : '—'}</td>
                       <td style={{ color: '#fdba74', fontWeight: 600 }}>
-                        <div>{formatInr(r.paymentSdLastWeek)}</div>
+                        <div>{payments.loaded ? formatInr(r.paymentSdLastWeek) : '—'}</div>
                         {r.paymentSdLastWeekLabel ? (
                           <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', fontWeight: 400 }}>{r.paymentSdLastWeekLabel}</div>
                         ) : null}
                       </td>
                       <td style={{ color: '#fed7aa', fontWeight: 600 }}>
-                        <div>{formatInr(r.paymentSdPrevWeek)}</div>
+                        <div>{payments.loaded ? formatInr(r.paymentSdPrevWeek) : '—'}</div>
                         {r.paymentSdPrevWeekLabel ? (
                           <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', fontWeight: 400 }}>{r.paymentSdPrevWeekLabel}</div>
                         ) : null}
                       </td>
-                      <td style={{ color: '#fb923c', fontWeight: 600 }}>{formatInr(r.paymentSdDeduction2Wks)}</td>
-                      <td style={{ color: '#f97316', fontWeight: 700 }}>{formatInr(r.paymentSdDeductionTotal)}</td>
-                      <td style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{formatInr(r.manualSdPaid)}</td>
+                      <td style={{ color: '#fb923c', fontWeight: 600 }}>{payments.loaded ? formatInr(r.paymentSdDeduction2Wks) : '—'}</td>
+                      <td style={{ color: '#f97316', fontWeight: 700 }}>{payments.loaded ? formatInr(r.paymentSdDeductionTotal) : '—'}</td>
+                      <td style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{collation.loaded ? formatInr(r.manualSdPaid) : '—'}</td>
                       <td style={{ fontSize: '0.75rem' }}>{r.sdUtr || '—'}</td>
                       <td><SdPaidScreenshotLink url={r.sdPaidScreenshot} /></td>
                     </tr>
@@ -544,8 +574,10 @@ export default function SdPaymentViewer() {
                 )
               ) : (
                 <tr>
-                  <td colSpan={activeTab === 'sd' ? 17 : 10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
-                    No data. Upload payment & manual collation on Payment Upload page first.
+                  <td colSpan={activeTab === 'sd' ? 21 : 10} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-dim)' }}>
+                    {!reportComplete ? 'Waiting for report data. Check the source status above.'
+                      : search || selectedCity || (activeTab === 'evrent' && selectedMonth) ? 'No records match these filters.'
+                        : 'No records found in the loaded report sources.'}
                   </td>
                 </tr>
               )}
@@ -560,9 +592,9 @@ export default function SdPaymentViewer() {
               : ` · ${filteredEvRent.filter((r) => r.rowType === 'payment').length} payment · ${filteredEvRent.filter((r) => r.rowType === 'manual').length} manual`}
           </span>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <button type="button" className="glass-btn" disabled={currentPage <= 1} onClick={() => setCurrentPage((p) => p - 1)}>Prev</button>
-            <span style={{ fontSize: '0.85rem' }}>{currentPage} / {totalPages}</span>
-            <button type="button" className="glass-btn" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((p) => p + 1)}>Next</button>
+            <button type="button" className="glass-btn" disabled={visiblePage <= 1} onClick={() => setCurrentPage(visiblePage - 1)}>Prev</button>
+            <span style={{ fontSize: '0.85rem' }}>{visiblePage} / {totalPages}</span>
+            <button type="button" className="glass-btn" disabled={visiblePage >= totalPages} onClick={() => setCurrentPage(visiblePage + 1)}>Next</button>
           </div>
         </div>
       </div>

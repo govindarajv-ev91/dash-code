@@ -1,5 +1,7 @@
 import { supabase } from './supabaseClient'
 import { fetchAllData } from './supabaseFetch'
+import { createSdRentPaymentScan } from './sdRentPaymentFetch'
+import { fetchCompletePaymentRevenue, canUseRawPaymentFallback } from './paymentRevenueFetch'
 import {
   collectMonthsFromRows,
   mergeMonthLists,
@@ -183,6 +185,13 @@ let cachedPaymentsVersion = 0
 const rangedPaymentsCache = new Map()
 const rangedPaymentsInflight = new Map()
 let paymentCacheGeneration = 0
+let cachedSdRentPayments = null
+let sdRentPaymentsInflight = null
+let sdRentPaymentScan = null
+let sdRentPaymentProgress = null
+const sdRentProgressListeners = new Set()
+export const RIDER_PAYMENT_SD_RENT_COLUMNS =
+  'id,client_name,type,week,month,rider_id,rider_name,city,sd,ev_rent,vehicle_number,period_start,payment_date'
 /** Only fields used by Client Period Trend; full payment details load on export. */
 export const RIDER_PAYMENT_TREND_COLUMNS =
   'id,client_name,week,month,rider_id,rider_name,city,orders,gross_payout,period_start,period_label,rider_key,source_name'
@@ -274,8 +283,11 @@ async function fetchPaymentPeriodRange(columns, { fromDate, toDate }) {
 /** Slim revenue/overview cache for General Overview. */
 let cachedRevenue = null
 let revenueInflight = null
-const REVENUE_CACHE_VERSION = 4
+const REVENUE_CACHE_VERSION = 5
 let cachedRevenueVersion = 0
+let revenueRawScan = null
+let revenueProgress = null
+const revenueProgressListeners = new Set()
 
 export async function fetchAllRiderPayments({ force = false } = {}) {
   if (
@@ -287,7 +299,8 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
   }
   if (!force && paymentsInflight) return paymentsInflight
 
-  paymentsInflight = (async () => {
+  const generation = paymentCacheGeneration
+  const request = (async () => {
     const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
     if (probe.error) throw probe.error
     const { data } = await fetchAllData(RIDER_PAYMENT_TABLE, RIDER_PAYMENT_COLUMNS, 'id', {
@@ -296,14 +309,51 @@ export async function fetchAllRiderPayments({ force = false } = {}) {
       throwOnError: true,
       untilEmpty: true,
     })
-    cachedPayments = data || []
-    cachedPaymentsVersion = PAYMENT_FETCH_CACHE_VERSION
-    return cachedPayments
+    const rows = data || []
+    if (generation === paymentCacheGeneration && paymentsInflight === request) {
+      cachedPayments = rows
+      cachedPaymentsVersion = PAYMENT_FETCH_CACHE_VERSION
+    }
+    return rows
   })().finally(() => {
-    paymentsInflight = null
+    if (paymentsInflight === request) paymentsInflight = null
   })
 
-  return paymentsInflight
+  paymentsInflight = request
+  return request
+}
+
+/** Complete payment history with only the fields needed by SD & EV Rent. */
+export async function fetchRiderPaymentsForSdRent({ force = false, onProgress } = {}) {
+  if (onProgress) {
+    sdRentProgressListeners.add(onProgress)
+    if (sdRentPaymentProgress) onProgress(sdRentPaymentProgress)
+  }
+  try {
+    // Refreshing while a scan is running must not download the same history twice.
+    if (sdRentPaymentsInflight) return await sdRentPaymentsInflight
+    if (!force && cachedSdRentPayments) return cachedSdRentPayments
+    if (!force && cachedPayments && cachedPaymentsVersion === PAYMENT_FETCH_CACHE_VERSION) return cachedPayments
+
+    const generation = paymentCacheGeneration
+    if (!sdRentPaymentScan || sdRentPaymentScan.complete) sdRentPaymentScan = createSdRentPaymentScan(supabase, RIDER_PAYMENT_SD_RENT_COLUMNS)
+    const scan = sdRentPaymentScan
+    const request = (async () => {
+      const rows = await scan.load((progress) => {
+        if (generation !== paymentCacheGeneration) return
+        sdRentPaymentProgress = progress
+        for (const listener of sdRentProgressListeners) listener(progress)
+      })
+      if (generation === paymentCacheGeneration && sdRentPaymentsInflight === request) cachedSdRentPayments = rows
+      return rows
+    })().finally(() => {
+      if (sdRentPaymentsInflight === request) sdRentPaymentsInflight = null
+    })
+    sdRentPaymentsInflight = request
+    return await request
+  } finally {
+    if (onProgress) sdRentProgressListeners.delete(onProgress)
+  }
 }
 
 export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', force = false, slim = false, monthly = false } = {}) {
@@ -365,12 +415,18 @@ export async function fetchRiderPaymentsForPeriod({ fromDate = '', toDate = '', 
 
 export function clearRiderPaymentCache() {
   paymentCacheGeneration++
+  cachedSdRentPayments = null
+  sdRentPaymentsInflight = null
+  sdRentPaymentScan = null
+  sdRentPaymentProgress = null
   cachedPayments = null
   paymentsInflight = null
   cachedPaymentsVersion = 0
   cachedRevenue = null
   revenueInflight = null
   cachedRevenueVersion = 0
+  revenueRawScan = null
+  revenueProgress = null
   rangedPaymentsCache.clear()
   rangedPaymentsInflight.clear()
 }
@@ -379,25 +435,36 @@ export function clearRiderPaymentCache() {
 export const RIDER_PAYMENT_REVENUE_COLUMNS =
   'id,month,client_name,rider_id,orders,gross_payout,final_net_payout'
 
-export async function fetchRiderPaymentsForRevenue({ force = false } = {}) {
-  if (!force && cachedRevenue && cachedRevenueVersion === REVENUE_CACHE_VERSION) {
-    return cachedRevenue
+export async function fetchRiderPaymentsForRevenue({ force = false, onProgress } = {}) {
+  if (onProgress) {
+    revenueProgressListeners.add(onProgress)
+    if (revenueProgress) onProgress(revenueProgress)
   }
-  if (!force && revenueInflight) return revenueInflight
-
-  revenueInflight = (async () => {
-    const probe = await supabase.from(RIDER_PAYMENT_TABLE).select('id').limit(1)
-    if (probe.error) throw probe.error
-    if (!probe.data?.length) {
-      cachedRevenue = []
-      cachedRevenueVersion = REVENUE_CACHE_VERSION
-      return cachedRevenue
+  try {
+    if (revenueInflight) return await revenueInflight
+    if (!force && cachedRevenue && cachedRevenueVersion === REVENUE_CACHE_VERSION) return cachedRevenue
+    const generation = paymentCacheGeneration
+    const reportProgress = (progress) => {
+      if (generation !== paymentCacheGeneration) return
+      revenueProgress = progress
+      for (const listener of revenueProgressListeners) listener(progress)
     }
-    const { data: groupedData, error: groupedError } = await supabase.rpc(
-      'rider_payment_revenue_overview',
-    )
-    if (!groupedError && Array.isArray(groupedData)) {
-      cachedRevenue = groupedData.map((row) => ({
+    const request = (async () => {
+      reportProgress({ loadedRows: 0, total: null })
+      let data
+      try {
+        data = await fetchCompletePaymentRevenue(reportProgress)
+      } catch (error) {
+        if (!canUseRawPaymentFallback(error)) throw error
+        // A missing/slow summary must not block Overview. The existing bounded
+        // primary-key loader also covers undated payments and missing month RPCs.
+        const previousScan = generation === paymentCacheGeneration ? revenueRawScan : null
+        const scan = previousScan && !previousScan.complete ? previousScan
+          : createSdRentPaymentScan(supabase, RIDER_PAYMENT_REVENUE_COLUMNS)
+        if (generation === paymentCacheGeneration) revenueRawScan = scan
+        data = await scan.load(reportProgress)
+      }
+      const rows = data.map((row) => ({
         id: row.id ?? `${row.month || ''}-${row.client_name || ''}-${row.rider_id || ''}`,
         month: row.month,
         client_name: row.client_name,
@@ -406,43 +473,19 @@ export async function fetchRiderPaymentsForRevenue({ force = false } = {}) {
         gross_payout: Number(row.gross_payout || 0),
         final_net_payout: Number(row.final_net_payout || 0),
       }))
-      cachedRevenueVersion = REVENUE_CACHE_VERSION
-      return cachedRevenue
-    }
-
-    // Fallback for databases that have not yet installed the overview RPC.
-    // Load month by month so large uploads do not trigger a full-table timeout.
-    const months = await fetchRiderPaymentMonths({ requireComplete: true })
-    const pages = new Array(months.length)
-    let next = 0
-    await Promise.all(Array.from({ length: Math.min(4, months.length) }, async () => {
-      while (next < months.length) {
-        const index = next++
-        const { data, error } = await fetchAllData(
-          RIDER_PAYMENT_TABLE,
-          RIDER_PAYMENT_REVENUE_COLUMNS,
-          'id',
-          {
-            useKeyset: true,
-            throwOnError: true,
-            untilEmpty: true,
-            maxRetries: 3,
-            pageSize: 1000,
-            queryModifier: (query) => query.eq('month', months[index]),
-          },
-        )
-        if (error) throw error
-        pages[index] = data || []
+      if (generation === paymentCacheGeneration && revenueInflight === request) {
+        cachedRevenue = rows
+        cachedRevenueVersion = REVENUE_CACHE_VERSION
       }
-    }))
-    cachedRevenue = pages.flat()
-    cachedRevenueVersion = REVENUE_CACHE_VERSION
-    return cachedRevenue
-  })().finally(() => {
-    revenueInflight = null
-  })
-
-  return revenueInflight
+      return rows
+    })().finally(() => {
+      if (revenueInflight === request) revenueInflight = null
+    })
+    revenueInflight = request
+    return await request
+  } finally {
+    if (onProgress) revenueProgressListeners.delete(onProgress)
+  }
 }
 
 export async function loadRiderPaymentSummary() {

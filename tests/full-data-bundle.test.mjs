@@ -111,12 +111,16 @@ test('production login, Full Data, SD wallet balances, admin settings and IoT up
   function findButton(text) {
     return [...window.document.querySelectorAll('button')].find((node) => node.textContent.trim() === text)
   }
-  async function openIotUpload() {
-    if (!findButton('IoT Data Upload')) {
-      findButton('EV91 DB Data').click()
-      await until(() => findButton('IoT Data Upload'))
+  async function showNavigationItem(folder, label) {
+    await until(() => window.document.querySelector('nav[aria-label="Main navigation"]'))
+    if (!findButton(label)) {
+      findButton(folder).click()
+      await until(() => findButton(label))
     }
-    findButton('IoT Data Upload').click()
+    return findButton(label)
+  }
+  async function openIotUpload() {
+    ;(await showNavigationItem('IoT', 'IoT Data Upload')).click()
   }
   try {
     const entry = window.document.querySelector('script[type="module"]').getAttribute('src')
@@ -130,18 +134,16 @@ test('production login, Full Data, SD wallet balances, admin settings and IoT up
     }
     await new Promise((resolve) => setTimeout(resolve, 0))
     window.document.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
-    let button
-    await until(() => (button = [...window.document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Full Data')))
-    button.click()
+    ;(await showNavigationItem('Supply', 'Full Data')).click()
     await until(() => window.document.querySelector('.full-data-sheet') || window.document.querySelector('[role="alert"]'))
     const alert = window.document.querySelector('[role="alert"]')
     assert.equal(alert, null, alert?.textContent)
     assert.ok(window.document.querySelector('aside'))
     assert.match(window.document.querySelector('.full-data-sheet').textContent, /FleetPro Full Data/)
-    findButton('SD & EV Rent').click()
+    ;(await showNavigationItem('Payment', 'SD & EV Rent')).click()
     await until(() => window.document.querySelector('h1')?.textContent === 'SD & EV Rent')
     await until(() => (window.document.querySelectorAll('tbody tr:first-child td').length > 14 &&
-      !findButton('Refresh EV91 SD')?.disabled) || window.document.querySelector('[role="alert"]'))
+      findButton('Export Excel')?.disabled === false) || window.document.querySelector('[role="alert"]'))
     assert.equal(window.document.querySelector('[role="alert"]'), null,
       window.document.querySelector('[role="alert"]')?.textContent)
     assert.deepEqual([...window.document.querySelectorAll('thead th')].slice(11, 14).map((cell) => cell.textContent),
@@ -157,6 +159,7 @@ test('production login, Full Data, SD wallet balances, admin settings and IoT up
     assert.ok(window.document.querySelector('.full-data-sheet'), 'Ordinary users must unlock before navigating')
     window.document.querySelector('.iot-password-cancel').click()
     await until(() => !window.document.querySelector('.iot-password-dialog'))
+    await showNavigationItem('Reports', 'FL Pending')
     const ev91Items = [...window.document.querySelectorAll('aside button')].map((node) => node.textContent.trim())
     assert.equal(ev91Items[ev91Items.indexOf('Onboarding Pending') + 1], 'FL Pending')
     findButton('FL Pending').click()

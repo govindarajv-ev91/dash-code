@@ -14,7 +14,8 @@ import { parseFleetDate } from './fleetDeployReturnExport.js'
 import { clientLookupKey } from './clientSummaryClients'
 
 export const RENTAL_PENDING_TABLE = 'rental_pending_data'
-export const RENTAL_PENDING_COLUMNS = '*'
+export const RENTAL_PENDING_COLUMNS =
+  'id,month,deployed_date,db_current_status,vehicle_status,current_status,client_name,contact_no,rider_name,ev91_rider_id,rider_id,vehicle_number,city,week_start_date,week_end_date,rent_per_week,source_name,total_rent_amount,pending_amount,manual_payment_collection,total_sd_amount,actual_pending_for_week_after_sd,current_week_orders,inactive_days,remarks'
 
 export function isMissingRentalPendingTable(error) {
   const msg = (error?.message || '').toLowerCase()
@@ -86,19 +87,28 @@ export async function saveRentalPendingRows(rows, { replace = true } = {}) {
 
 let cachedRentalPending = null
 let rentalPendingInflight = null
+let rentalPendingLoadedAt = 0
+const RENTAL_PENDING_CACHE_MS = 5 * 60 * 1000
 
 export async function fetchAllRentalPending({ force = false } = {}) {
-  if (!force && cachedRentalPending) return cachedRentalPending
-  if (!force && rentalPendingInflight) return rentalPendingInflight
+  if (rentalPendingInflight) return rentalPendingInflight
+  if (!force && cachedRentalPending && Date.now() - rentalPendingLoadedAt < RENTAL_PENDING_CACHE_MS) {
+    return cachedRentalPending
+  }
 
   rentalPendingInflight = (async () => {
     const probe = await supabase.from(RENTAL_PENDING_TABLE).select('id').limit(1)
     if (probe.error) throw probe.error
     const { data } = await fetchAllData(RENTAL_PENDING_TABLE, RENTAL_PENDING_COLUMNS, 'id', {
       useKeyset: true,
+      pageSize: 1000,
       maxRetries: 10,
+      queryModifier: (query) => query.or(
+        'db_current_status.ilike.%Deploy%,vehicle_status.ilike.%Deploy%,current_status.ilike.%Deploy%'
+      ),
     })
     cachedRentalPending = data || []
+    rentalPendingLoadedAt = Date.now()
     return cachedRentalPending
   })().finally(() => {
     rentalPendingInflight = null
@@ -110,6 +120,7 @@ export async function fetchAllRentalPending({ force = false } = {}) {
 export function clearRentalPendingCache() {
   cachedRentalPending = null
   rentalPendingInflight = null
+  rentalPendingLoadedAt = 0
 }
 
 export async function loadRentalPendingSummary() {

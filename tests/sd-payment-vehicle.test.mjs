@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
 import { createServer } from 'vite'
 import { JSDOM } from 'jsdom'
 import { act, createElement } from 'react'
@@ -13,6 +13,14 @@ const mapping = [{ ev91RiderId: riderId, clientId, lastUpdated: '2026-10-08' }]
 const ev91Sd = [{ id: 1, public_rider_id: riderId, client_rider_id: clientId, total_sd: 1000 }]
 const payments = [{ id: 1, rider_id: riderId, rider_name: 'Test rider', month: 'Oct-2026', week: '4126', sd: 250, ev_rent: 500 }]
 globalThis.__sdVehicleFixture = { payments, collation: [], fleet: [], overall, mapping, ev91Sd }
+globalThis.__sdVehicleLoad = async (source, options = {}) => {
+  const fixture = globalThis.__sdVehicleFixture
+  ;(fixture.sourceCalls ||= []).push({ source, force: Boolean(options.force) })
+  ;(fixture.progressHandlers ||= {})[source] = options.onProgress
+  if (fixture[`${source}Pending`]) return fixture[`${source}Pending`]
+  if (fixture[`${source}Error`]) throw new Error(`${source} service unavailable`)
+  return fixture[source]
+}
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' })
 for (const key of ['window', 'document', 'HTMLElement', 'Node', 'Event']) globalThis[key] = key === 'window' ? dom.window : dom.window[key]
@@ -33,9 +41,9 @@ const server = await createServer({
     transform(code, id) {
       const path = id.replaceAll('\\', '/')
       if (path.endsWith('/src/lib/supabaseClient.js')) return 'export const supabase = {}'
-      if (path.endsWith('/src/lib/riderPaymentDb.js')) return 'export const fetchAllRiderPayments = async () => globalThis.__sdVehicleFixture.payments'
-      if (path.endsWith('/src/lib/manualCollationDb.js')) return 'export const fetchAllManualCollation = async () => globalThis.__sdVehicleFixture.collation'
-      if (path.endsWith('/src/lib/fleetSdFetch.js')) return 'export const fetchFleetSdRows = async () => globalThis.__sdVehicleFixture.fleet'
+      if (path.endsWith('/src/lib/riderPaymentDb.js')) return 'export const fetchRiderPaymentsForSdRent = (options) => globalThis.__sdVehicleLoad("payments", options)'
+      if (path.endsWith('/src/lib/manualCollationDb.js')) return 'export const fetchManualCollationForSdRent = (options) => globalThis.__sdVehicleLoad("collation", options)'
+      if (path.endsWith('/src/lib/fleetSdFetch.js')) return 'export const fetchFleetSdRows = (options) => globalThis.__sdVehicleLoad("fleet", options)'
       if (path.endsWith('/src/lib/ev91SdDb.js')) return `${code}\nfetchAllEv91Sd = async () => globalThis.__sdVehicleFixture.ev91Sd;`
       if (path.endsWith('/src/lib/ev91SdWalletApi.js')) return `
         export const getCachedEv91SdWallet = () => null;
@@ -47,8 +55,8 @@ const server = await createServer({
           return { rows: fixture.walletRows || fixture.ev91Sd, loadedAt: 1792700000000 };
         };
       `
-      if (path.endsWith('/src/lib/ev91EvLookup.js')) return `${code}\nfetchEv91OverallStatusAll = async () => ({ data: globalThis.__sdVehicleFixture.overall });`
-      if (path.endsWith('/src/lib/ev91OnboardingPending.js')) return `${code}\nfetchEv91ClientMappingAll = async () => ({ data: globalThis.__sdVehicleFixture.mapping });`
+      if (path.endsWith('/src/lib/ev91EvLookup.js')) return `${code}\nfetchEv91OverallStatusAll = async (options) => ({ data: await globalThis.__sdVehicleLoad("overall", options) });`
+      if (path.endsWith('/src/lib/ev91OnboardingPending.js')) return `${code}\nfetchEv91ClientMappingAll = async (options) => ({ data: await globalThis.__sdVehicleLoad("mapping", options) });`
     },
   }],
 })
@@ -56,10 +64,56 @@ const { buildSdPaymentReport, buildEvRentMonthReport, filterSdRows } = await ser
 const { buildEv91PublicRiderIndex } = await server.ssrLoadModule('/src/lib/ev91OnboardingPending.js')
 const { default: Viewer } = await server.ssrLoadModule('/src/SdPaymentViewer.jsx')
 const publicIndex = buildEv91PublicRiderIndex(overall, mapping)
+
+beforeEach(() => {
+  globalThis.__sdVehicleFixture = { payments, collation: [], fleet: [], overall, mapping, ev91Sd }
+  delete globalThis.__sdVehicleExport
+})
 after(async () => {
   await server.close(); dom.window.close()
-  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'Event', 'IS_REACT_ACT_ENVIRONMENT', '__sdVehicleFixture', '__sdVehicleExport']) delete globalThis[key]
+  for (const key of ['window', 'document', 'HTMLElement', 'Node', 'Event', 'IS_REACT_ACT_ENVIRONMENT', '__sdVehicleFixture', '__sdVehicleExport', '__sdVehicleLoad']) delete globalThis[key]
 })
+
+const buttonIn = (container, text) => [...container.querySelectorAll('button')].find((node) => node.textContent.trim() === text)
+const statValues = (container) => [...container.querySelectorAll('.rp-stat-value')].map((node) => node.textContent)
+function deferred() {
+  let resolve
+  const promise = new Promise((done) => { resolve = done })
+  return { promise, resolve }
+}
+async function mountViewer(t) {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => { await act(async () => root.unmount()); container.remove() })
+  await act(async () => root.render(createElement(Viewer)))
+  return container
+}
+
+test('payment progress shows completed record count without exposing partial totals', async (t) => {
+  const pending = deferred()
+  const fixture = globalThis.__sdVehicleFixture
+  fixture.paymentsPending = pending.promise
+  const container = await mountViewer(t)
+  await act(async () => fixture.progressHandlers.payments({ loadedRows: 25000, estimatedRows: 196747, complete: false }))
+  assert.match(container.querySelector('[aria-label="Report data status"]').textContent, /Payment history: 25,000 records loaded/)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  await act(async () => pending.resolve(payments))
+  assert.match(container.querySelector('[aria-label="Report data status"]').textContent, /Payment history: 1 records/)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, false)
+})
+async function exportCurrent(container) {
+  delete globalThis.__sdVehicleExport
+  await act(async () => {
+    buttonIn(container, 'Export Excel').click()
+    for (let attempt = 0; attempt < 100 && !globalThis.__sdVehicleExport; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  })
+  assert.ok(globalThis.__sdVehicleExport, 'dynamic Excel module exports the report')
+  return Object.values(globalThis.__sdVehicleExport).flat()
+}
 
 test('EV91-only SD records resolve a vehicle through public and client rider IDs', () => {
   const report = buildSdPaymentReport([], [], [], ev91Sd, publicIndex, overall)
@@ -123,8 +177,7 @@ test('searching the SD page displays the vehicle and both tab exports include it
   for (const tab of ['SD Payment', 'EV Rent']) {
     await act(async () => button(tab).click())
     assert.deepEqual(vehicleCells(), [registration])
-    await act(async () => button('Export Excel').click())
-    const exported = Object.values(globalThis.__sdVehicleExport).flat()
+    const exported = await exportCurrent(container)
     assert.equal(exported.length, 1)
     assert.equal(exported[0].Vehicle, registration)
   }
@@ -162,14 +215,13 @@ test('SD columns, cards and Excel use wallet balances; refresh keeps rows and up
   const button = (text) => [...container.querySelectorAll('button')].find((node) => node.textContent.trim() === text)
   assert.deepEqual(balances(), ['₹4,321', '₹123', '₹500'])
   assert.match(container.querySelector('.rp-stats-grid').textContent, /EV91 Total SD₹4,321/)
-  await act(async () => button('Export Excel').click())
-  const exported = Object.values(globalThis.__sdVehicleExport).flat()[0]
+  const [exported] = await exportCurrent(container)
   assert.deepEqual([exported['EV91 TotalSd'], exported['EV91 PendingSd'], exported['EV91 FixedDeposit']], [4321, 123, 500])
   let release
   fixture.walletPending = new Promise((resolve) => { release = resolve })
   await act(async () => button('Refresh EV91 SD').click())
   assert.deepEqual(balances(), ['₹4,321', '₹123', '₹500'])
-  assert.match(container.querySelector('[role="status"]').textContent, /Refreshing EV91 SD wallet/)
+  assert.ok([...container.querySelectorAll('[role="status"]')].some((node) => /Refreshing EV91 SD wallet/.test(node.textContent)))
   await act(async () => release({ rows: [{ ...fixture.walletRows[0], total_sd: 5000, pending_sd: 0, fixed_deposit: 750 }], loadedAt: 1792700100000 }))
   assert.deepEqual(balances(), ['₹5,000', '₹0', '₹750'])
   assert.deepEqual(fixture.walletCalls, [false, true])
@@ -202,4 +254,97 @@ test('failed initial wallet load shows unavailable balances instead of zeros, pe
   await act(async () => button('Refresh EV91 SD').click())
   assert.equal(container.querySelector('[role="alert"]'), null)
   assert.equal(button('Export Excel').disabled, false)
+})
+
+test('page heading and both tabs appear immediately while every source is still pending', async (t) => {
+  const fixture = globalThis.__sdVehicleFixture
+  for (const source of ['payments', 'collation', 'overall', 'mapping', 'fleet', 'wallet']) {
+    fixture[`${source}Pending`] = new Promise(() => {})
+  }
+  const container = await mountViewer(t)
+  assert.equal(container.querySelector('h1')?.textContent, 'SD & EV Rent')
+  assert.ok(buttonIn(container, 'SD Payment'))
+  assert.ok(buttonIn(container, 'EV Rent'))
+  assert.equal(buttonIn(container, 'Refresh report').disabled, true)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  assert.equal(statValues(container).length, 7)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.doesNotMatch(container.textContent, /Upload payment.*manual collation/)
+  assert.match(container.querySelector('[aria-label="Report data status"]').textContent, /Payment history: Loading/)
+  await act(async () => buttonIn(container, 'EV Rent').click())
+  assert.equal(statValues(container).length, 4)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+})
+
+test('available payment records remain usable while rider mapping is pending, with totals/export withheld', async (t) => {
+  const pending = deferred()
+  globalThis.__sdVehicleFixture.mappingPending = pending.promise
+  const container = await mountViewer(t)
+  assert.match(container.querySelector('tbody').textContent, /Test rider/)
+  assert.match(container.querySelector('tbody').textContent, /250/)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  assert.match(container.querySelector('[aria-label="Report data status"]').textContent, /Rider mapping: Loading/)
+  await act(async () => buttonIn(container, 'EV Rent').click())
+  assert.match(container.querySelector('tbody').textContent, /Test rider/)
+  assert.match(container.querySelector('tbody').textContent, /500/)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  await act(async () => pending.resolve(mapping))
+  assert.deepEqual(statValues(container), ['1', '1', '₹500', '₹0'])
+  assert.equal(buttonIn(container, 'Export Excel').disabled, false)
+  assert.equal(globalThis.__sdVehicleFixture.sourceCalls.length, 5)
+})
+
+test('an initial source failure displays an error and retry without false zeros or upload instructions', async (t) => {
+  const fixture = globalThis.__sdVehicleFixture
+  fixture.paymentsError = true
+  fixture.walletCalls = []
+  const container = await mountViewer(t)
+  assert.match(container.querySelector('[role="alert"]').textContent, /Payment history: payments service unavailable/)
+  assert.ok(buttonIn(container, 'Retry payment history'))
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  assert.doesNotMatch(container.textContent, /Upload payment.*manual collation/)
+  assert.deepEqual([...container.querySelectorAll('tbody tr:first-child td')].slice(14, 18).map((node) => node.textContent),
+    ['—', '—', '—', '—'], 'unavailable payment amounts never appear as zero')
+  await act(async () => buttonIn(container, 'EV Rent').click())
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  const previousCalls = fixture.sourceCalls.slice()
+  fixture.paymentsError = false
+  await act(async () => buttonIn(container, 'Retry payment history').click())
+  assert.equal(container.querySelector('[role="alert"]'), null)
+  assert.match(container.querySelector('tbody').textContent, /Test rider/)
+  assert.deepEqual(statValues(container), ['1', '1', '₹500', '₹0'])
+  assert.equal(buttonIn(container, 'Export Excel').disabled, false)
+  assert.deepEqual(fixture.sourceCalls, [...previousCalls, { source: 'payments', force: true }])
+  assert.deepEqual(fixture.walletCalls, [false])
+})
+
+test('report refresh preserves loaded rows, blocks stale export, and retries only its failed source', async (t) => {
+  const fixture = globalThis.__sdVehicleFixture
+  const container = await mountViewer(t)
+  const pending = deferred()
+  fixture.paymentsPending = pending.promise
+  fixture.collationError = true
+  await act(async () => buttonIn(container, 'Refresh report').click())
+  assert.match(container.querySelector('tbody').textContent, /Test rider/)
+  assert.match(container.querySelector('tbody').textContent, /250/)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  assert.match(container.querySelector('[role="alert"]').textContent, /last successfully loaded records/)
+  await act(async () => pending.resolve([{ ...payments[0], sd: 300 }]))
+  assert.match(container.querySelector('tbody').textContent, /300/)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  assert.ok(statValues(container).every((value) => value === '—'))
+  const previousCalls = fixture.sourceCalls.slice()
+  fixture.collationError = false
+  await act(async () => buttonIn(container, 'Retry manual collections').click())
+  assert.equal(container.querySelector('[role="alert"]'), null)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, false)
+  assert.deepEqual(fixture.sourceCalls, [...previousCalls, { source: 'collation', force: true }])
+  const [exported] = await exportCurrent(container)
+  assert.equal(exported['Payment SD Ded. (Total)'], 300)
 })

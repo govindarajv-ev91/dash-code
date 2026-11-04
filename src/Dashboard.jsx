@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useDeferredValue, useEffect, useCallback } from 'react'
+import React, { useState, useMemo, useDeferredValue, useEffect, useCallback, useRef } from 'react'
 import { 
   LineChart,
   Line,
@@ -512,6 +512,8 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [paymentRows, setPaymentRows] = useState([])
   const [paymentLoading, setPaymentLoading] = useState(true)
   const [paymentError, setPaymentError] = useState('')
+  const [paymentProgress, setPaymentProgress] = useState(null)
+  const paymentRequestRef = useRef(0)
   const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
   const [paymentClient, setPaymentClient] = useState('All')
   const [uploadMonthClient, setUploadMonthClient] = useState('All')
@@ -599,17 +601,25 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   }, [])
 
   const loadMonthlyRevenue = useCallback(async (force = false) => {
+    const requestId = ++paymentRequestRef.current
     setPaymentLoading(true)
     setPaymentError('')
+    setPaymentProgress(null)
+    let lastProgressAt = -Infinity
     try {
-      const rows = await fetchRiderPaymentsForRevenue({ force })
-      setPaymentRows(rows || [])
+      const rows = await fetchRiderPaymentsForRevenue({ force, onProgress: (progress) => {
+        const now = performance.now()
+        if (paymentRequestRef.current !== requestId || now - lastProgressAt < 250) return
+        lastProgressAt = now
+        setPaymentProgress(progress)
+      } })
+      if (paymentRequestRef.current === requestId) setPaymentRows(rows || [])
     } catch (err) {
+      if (paymentRequestRef.current !== requestId) return
       console.warn('Monthly revenue load failed:', err)
-      setPaymentRows([])
       setPaymentError(err?.message || 'Failed to load payment revenue')
     } finally {
-      setPaymentLoading(false)
+      if (paymentRequestRef.current === requestId) setPaymentLoading(false)
     }
   }, [])
 
@@ -617,6 +627,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
     loadEv91CurrentStatus()
     loadEv91OverallStatus()
     loadMonthlyRevenue(false)
+    return () => { paymentRequestRef.current++ }
   }, [loadEv91CurrentStatus, loadEv91OverallStatus, loadMonthlyRevenue])
 
   const filterFrom = startDate || endDate || ''
@@ -1260,9 +1271,18 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
             <h3 style={{ margin: 0 }}>Rider Payment Data</h3>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
               From <code style={{ color: '#fff' }}>rider_payment_data</code> upload · Indian FY (Apr → Mar)
-              {paymentLoading ? ' · Loading…' : ''}
-              {paymentError ? ` · ${paymentError}` : ''}
             </p>
+            {paymentLoading && <p role="status" style={{ margin: '0.35rem 0', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+              {paymentProgress?.loadedRows
+                ? `Loading payment data: ${paymentProgress.loadedRows.toLocaleString('en-IN')}${paymentProgress.total ? ` of ${paymentProgress.total.toLocaleString('en-IN')}` : ''} records...`
+                : 'Loading payment data...'}
+            </p>}
+            {paymentError && <p role="alert" style={{ margin: '0.35rem 0', color: 'var(--accent-red)', fontSize: '0.8rem' }}>
+              {paymentError} {paymentRows.length ? 'Showing the last successfully loaded payment data.' : 'Payment data is unavailable.'}
+            </p>}
+            <button type="button" className="glass-btn" disabled={paymentLoading} onClick={() => loadMonthlyRevenue(true)}>
+              <RefreshCw size={14} /> {paymentError ? 'Retry payment data' : 'Refresh payment data'}
+            </button>
           </div>
           <label
             style={{

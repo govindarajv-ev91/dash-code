@@ -16,6 +16,16 @@ const MONTH_ABBR = {
 }
 
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+// Thousands of rider dates share this format. Reusing the formatter avoids
+// constructing a new Intl formatter for every cell while building the report.
+const DEPLOYED_AT_FORMAT = new Intl.DateTimeFormat('en-IN', {
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: true,
+})
 
 function normalizePaymentMonth(value) {
   const text = normalizeMonthLabel(value)
@@ -74,14 +84,7 @@ export function formatDeployedAt(value) {
   if (!raw) return ''
   const d = parseFleetDate(raw)
   if (!d) return raw
-  return d.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  })
+  return DEPLOYED_AT_FORMAT.format(d)
 }
 
 function paymentWeekKey(row) {

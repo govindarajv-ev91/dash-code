@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { createServer } from 'vite'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' })
@@ -10,7 +10,7 @@ for (const name of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent']) 
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const { createRoot } = await import('react-dom/client')
-const state = globalThis.__navigationTest = { renders: [], icons: 0, modules: {}, loaded: [], onboarding: Promise.resolve([]) }
+const state = globalThis.__navigationTest = { renders: [], icons: 0, modules: {}, loaded: [], queries: [], onboarding: Promise.resolve([]) }
 const iconNames = 'LockKeyhole Layout Activity AlertTriangle BarChart3 Bike Briefcase ChevronDown CircleDollarSign ClipboardList Database FileBarChart2 Folder FolderOpen History IdCard Layers Leaf Link2 Mail MapPin Package PieChart Radio Search Shield Table2 TrendingDown Truck UserPlus Users UserX Wallet Wrench'.split(' ')
 const server = await createServer({
   cacheDir: 'node_modules/.vite-tests/app-navigation',
@@ -27,12 +27,16 @@ const server = await createServer({
     transform(_code, id) {
       const file = id.replaceAll('\\', '/').split('/src/')[1]
       if (!file) return
-      if (file === 'lib/supabaseFetch.js') return 'export const fetchAllData = async () => ({ data: [], totalCount: 0 })'
+      if (file === 'lib/supabaseFetch.js') return `export const fetchAllData = async (table) => {
+        globalThis.__navigationTest.queries.push(table); return { data: [], totalCount: 0 };
+      }`
       if (file === 'lib/riderOnboardingDb.js') return `
-        export const fetchRiderOnboardingRows = () => globalThis.__navigationTest.onboarding;
+        export const fetchRiderOnboardingRows = () => {
+          globalThis.__navigationTest.queries.push('rider_onboarding'); return globalThis.__navigationTest.onboarding;
+        };
         export const clearRiderOnboardingMemoryCache = () => {};`
       if (file === 'lib/orderUploadDb.js') return `
-        export const fetchAllOrderUploads = async () => [];
+        export const fetchAllOrderUploads = async () => { globalThis.__navigationTest.queries.push('order_upload_data'); return []; };
         export const clearOrderUploadCache = () => {};
         export const patchOrderUploadCache = rows => rows;`
       if (file === 'lib/iotDataDb.js') return 'export const clearIotRiderOrderCache = () => {}'
@@ -59,12 +63,13 @@ after(async () => {
   for (const name of ['window', 'document', 'HTMLElement', 'Node', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT', '__navigationTest']) delete globalThis[name]
 })
 
-async function mount(t) {
+async function mount(t, { savedPage, strict = false } = {}) {
   window.localStorage.clear()
+  if (savedPage) window.localStorage.setItem('fleetpro-active-page', savedPage)
   const host = document.createElement('div'); document.body.append(host)
   const root = createRoot(host)
   t.after(async () => { await act(async () => root.unmount()); host.remove() })
-  await act(async () => root.render(createElement(App)))
+  await act(async () => root.render(strict ? createElement(StrictMode, null, createElement(App)) : createElement(App)))
   return host
 }
 function button(host, label) {
@@ -149,4 +154,36 @@ test('IoT upload still checks access before selecting its page', async (t) => {
   assert.equal(host.querySelector('dialog').open, true)
   assert.equal(host.querySelector('[aria-current="page"]').textContent.trim(), 'Dashboard')
   assert.equal(host.querySelector('h1').textContent, 'Dashboard')
+})
+
+test('reopening SD & EV Rent reserves bandwidth and starts shared data only once when Dashboard is visited', async (t) => {
+  state.queries.length = 0
+  const intervals = t.mock.method(globalThis, 'setInterval')
+  const cleared = t.mock.method(globalThis, 'clearInterval')
+  const host = await mount(t, { savedPage: 'sdpayment', strict: true })
+  await waitFor(() => host.querySelector('h1')?.textContent === 'SdPaymentViewer')
+  assert.deepEqual(state.queries, [], 'a direct SD visit must not download unrelated dashboard tables')
+  assert.equal(intervals.mock.calls.filter(({ arguments: args }) => args[1] === 90_000).length, 0)
+
+  await act(async () => button(host, 'Dashboard').click())
+  await waitFor(() => state.queries.includes('vehicle_inventory'))
+  for (const table of ['rider_metrics', 'order_upload_data', 'fleet_data', 'new_fleet_data', 'rider_kyc', 'rider_onboarding', 'vehicle_inventory']) {
+    assert.equal(state.queries.filter((value) => value === table).length, 1, `${table} should load once`)
+  }
+  assert.equal(intervals.mock.calls.filter(({ arguments: args }) => args[1] === 90_000).length, 1)
+  const before = [...state.queries]
+
+  await act(async () => button(host, 'SD & EV Rent').click())
+  assert.equal(cleared.mock.calls.length, 1, 'SD stops the secondary refresh interval')
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+  t.after(() => { delete document.visibilityState })
+  await act(async () => document.dispatchEvent(new dom.window.Event('visibilitychange')))
+  assert.deepEqual(state.queries, before, 'returning to the SD tab must not trigger secondary background downloads')
+
+  await act(async () => button(host, 'Dashboard').click())
+  assert.deepEqual(state.queries, before, 'switching back reuses shared data without another full scan')
+  await act(async () => document.dispatchEvent(new dom.window.Event('visibilitychange')))
+  assert.equal(state.queries.filter((value) => value === 'rider_kyc').length, 2, 'secondary refresh resumes on Dashboard')
+  assert.equal(state.queries.filter((value) => value === 'rider_metrics').length, 1)
+  assert.equal(state.queries.filter((value) => value === 'order_upload_data').length, 1)
 })

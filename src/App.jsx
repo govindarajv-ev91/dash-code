@@ -493,6 +493,7 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled =
   const [refreshing, setRefreshing] = useState(false)
   const [dataUpdatedAt, setDataUpdatedAt] = useState(null)
   const lastSecondaryFetchRef = useRef(0)
+  const sharedDataStartedRef = useRef(false)
 
   useEffect(() => {
     try {
@@ -699,11 +700,16 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled =
   }, [applyFleetToState, applyOrdersToState, loadSecondaryTables])
 
   useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    // SD & EV Rent owns its data. Reserve bandwidth for those requests when
+    // reopening that page, and load the shared dashboard data on first use.
+    if (activePage === 'sdpayment' || sharedDataStartedRef.current) return
+    sharedDataStartedRef.current = true
+    void fetchData()
+  }, [activePage, fetchData])
 
   // Keep rider_onboarding / kyc / inventory fresh while the app stays open
   useEffect(() => {
+    if (activePage === 'sdpayment') return
     const refresh = () => {
       if (document.visibilityState === 'visible') void loadSecondaryTables({ force: true })
     }
@@ -713,7 +719,7 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled =
       clearInterval(intervalId)
       document.removeEventListener('visibilitychange', refresh)
     }
-  }, [loadSecondaryTables])
+  }, [activePage, loadSecondaryTables])
 
   const refreshOrdersAfterUpload = useCallback(async (uploadedRows) => {
     clearIotRiderOrderCache()

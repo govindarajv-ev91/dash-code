@@ -134,6 +134,7 @@ function parseEv91MisBody(body, httpStatus) {
 
 const EV91_MIS_UPSTREAM =
   'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics'
+const EV91_MIS_REQUEST_TIMEOUT_MS = 30_000
 
 function getEv91MisApiKey() {
   return (
@@ -159,12 +160,19 @@ function isNetworkFetchError(err) {
   return /failed to fetch|networkerror|load failed|network request failed/i.test(msg)
 }
 
+function isAbortOrTimeoutError(err) {
+  return err?.name === 'AbortError' || err?.name === 'TimeoutError'
+}
+
 async function readEv91Response(res) {
   const contentType = (res.headers.get('content-type') || '').toLowerCase()
   if (!contentType.includes('application/json')) {
     throw new Error(`EV91 API returned non-JSON (HTTP ${res.status})`)
   }
-  const body = await res.json().catch(() => null)
+  const body = await res.json().catch((err) => {
+    if (isAbortOrTimeoutError(err)) throw err
+    return null
+  })
   if (!res.ok || !body || body.success === false) {
     throw new Error(body?.message || `EV91 API error (HTTP ${res.status})`)
   }
@@ -178,6 +186,7 @@ async function fetchEv91MisViaLocalProxy(endpoint, params = {}) {
   const res = await fetch(`/api/ev91-mis?${qs.toString()}`, {
     headers: { Accept: 'application/json' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(EV91_MIS_REQUEST_TIMEOUT_MS),
   })
   if (res.status === 404) throw new Error('Local EV91 proxy not found')
   return readEv91Response(res)
@@ -199,6 +208,7 @@ async function fetchEv91MisViaAmplifyRewrite(endpoint, params = {}) {
       'x-api-key': key,
     },
     cache: 'no-store',
+    signal: AbortSignal.timeout(EV91_MIS_REQUEST_TIMEOUT_MS),
   })
   if (res.status === 404) throw new Error('Amplify EV91 rewrite not configured')
   const contentType = (res.headers.get('content-type') || '').toLowerCase()
@@ -225,9 +235,11 @@ async function fetchEv91MisDirect(endpoint, params = {}) {
         'x-api-key': key,
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(EV91_MIS_REQUEST_TIMEOUT_MS),
     })
     return await readEv91Response(res)
   } catch (err) {
+    if (isAbortOrTimeoutError(err)) throw err
     if (!isNetworkFetchError(err)) throw err
   }
 
@@ -238,6 +250,7 @@ async function fetchEv91MisDirect(endpoint, params = {}) {
   const res2 = await fetch(`${EV91_MIS_UPSTREAM}/${path}?${qs2.toString()}`, {
     headers: { Accept: 'application/json' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(EV91_MIS_REQUEST_TIMEOUT_MS),
   })
   return readEv91Response(res2)
 }
@@ -260,6 +273,7 @@ export async function fetchEv91MisData(endpoint, params = {}) {
     const res = await fetch(`${absoluteProxy}?${qs.toString()}`, {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
+      signal: AbortSignal.timeout(EV91_MIS_REQUEST_TIMEOUT_MS),
     })
     return readEv91Response(res)
   }
@@ -268,6 +282,7 @@ export async function fetchEv91MisData(endpoint, params = {}) {
     try {
       return await fetchEv91MisViaLocalProxy(endpoint, params)
     } catch (err) {
+      if (isAbortOrTimeoutError(err)) throw err
       console.warn('[EV91] local proxy unavailable:', err?.message || err)
     }
   }
@@ -276,6 +291,7 @@ export async function fetchEv91MisData(endpoint, params = {}) {
   try {
     return await fetchEv91MisViaAmplifyRewrite(endpoint, params)
   } catch (err) {
+    if (isAbortOrTimeoutError(err)) throw err
     console.warn('[EV91] Amplify rewrite path failed:', err?.message || err)
   }
 
@@ -317,7 +333,14 @@ export async function fetchAllEv91MisData(endpoint, params = {}, pageSize = 1000
       all.push(...result.data)
       summary = result.summary || summary
       pagination = result.pagination || {}
-      if (!result.pagination?.hasMore || !result.data.length) break
+      if (!pagination.hasMore) break
+      if (!result.data.length || i === 49) {
+        throw Object.assign(new Error(
+          `EV91 ${endpoint} history is incomplete. ${!result.data.length
+            ? 'The API returned an empty page while reporting more records.'
+            : 'The API exceeded the supported page limit.'} Please retry or check the EV91 API.`,
+        ), { code: 'INCOMPLETE_HISTORY' })
+      }
       // Advance by actual rows returned (API may cap below requested pageSize)
       offset += result.data.length
     }

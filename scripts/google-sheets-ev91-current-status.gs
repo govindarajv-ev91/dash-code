@@ -64,11 +64,16 @@ function importEv91CurrentStatus() {
   var vehicleModelIndex = buildVehicleModelIndex_()
   var kmIndex = buildVehicleKmIndex_(dayMeta)
   var sourceIndex = buildOnboardingSourceIndex_()
+  var sourceMasterEmailIndex = buildSourceMasterEmailIndex_()
   var beforeMissing = 0
   for (var i = 0; i < rows.length; i++) {
     if (isMissingSource_(rows[i].source)) beforeMissing++
   }
+  var sourceFallbackFilled = 0
   rows = fillMissingSources_(rows, sourceIndex)
+  var sourceMasterResult = fillSourcesFromSourceMaster_(rows, sourceMasterEmailIndex)
+  rows = sourceMasterResult.rows
+  sourceFallbackFilled = sourceMasterResult.filled
   var afterMissing = 0
   for (var j = 0; j < rows.length; j++) {
     if (isMissingSource_(rows[j].source)) afterMissing++
@@ -103,7 +108,9 @@ function importEv91CurrentStatus() {
       ' after=' +
       afterMissing +
       ' filled=' +
-      (beforeMissing - afterMissing)
+      (beforeMissing - afterMissing) +
+      ' · Source Master Mail ID resolved=' +
+      sourceFallbackFilled
   )
 }
 
@@ -192,14 +199,15 @@ function buildOnboardingSourceIndex_() {
       var row = batch[i]
       var src = String(row.source_name || '').trim()
       if (!src || isMissingSource_(src)) continue
-      addAllRiderKeys_(byRider, row.rider_id_details, src)
+      var rank = getOnboardingRank_(row)
+      addLatestRiderSource_(byRider, row.rider_id_details, src, rank)
       // merge stores IDs with the known "voice" prefix, e.g. voiceFE11083660.
-      addAllRiderKeys_(byRider, String(row.merge || '').replace(/^voice/i, ''), src)
+      addLatestRiderSource_(byRider, String(row.merge || '').replace(/^voice/i, ''), src, rank)
       var phone = normalizePhone_(row.rider_mobile_number)
-      addUniqueSource_(byPhone, phone, src)
+      addLatestPhoneSource_(byPhone, phone, src, rank)
       // rider_id_details is often the phone itself
       var detailsPhone = normalizePhone_(row.rider_id_details)
-      addUniqueSource_(byPhone, detailsPhone, src)
+      addLatestPhoneSource_(byPhone, detailsPhone, src, rank)
     }
     // Advance even when the final rows have no source.
     lastId = batch[batch.length - 1].id
@@ -216,8 +224,8 @@ function fillMissingSources_(rows, index) {
     var hit =
       lookupAllKeys_(index.byRider, row.clientRiderId) ||
       lookupAllKeys_(index.byRider, row.ev91RiderId) ||
-      index.byPhone[normalizePhone_(row.riderContact)] ||
-      index.byPhone[normalizePhone_(row.clientRiderId)] ||
+      lookupPhoneSource_(index.byPhone, row.riderContact) ||
+      lookupPhoneSource_(index.byPhone, row.clientRiderId) ||
       ''
     if (!hit) return row
     var copy = {}
@@ -227,6 +235,107 @@ function fillMissingSources_(rows, index) {
     copy.source = hit
     return copy
   })
+}
+
+/** Map Source List Mail IDs to source names after onboarding lookup. */
+function buildSourceMasterEmailIndex_() {
+  var byEmailAndCity = Object.create(null)
+  var byEmail = Object.create(null)
+  var cfg = getSupabaseConfig_()
+  if (!cfg.url || !cfg.key) {
+    Logger.log('Source Master skipped: Supabase URL / anon key is missing')
+    return { byEmailAndCity: byEmailAndCity, byEmail: byEmail }
+  }
+
+  var base =
+    String(cfg.url).replace(/\/$/, '') +
+    '/rest/v1/source_master?select=' +
+    encodeURIComponent('id,city,source_name,email_id') +
+    '&order=id.asc'
+  var lastId = 0
+  var total = 0
+
+  for (var page = 0; page < 200; page++) {
+    var url = base + '&limit=1000'
+    if (lastId) url += '&id=gt.' + encodeURIComponent(lastId)
+    var rows = fetchJsonArray_(url, {
+      apikey: cfg.key,
+      Authorization: 'Bearer ' + cfg.key,
+      Accept: 'application/json',
+    })
+    if (!rows.length) break
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {}
+      var email = normalizeMailId_(row.email_id)
+      var name = String(row.source_name || '').trim()
+      if (!email || !name) continue
+      addSourceEmailMatch_(byEmailAndCity, normalizeSourceCity_(row.city) + '\t' + email, name)
+      addSourceEmailMatch_(byEmail, email, name)
+    }
+
+    lastId = rows[rows.length - 1].id
+    total += rows.length
+    if (rows.length < 1000) break
+  }
+
+  Logger.log('Loaded Source Master rows=' + total)
+  return { byEmailAndCity: byEmailAndCity, byEmail: byEmail }
+}
+
+function addSourceEmailMatch_(map, key, name) {
+  if (!key || !name) return
+  if (!Object.prototype.hasOwnProperty.call(map, key)) {
+    map[key] = name
+  } else {
+    var current = String(map[key] || '').replace(/\s+/g, '').toLowerCase()
+    var next = String(name || '').replace(/\s+/g, '').toLowerCase()
+    if (current !== next) map[key] = ''
+  }
+}
+
+function normalizeMailId_(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function normalizeSourceCity_(value) {
+  var city = String(value || '').trim().toLowerCase().replace(/[^a-z]/g, '')
+  if (city === 'bengaluru') return 'bangalore'
+  if (city === 'mysuru') return 'mysore'
+  return city
+}
+
+function lookupSourceMasterName_(index, mailId, city) {
+  var email = normalizeMailId_(mailId)
+  if (!index || !email) return ''
+  var cityKey = normalizeSourceCity_(city)
+  if (cityKey) {
+    var cityMatch = index.byEmailAndCity[cityKey + '\t' + email]
+    if (cityMatch) return cityMatch
+  }
+  return index.byEmail[email] || ''
+}
+
+function fillSourcesFromSourceMaster_(rows, sourceMasterIndex) {
+  var filled = 0
+  var result = rows.map(function (row) {
+    var hit =
+      lookupSourceMasterName_(sourceMasterIndex, row.source, row.city) ||
+      lookupSourceMasterName_(sourceMasterIndex, row.sourceName, row.city) ||
+      lookupSourceMasterName_(sourceMasterIndex, row.sourceEmail, row.city) ||
+      lookupSourceMasterName_(sourceMasterIndex, row.mailId, row.city) ||
+      lookupSourceMasterName_(sourceMasterIndex, row.emailId, row.city) ||
+      ''
+    if (!hit) return row
+    filled++
+    var copy = {}
+    for (var key in row) {
+      if (Object.prototype.hasOwnProperty.call(row, key)) copy[key] = row[key]
+    }
+    copy.source = hit
+    return copy
+  })
+  return { rows: result, filled: filled }
 }
 
 function isMissingSource_(value) {
@@ -258,29 +367,69 @@ function riderKeys_(raw) {
   return key ? [key] : []
 }
 
-function addUniqueSource_(map, key, source) {
-  if (!key) return
-  if (!Object.prototype.hasOwnProperty.call(map, key)) {
-    map[key] = source
-  } else if (map[key] !== source) {
-    // Conflicting onboarding entries are unsafe to use; do not pick the first.
-    map[key] = null
+function addLatestSource_(map, key, source, rank) {
+  if (!key || !source || isMissingSource_(source)) return
+  var current = map[key]
+  if (!current || rank >= current.rank) {
+    map[key] = { source: source, rank: rank }
   }
 }
 
-function addAllRiderKeys_(map, raw, source) {
+function addLatestRiderSource_(map, raw, source, rank) {
   var keys = riderKeys_(raw)
   for (var i = 0; i < keys.length; i++) {
-    addUniqueSource_(map, keys[i], source)
+    addLatestSource_(map, keys[i], source, rank)
   }
+}
+
+function addLatestPhoneSource_(map, raw, source, rank) {
+  var phone = normalizePhone_(raw)
+  addLatestSource_(map, phone, source, rank)
 }
 
 function lookupAllKeys_(map, raw) {
   var keys = riderKeys_(raw)
   for (var i = 0; i < keys.length; i++) {
-    if (keys[i] && map[keys[i]]) return map[keys[i]]
+    if (keys[i] && map[keys[i]]) return map[keys[i]].source || ''
   }
   return ''
+}
+
+function lookupPhoneSource_(map, raw) {
+  var hit = map[normalizePhone_(raw)]
+  return hit ? hit.source || '' : ''
+}
+
+function getOnboardingRank_(row) {
+  var timestamp =
+    parseOnboardingDate_(row.timestamp) ||
+    parseOnboardingDate_(row.deployment_date) ||
+    parseOnboardingDate_(row.updated_at) ||
+    parseOnboardingDate_(row.created_at) ||
+    0
+  return timestamp
+}
+
+function parseOnboardingDate_(value) {
+  var text = String(value || '').trim()
+  if (!text) return 0
+
+  var dmyTime = text.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}):(\d{2}))?/)
+  if (dmyTime) {
+    return Date.UTC(
+      Number(dmyTime[3]),
+      Number(dmyTime[2]) - 1,
+      Number(dmyTime[1]),
+      Number(dmyTime[4] || 0),
+      Number(dmyTime[5] || 0),
+      Number(dmyTime[6] || 0)
+    )
+  }
+
+  var ymd = text.match(/^(\d{4}-\d{2}-\d{2})(?:[T\s](\d{2}:\d{2}:\d{2}))?/)
+  if (ymd) return new Date(text.replace(' ', 'T')).getTime() || 0
+  var parsed = new Date(text).getTime()
+  return parsed || 0
 }
 
 function normalizePhone_(value) {

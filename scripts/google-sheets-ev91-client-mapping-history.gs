@@ -30,6 +30,8 @@ var CONFIG = {
   RIDER_DETAILS_FALLBACK:
     'https://dashboard.ev91riderz.com/api/v1/public/mis/rider-vehicle-analytics/mis-public-api/rider-details',
   EV91_API_KEY: 'ev91-mis-public-2026',
+  SUPABASE_URL: 'https://arnxvnkednpzyzyfculx.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_o04xyDV5z09-dAfxP6awvA_FIdop2lH',
   TARGET_SHEET_NAME: 'EV91 Client Hister',
   PAGE_LIMIT: 500,
   MAX_PAGES: 80,
@@ -50,10 +52,12 @@ function importEv91ClientMappingHistory() {
   var mappingRows = fetchAllPaged_(CONFIG.MAPPING_BASE, CONFIG.MAPPING_FALLBACK)
   var riderDetails = fetchAllPaged_(CONFIG.RIDER_DETAILS_BASE, CONFIG.RIDER_DETAILS_FALLBACK)
   var detailIndex = buildRiderDetailIndex_(riderDetails)
+  var sourceIndex = buildSourceMasterEmailIndex_()
 
   var values = [COLUMNS]
   var named = 0
   var clientNamed = 0
+  var sourceNamed = 0
 
   for (var i = 0; i < mappingRows.length; i++) {
     var row = mappingRows[i]
@@ -62,6 +66,13 @@ function importEv91ClientMappingHistory() {
     // Prefer Client Name from mapping API; fall back to Rider Details
     var clientName = cell_(row.clientName || row.ClientName)
     if (!clientName && hit) clientName = cell_(hit.clientName)
+    var sourceName =
+      lookupSourceMasterNameByEmail_(sourceIndex, row.source, row.city) ||
+      lookupSourceMasterNameByEmail_(sourceIndex, row.sourceName, row.city) ||
+      lookupSourceMasterNameByEmail_(sourceIndex, row.sourceEmail, row.city) ||
+      lookupSourceMasterNameByEmail_(sourceIndex, row.mailId, row.city) ||
+      lookupSourceMasterNameByEmail_(sourceIndex, row.emailId, row.city)
+    if (sourceName) sourceNamed++
     if (riderName) named++
     if (clientName) clientNamed++
 
@@ -72,7 +83,7 @@ function importEv91ClientMappingHistory() {
       riderName,
       clientName,
       cell_(row.phoneNumber),
-      cell_(row.source),
+      sourceName || cell_(row.source),
       dateTime_(row.lastUpdated),
     ])
   }
@@ -93,6 +104,8 @@ function importEv91ClientMappingHistory() {
       mappingRows.length +
       ' · Rider Details=' +
       riderDetails.length +
+      ' · Source names filled=' +
+      sourceNamed +
       ' · Rider Name filled=' +
       named +
       ' · Client Name filled=' +
@@ -229,6 +242,93 @@ function normalizePhone_(value) {
   return digits.length >= 6 ? digits : ''
 }
 
+function getSupabaseConfig_() {
+  var props = PropertiesService.getScriptProperties()
+  return {
+    url: String(props.getProperty('SUPABASE_URL') || CONFIG.SUPABASE_URL || '').trim(),
+    key: String(props.getProperty('SUPABASE_ANON_KEY') || CONFIG.SUPABASE_ANON_KEY || '').trim(),
+  }
+}
+
+/** Map Source List mail IDs to Source names, using city when available. */
+function buildSourceMasterEmailIndex_() {
+  var byEmailAndCity = Object.create(null)
+  var byEmail = Object.create(null)
+  var cfg = getSupabaseConfig_()
+  if (!cfg.url || !cfg.key) {
+    Logger.log('Source List skipped: Supabase URL / anon key is missing')
+    return { byEmailAndCity: byEmailAndCity, byEmail: byEmail }
+  }
+
+  var select = 'id,city,source_name,email_id'
+  var base =
+    String(cfg.url).replace(/\/$/, '') +
+    '/rest/v1/source_master?select=' +
+    encodeURIComponent(select) +
+    '&order=id.asc'
+  var lastId = 0
+  var total = 0
+
+  for (var page = 0; page < 200; page++) {
+    var url = base + '&limit=1000'
+    if (lastId) url += '&id=gt.' + encodeURIComponent(lastId)
+    var rows = fetchJsonArray_(url, {
+      apikey: cfg.key,
+      Authorization: 'Bearer ' + cfg.key,
+      Accept: 'application/json',
+    })
+    if (!rows.length) break
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {}
+      var email = normalizeEmail_(row.email_id)
+      var name = String(row.source_name || '').trim()
+      if (!email || !name) continue
+      addSourceEmailMatch_(byEmailAndCity, normalizeSourceCity_(row.city) + '\t' + email, name)
+      addSourceEmailMatch_(byEmail, email, name)
+    }
+
+    lastId = rows[rows.length - 1].id
+    total += rows.length
+    if (rows.length < 1000) break
+  }
+
+  Logger.log('Loaded Source List rows=' + total)
+  return { byEmailAndCity: byEmailAndCity, byEmail: byEmail }
+}
+
+function addSourceEmailMatch_(map, key, name) {
+  if (!key || !name) return
+  if (!Object.prototype.hasOwnProperty.call(map, key)) {
+    map[key] = name
+  } else if (String(map[key]).replace(/\s+/g, '').toLowerCase() !== name.replace(/\s+/g, '').toLowerCase()) {
+    map[key] = ''
+  }
+}
+
+function lookupSourceMasterNameByEmail_(index, emailValue, cityValue) {
+  if (!index || !emailValue) return ''
+  var email = normalizeEmail_(emailValue)
+  if (!email) return ''
+  var cityName = normalizeSourceCity_(cityValue)
+  if (cityName) {
+    var cityMatch = index.byEmailAndCity[cityName + '\t' + email]
+    if (cityMatch) return cityMatch
+  }
+  return index.byEmail[email] || ''
+}
+
+function normalizeEmail_(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function normalizeSourceCity_(value) {
+  var city = String(value || '').trim().toLowerCase().replace(/[^a-z]/g, '')
+  if (city === 'bengaluru') return 'bangalore'
+  if (city === 'mysuru') return 'mysore'
+  return city
+}
+
 function cell_(v) {
   return v == null ? '' : String(v)
 }
@@ -254,6 +354,21 @@ function getTargetSheet_() {
   var existing = ss.getSheetByName(CONFIG.TARGET_SHEET_NAME)
   if (existing) return existing
   return ss.insertSheet(CONFIG.TARGET_SHEET_NAME)
+}
+
+function fetchJsonArray_(url, headers) {
+  var response = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: headers || {},
+  })
+  var code = response.getResponseCode()
+  var text = response.getContentText()
+  if (code < 200 || code >= 300) {
+    throw new Error('Supabase API error ' + code + ': ' + text.slice(0, 300))
+  }
+  var body = JSON.parse(text)
+  return Array.isArray(body) ? body : []
 }
 
 function fetchJson_(url, headers) {

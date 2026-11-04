@@ -263,6 +263,65 @@ test('the client trend renders real EV, Non-EV and Total lines and updates its f
   assert.deepEqual(errors, [])
 })
 
+test('Client-wise export downloads raw data and summary using the selected client, city, period and metric', async (t) => {
+  const { container, root, errors } = mount(t)
+  const riderData = [
+    order('2026-10-12', '00123', 10), order('2026-10-13', '00456', 0, { type1: 'NON-EV' }),
+    order('2026-10-13', 'other-city', 99, { city: 'Bengaluru' }),
+    order('2026-10-13', 'other-client', 99, { client: 'Beta' }),
+    order('2026-10-13', 'mirror', 9999, { _data_source: 'rider_metrics' }),
+    order('2026-10-13', 'ic-only', 9999, { _ic_only: true }),
+  ]
+  await act(async () => root.render(createElement(Dashboard, { loading: true, riderData })))
+  const trend = card(container, 'Client-wise · Last 9 months').closest('.glass')
+  assert.equal(trend.querySelector('button').disabled, true)
+  await act(async () => root.render(createElement(Dashboard, { loading: false, riderData })))
+  const [client, city] = trend.querySelectorAll('select')
+  await act(async () => { client.value = 'Alpha'; client.dispatchEvent(new Event('change', { bubbles: true })) })
+  await act(async () => { city.value = 'Chennai'; city.dispatchEvent(new Event('change', { bubbles: true })) })
+  for (const value of ['weekly', 'orders']) {
+    await act(async () => trend.querySelector(`input[value="${value}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
+  const button = trend.querySelector('button')
+  assert.match(button.textContent, /Export Raw \+ Summary/)
+  assert.equal(button.disabled, false)
+  let blob, filename
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click
+  URL.createObjectURL = (value) => { blob = value; return 'blob:client-export' }
+  URL.revokeObjectURL = () => {}
+  dom.window.HTMLAnchorElement.prototype.click = function () { filename = this.download }
+  t.after(() => {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    dom.window.HTMLAnchorElement.prototype.click = originalClick
+  })
+  await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await waitFor(() => filename)
+  assert.match(filename, /^Client_Wise_weekly_Alpha_Chennai.*\.xlsx$/)
+  const workbook = XLSX.read(await blob.arrayBuffer(), { type: 'array' })
+  const raw = XLSX.utils.sheet_to_json(workbook.Sheets['Raw Data'])
+  assert.deepEqual(raw.map((row) => row['Rider ID']), ['00123', '00456'])
+  const summary = XLSX.utils.sheet_to_json(workbook.Sheets['Chart Summary'])
+  assert.equal(summary[0]['Total Orders'], 10)
+  assert.equal(summary[0]['Total Riders'], 2)
+  const analysis = XLSX.utils.sheet_to_json(workbook.Sheets['City Client Type'])
+  assert.equal(analysis.length, 3)
+  assert.ok(analysis.every((row) => row.City === 'Chennai' && row.Client === 'Alpha'))
+  assert.equal(analysis.find((row) => row.Type === 'Total')['Rider Count'], 2)
+  const lifetime = XLSX.utils.sheet_to_json(workbook.Sheets['Lifetime Ranking'])
+  assert.equal(lifetime.find((row) => row.Type === 'Total')['Lifetime Orders'], 10)
+  const filters = Object.fromEntries(XLSX.utils.sheet_to_json(workbook.Sheets['Filters and Totals']).map((row) => [row.Setting, row.Value]))
+  assert.equal(filters['Selected Chart Metric'], 'Order count')
+  assert.equal(filters.Period, 'weekly')
+  assert.equal(button.disabled, false)
+  await act(async () => { city.value = 'Bengaluru'; city.dispatchEvent(new Event('change', { bubbles: true })) })
+  await act(async () => { client.value = 'Beta'; client.dispatchEvent(new Event('change', { bubbles: true })) })
+  assert.equal(button.disabled, true, 'an empty client/city combination cannot export')
+  assert.deepEqual(errors, [])
+})
+
 test('empty Orders Performance shows a useful message instead of an empty chart', async (t) => {
   const { container, root, errors } = mount(t)
   await act(async () => root.render(createElement(Dashboard, { loading: false, riderData: [] })))

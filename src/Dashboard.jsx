@@ -52,6 +52,7 @@ import {
 import { fetchIotDataInRange } from './lib/iotDataDb'
 import { buildOverviewAttritionIndex, buildOverviewAttritionSeries, buildOverviewAttritionExportDetails } from './lib/overviewRiderAttrition'
 import RiderAttritionTooltip from './components/RiderAttritionTooltip'
+import OverviewEvZeroOrderChart from './components/OverviewEvZeroOrderChart'
 import {
   KM_PRODUCTIVITY_BUCKETS,
   buildVehicleKmProductivityTable,
@@ -509,6 +510,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [ev91StatusError, setEv91StatusError] = useState('')
   const [ev91OverallRows, setEv91OverallRows] = useState([])
   const [ev91OverallLoading, setEv91OverallLoading] = useState(true)
+  const [ev91OverallError, setEv91OverallError] = useState('')
   const [paymentRows, setPaymentRows] = useState([])
   const [paymentLoading, setPaymentLoading] = useState(true)
   const [paymentError, setPaymentError] = useState('')
@@ -520,6 +522,8 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const [uploadPeriod, setUploadPeriod] = useState('monthly')
   const [uploadMetric, setUploadMetric] = useState('riders')
   const [uploadMonthCity, setUploadMonthCity] = useState('All')
+  const [uploadExporting, setUploadExporting] = useState(false)
+  const [uploadExportError, setUploadExportError] = useState('')
   const [attritionClient, setAttritionClient] = useState('All')
   const [attritionCity, setAttritionCity] = useState('All')
   const [attritionPeriod, setAttritionPeriod] = useState('monthly')
@@ -589,11 +593,13 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
 
   const loadEv91OverallStatus = useCallback(async () => {
     setEv91OverallLoading(true)
+    setEv91OverallError('')
     try {
       const result = await fetchEv91OverallStatusAll({ force: false })
       setEv91OverallRows(result.data || [])
     } catch (err) {
       console.warn('EV91 overall-status load failed:', err)
+      setEv91OverallError(err?.message || 'Failed to load EV91 deployment history')
       setEv91OverallRows([])
     } finally {
       setEv91OverallLoading(false)
@@ -862,6 +868,25 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
       ),
     [overviewOrderRows, filterFrom, filterTo, uploadMonthClient, uploadMonthCity, uploadPeriod]
   )
+
+  const uploadExportDisabled = loading || deferredRiderData !== riderData || uploadExporting || !uploadClientMonthLine.series.length
+  const exportUploadClientTrend = async () => {
+    if (uploadExportDisabled) return
+    setUploadExporting(true)
+    setUploadExportError('')
+    try {
+      const { downloadOverviewClientTrendExcel } = await import('./lib/overviewClientTrendExcelExport.js')
+      downloadOverviewClientTrendExcel(overviewOrderRows.filter((row) => row?._data_source === 'order_upload'), {
+        dateFrom: filterFrom, dateTo: filterTo, client: uploadMonthClient, city: uploadMonthCity,
+        period: uploadPeriod, metric: uploadMetric,
+      })
+    } catch (error) {
+      console.error('Client-wise export failed', error)
+      setUploadExportError('Could not export raw data and summary. Please try again.')
+    } finally {
+      setUploadExporting(false)
+    }
+  }
 
   const attritionIndex = useMemo(() => buildOverviewAttritionIndex(overviewOrderRows), [overviewOrderRows])
   const attritionTrend = useMemo(() => buildOverviewAttritionSeries(attritionIndex, {
@@ -1659,8 +1684,14 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 Order count
               </label>
             </div>
+            <button type="button" className="glass" onClick={exportUploadClientTrend} disabled={uploadExportDisabled}
+              title="Download raw data, chart summary, city/client/type breakdown and lifetime rankings as Excel"
+              style={{ padding: '0.5rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#fff', cursor: uploadExportDisabled ? 'not-allowed' : 'pointer', opacity: uploadExportDisabled ? 0.5 : 1 }}>
+              <Download size={16} /> {uploadExporting ? 'Exporting…' : 'Export Raw + Summary'}
+            </button>
           </div>
         </div>
+        {uploadExportError && <p role="alert" style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: '#f87171' }}>{uploadExportError}</p>}
         <div style={{ height: '320px', width: '100%' }}>
           {!uploadClientMonthLine.series.length ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-dim)' }}>
@@ -1682,6 +1713,16 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
           )}
         </div>
       </div>
+
+      <OverviewEvZeroOrderChart
+        orderRows={overviewOrderRows}
+        overallRows={ev91OverallRows}
+        currentRows={ev91CurrentRows}
+        dateFrom={filterFrom}
+        dateTo={filterTo}
+        loading={loading || ev91StatusLoading || ev91OverallLoading}
+        error={ev91StatusError || ev91OverallError}
+      />
 
       <section className="glass" aria-label="Rider attrition chart" style={{ marginTop: '1.25rem', padding: '1.5rem', minWidth: 0, width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>

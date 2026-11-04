@@ -3,6 +3,7 @@ import { normalizeSummaryCity } from './citySummaryAliases'
 import { normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { toMetricDateKey } from './mergeRiderMetrics'
+import { addTrendRider, countTrendRiders } from './overviewClientTrendRiders.js'
 import { format, getISOWeek, parseISO, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns'
 
 function normalizePhone(value) {
@@ -1348,13 +1349,16 @@ export function buildClientMonthLineSeries(
 /** Date-based Order Upload series with client/city filters and rolling active riders. */
 export function buildClientPeriodLineSeries(
   rows = [],
-  { dateFrom = '', dateTo = '', client = 'All', city = 'All', period = 'monthly' } = {}
+  { dateFrom = '', dateTo = '', client = 'All', city = 'All', period = 'monthly', includeDetails = false } = {}
 ) {
   const clientFilter = (client || 'All').toString().trim()
   const cityFilter = (city || 'All').toString().trim()
   const prepared = []
   const clients = new Set()
   const cities = new Set()
+  // Only retain source records when exporting, not on every chart render.
+  const details = []
+  const contextDetails = []
 
   for (const row of rows || []) {
     const date = toMetricDateKey(row.date_record)
@@ -1365,10 +1369,14 @@ export function buildClientPeriodLineSeries(
     const type1 = String(row.type1 || '').toUpperCase()
     const type2 = String(row.type2 || '').toUpperCase()
     const isEv = (type1.includes('EV') && !type1.includes('NON')) || (type2.includes('EV') && !type2.includes('NON'))
-    prepared.push({ date, clientName, cityName, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders), isEv })
+    prepared.push({ date, clientName, cityName, rider: normalizeRiderIdKey(row.worker_code), orders: num(row.delivered ?? row.orders), isEv,
+      ...(includeDetails ? { source: row } : {}),
+    })
   }
 
-  if (!prepared.length) return { series: [], totals: { orders: 0, riders: 0 }, clients: [], cities: [] }
+  if (!prepared.length) return { series: [], totals: { orders: 0, riders: 0 }, clients: [], cities: [],
+    ...(includeDetails ? { exportData: { dateFrom, dateTo, contextFrom: '', latestDate: '', details, contextDetails, historyDetails: [] } } : {}),
+  }
 
   const latestDate = prepared.reduce((latest, row) => (row.date > latest ? row.date : latest), prepared[0].date)
   // Include the latest month plus the preceding eight calendar months. Keep
@@ -1387,10 +1395,10 @@ export function buildClientPeriodLineSeries(
     }
     if (clientFilter !== 'All' && row.clientName !== clientFilter) continue
     if (cityFilter !== 'All' && row.cityName !== cityFilter) continue
-    if (!ridersByDate.has(row.date)) ridersByDate.set(row.date, { total: new Set(), ev: new Set(), nonEv: new Set() })
+    if (includeDetails) (row.date < minDate ? contextDetails : details).push(row)
+    if (!ridersByDate.has(row.date)) ridersByDate.set(row.date, new Map())
     if (row.rider && row.orders > 0) {
-      ridersByDate.get(row.date).total.add(row.rider)
-      ridersByDate.get(row.date)[row.isEv ? 'ev' : 'nonEv'].add(row.rider)
+      addTrendRider(ridersByDate.get(row.date), row)
     }
     // Retain preceding days for daily active riders without adding their orders
     // or chart points to the selected range.
@@ -1401,41 +1409,34 @@ export function buildClientPeriodLineSeries(
       : period === 'weekly'
         ? format(startOfWeek(parsed, { weekStartsOn: 1 }), 'yyyy-MM-dd')
         : format(parsed, 'yyyy-MM')
-    if (!byPeriod.has(key)) byPeriod.set(key, { key, orders: 0, evOrders: 0, nonEvOrders: 0, riders: new Set(), evRiders: new Set(), nonEvRiders: new Set() })
+    if (!byPeriod.has(key)) byPeriod.set(key, { key, orders: 0, evOrders: 0, nonEvOrders: 0, riders: new Map() })
     const bucket = byPeriod.get(key)
     bucket.orders += row.orders
     if (row.isEv) bucket.evOrders += row.orders
     else bucket.nonEvOrders += row.orders
-    // Monthly/weekly uniqueness includes zero-order records. Daily active
-    // riders are recalculated from positive-order riders below.
+    // Monthly/weekly uniqueness includes zero-order records. Each rider's
+    // latest record determines their type. Daily active riders are recalculated
+    // from positive-order records below using the same assignment rule.
     if (row.rider) {
       visibleRiders.add(row.rider)
-      bucket.riders.add(row.rider)
-      bucket[row.isEv ? 'evRiders' : 'nonEvRiders'].add(row.rider)
+      addTrendRider(bucket.riders, row)
     }
   }
 
   const series = [...byPeriod.values()].sort((a, b) => a.key.localeCompare(b.key)).map((bucket) => {
     const pointDate = parseISO(bucket.key.length === 7 ? `${bucket.key}-01` : bucket.key)
-    let riders = bucket.riders.size
-    let evRiders = bucket.evRiders.size
-    let nonEvRiders = bucket.nonEvRiders.size
+    let riderCounts = countTrendRiders(bucket.riders)
     if (period === 'daily') {
-      const active = new Set()
-      const activeEv = new Set()
-      const activeNonEv = new Set()
+      const active = new Map()
       for (let offset = 0; offset < 4; offset += 1) {
         const date = format(subDays(pointDate, offset), 'yyyy-MM-dd')
         const day = ridersByDate.get(date)
-        for (const rider of day?.total || []) active.add(rider)
-        for (const rider of day?.ev || []) activeEv.add(rider)
-        for (const rider of day?.nonEv || []) activeNonEv.add(rider)
+        for (const row of day?.values() || []) addTrendRider(active, row)
       }
-      riders = active.size
-      evRiders = activeEv.size
-      nonEvRiders = activeNonEv.size
+      riderCounts = countTrendRiders(active)
     }
     return {
+      ...(includeDetails ? { periodKey: bucket.key } : {}),
       period: period === 'daily'
         ? format(pointDate, 'dd MMM')
         : period === 'weekly'
@@ -1444,9 +1445,7 @@ export function buildClientPeriodLineSeries(
       orders: bucket.orders,
       evOrders: bucket.evOrders,
       nonEvOrders: bucket.nonEvOrders,
-      riders,
-      evRiders,
-      nonEvRiders,
+      ...riderCounts,
     }
   })
 
@@ -1458,5 +1457,10 @@ export function buildClientPeriodLineSeries(
     },
     clients: [...clients].sort().map((name) => ({ name })),
     cities: [...cities].sort().map((name) => ({ name })),
+    ...(includeDetails ? { exportData: {
+      dateFrom: minDate, dateTo: maxDate, contextFrom, latestDate, details, contextDetails,
+      historyDetails: prepared.filter((row) =>
+        (clientFilter === 'All' || row.clientName === clientFilter) && (cityFilter === 'All' || row.cityName === cityFilter)),
+    } } : {}),
   }
 }

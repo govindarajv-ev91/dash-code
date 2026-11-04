@@ -694,7 +694,7 @@ function maxZeroOrderEndDateKey(asOf = new Date()) {
   return format(subDays(startOfDay(asOf), 1), 'yyyy-MM-dd')
 }
 
-function flattenDeployIntervals(vehicleIntervals) {
+export function flattenDeployIntervals(vehicleIntervals) {
   const list = []
   for (const [vKey, intervals] of vehicleIntervals || []) {
     for (const iv of intervals || []) {

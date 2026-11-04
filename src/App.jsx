@@ -264,6 +264,7 @@ const DashboardContent = React.memo(function DashboardContent({
     {activePage === 'dashboard' ? (
       <Dashboard
         riderData={riderData}
+        onboardingData={onboardingData}
         fleetData={fleetData}
         weeklyData={weeklyData}
         loading={loading}

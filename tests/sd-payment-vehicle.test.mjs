@@ -323,6 +323,25 @@ test('an initial source failure displays an error and retry without false zeros 
   assert.deepEqual(fixture.walletCalls, [false])
 })
 
+test('payment history refreshes on entry and after an external upload when the window regains focus', async (t) => {
+  const fixture = globalThis.__sdVehicleFixture
+  const container = await mountViewer(t)
+  assert.ok(fixture.sourceCalls.some((call) => call.source === 'payments' && call.force))
+  const previousCalls = fixture.sourceCalls.slice()
+  const pending = deferred()
+  fixture.paymentsPending = pending.promise
+  await act(async () => window.dispatchEvent(new Event('focus')))
+  assert.equal(buttonIn(container, 'Export Excel').disabled, true)
+  assert.deepEqual(fixture.sourceCalls, [...previousCalls, { source: 'payments', force: true }])
+  await act(async () => pending.resolve([
+    ...payments, { ...payments[0], id: 2, sd: 100, ev_rent: 200 },
+  ]))
+  assert.match(container.querySelector('[aria-label="Report data status"]').textContent, /Payment history: 2 records/)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, false)
+  const [exported] = await exportCurrent(container)
+  assert.equal(exported['Payment SD Ded. (Total)'], 350)
+})
+
 test('report refresh preserves loaded rows, blocks stale export, and retries only its failed source', async (t) => {
   const fixture = globalThis.__sdVehicleFixture
   const container = await mountViewer(t)

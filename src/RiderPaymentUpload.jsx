@@ -153,6 +153,7 @@ function UploadSection({
   iconColor,
   headerLabels,
   count,
+  countIsExact = true,
   lastUploadAt,
   preview,
   previewColumns,
@@ -177,7 +178,7 @@ function UploadSection({
               {uploadDescription}
             </p>
             <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-              <strong>{count.toLocaleString()}</strong> rows in database
+              {countIsExact ? <><strong>{count.toLocaleString()}</strong> rows in database</> : <>Database count unavailable · <strong>{count.toLocaleString()}</strong> preview rows loaded</>}
             </p>
             {count > 0 && lastUploadAt ? (
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -297,6 +298,7 @@ function UploadSection({
 
 export default function RiderPaymentUpload() {
   const [paymentCount, setPaymentCount] = useState(0)
+  const [paymentCountIsExact, setPaymentCountIsExact] = useState(true)
   const [paymentPreview, setPaymentPreview] = useState([])
   const [paymentMonths, setPaymentMonths] = useState([])
   const [paymentResetMonth, setPaymentResetMonth] = useState('')
@@ -353,6 +355,7 @@ export default function RiderPaymentUpload() {
       }),
     ])
     setPaymentCount(payment.count)
+    setPaymentCountIsExact(payment.countIsExact !== false && !payment.timedOut)
     setPaymentPreview(payment.preview)
     setPaymentMonths(payment.months || [])
     setPaymentLastUpload(payment.lastUploadAt ?? null)
@@ -740,6 +743,7 @@ export default function RiderPaymentUpload() {
         iconColor="var(--accent-green)"
         headerLabels={RIDER_PAYMENT_HEADER_LABELS}
         count={paymentCount}
+        countIsExact={paymentCountIsExact}
         lastUploadAt={paymentLastUpload}
         preview={paymentPreview}
         previewColumns={[

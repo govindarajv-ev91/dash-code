@@ -4,6 +4,7 @@ import { normalizeSummaryClient } from './clientSummaryClients'
 import { normalizeRiderIdKey } from './riderPerformanceReport'
 import { toMetricDateKey } from './mergeRiderMetrics'
 import { addTrendRider, countTrendRiders } from './overviewClientTrendRiders.js'
+import { getClientMfMargin } from './fullDataCommercialRates'
 import { format, getISOWeek, parseISO, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns'
 
 function normalizePhone(value) {
@@ -1234,13 +1235,15 @@ export function buildClientWisePaymentMetrics(
 
 /**
  * Month-wise line series for one client (or all) within an Indian FY.
- * Returns Apr→Mar points: gross, orders, riders + client list for filters.
+ * Returns Apr→Mar points: gross, MF amount, orders, riders + client list for filters.
  */
 export function buildClientMonthLineSeries(
   paymentRows = [],
-  { dateFrom = '', dateTo = '', financialYear = '', client = '', monthLimit = 0 } = {}
+  { dateFrom = '', dateTo = '', financialYear = '', client = '', city = 'All', monthLimit = 0 } = {}
 ) {
   const clientFilter = (client || '').toString().trim()
+  const cityFilter = city && city !== 'All' ? normalizeSummaryCity(city) : ''
+  const citySet = new Set()
   const byMonth = new Map()
   const clientSet = new Map() // name → gross for sorting options
   const allRiders = new Set()
@@ -1254,6 +1257,10 @@ export function buildClientMonthLineSeries(
     if (dateFrom && parsed.end < dateFrom) continue
     if (dateTo && parsed.start > dateTo) continue
     if (financialYear && parsed.fyLabel !== financialYear) continue
+
+    const cityName = normalizeSummaryCity(row.city)
+    citySet.add(cityName)
+    if (cityFilter && cityName !== cityFilter) continue
 
     const clientName =
       normalizeSummaryClient(pickText(row.client_name)) ||
@@ -1273,12 +1280,14 @@ export function buildClientMonthLineSeries(
         sortKey: parsed.sortKey,
         fyMonthOrder: parsed.fyMonthOrder,
         gross: 0,
+        mfAmount: 0,
         orders: 0,
         riders: new Set(),
       })
     }
     const bucket = byMonth.get(key)
     bucket.gross += num(row.gross_payout)
+    bucket.mfAmount += num(row.gross_payout) * getClientMfMargin(clientName, row.city)
     bucket.orders += num(row.orders)
     const riderId = (row.rider_id ?? '').toString().trim()
     if (riderId) {
@@ -1295,6 +1304,7 @@ export function buildClientMonthLineSeries(
       sortKey: row.sortKey,
       fyMonthOrder: row.fyMonthOrder,
       gross: row.gross,
+      mfAmount: row.mfAmount,
       orders: row.orders,
       riders: row.riders.size,
     }))
@@ -1312,6 +1322,7 @@ export function buildClientMonthLineSeries(
           monthKey: `gap-${i}`,
           fyMonthOrder: i,
           gross: 0,
+          mfAmount: 0,
           orders: 0,
           riders: 0,
         })
@@ -1337,13 +1348,14 @@ export function buildClientMonthLineSeries(
   const totals = useSeries.reduce(
     (acc, row) => {
       acc.gross += row.gross
+      acc.mfAmount += row.mfAmount
       acc.orders += row.orders
       return acc
     },
-    { gross: 0, orders: 0, riders: allRiders.size, months: useSeries.length }
+    { gross: 0, mfAmount: 0, orders: 0, riders: allRiders.size, months: useSeries.length }
   )
 
-  return { series: useSeries, totals, clients }
+  return { series: useSeries, totals, clients, cities: [...citySet].sort((a, b) => a.localeCompare(b)) }
 }
 
 /** Date-based Order Upload series with client/city filters and rolling active riders. */

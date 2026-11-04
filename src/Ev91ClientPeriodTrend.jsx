@@ -11,6 +11,7 @@ import { attachClientPeriodHorizontalScroll } from './lib/clientPeriodHorizontal
 import { clientPeriodValueLevels, TREND_VALUE_COLORS } from './lib/clientPeriodValueColors'
 import { useSourceMaster } from './lib/useSourceMaster'
 import { isListedSource } from './lib/sourceMaster'
+import Ev91ClientPeriodChart from './components/Ev91ClientPeriodChart'
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -252,7 +253,7 @@ function buildRiderReport(rows, filters, mode, periods) {
   return { rows: reportRows, totals, grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0) }
 }
 
-export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS }) {
+export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS, chartOnly = false }) {
   const { sourceIndex, sourcesLoading, sourceError, refreshSources } = useSourceMaster()
   const pageRef = useRef(null)
   const filtersRef = useRef(null)
@@ -509,6 +510,13 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     setSelectedTable(value)
     pageRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
   }
+
+  if (chartOnly) return <Ev91ClientPeriodChart
+    revenue={activeReport} riders={activeRiderReport} sources={sourceReport}
+    options={options} filters={filters} setFromDate={setFromDate} setToDate={setToDate}
+    setCity={setCity} setClient={setClient} viewMode={viewMode} setViewMode={setViewMode}
+    loading={loading || sourcesLoading} error={error || sourceError}
+  />
 
   return (
     <div className="page-container ev91-client-trend-page" ref={pageRef}>

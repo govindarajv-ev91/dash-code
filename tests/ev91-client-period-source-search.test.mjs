@@ -296,6 +296,37 @@ test('monthly client and source rider counts deduplicate weeks in the tables and
   assert.doesNotMatch(tables()[1].textContent, /Blinkit/)
 })
 
+test('overview graph shares table metrics, source visibility and weekly/monthly date filters', async (t) => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  t.after(async () => { await act(async () => root.unmount()); container.remove() })
+  await act(async () => root.render(createElement(Trend, { chartOnly: true })))
+  assert.ok(container.querySelector('[aria-label="EV91 client period trend graph"]'))
+  assert.equal(container.querySelectorAll('table').length, 0)
+  const change = async (label, value) => act(async () => {
+    const select = container.querySelector(`[aria-label="${label}"]`)
+    Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set.call(select, value)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  const total = () => container.querySelector('[aria-label="Period graph total"]').textContent
+  assert.match(total(), /350/)
+  await change('Period graph metric', 'clientRiders')
+  assert.equal(total(), 'Client rider count: 3')
+  await change('Period graph metric', 'sourceRiders')
+  assert.equal(total(), 'Source rider count: 3')
+  await change('Period graph metric', 'sourceRevenue')
+  assert.match(total(), /350/)
+  await change('Period graph frequency', 'monthly')
+  assert.equal(globalThis.__sourcePaymentQuery.monthly, true)
+  assert.match(total(), /350/)
+  await change('Period graph City', 'Chennai')
+  await change('Period graph Client', 'Blinkit')
+  assert.match(total(), /350/)
+  assert.ok(container.querySelector('[aria-label="Period graph From"]'))
+  assert.ok(container.querySelector('[aria-label="Period graph To"]'))
+})
+
 test('returning focus keeps tables visible during refresh, then applies source changes', async (t) => {
   const container = document.createElement('div')
   document.body.appendChild(container)

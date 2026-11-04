@@ -27,6 +27,24 @@ const server = await createServer({
 })
 const payments = await server.ssrLoadModule('/src/lib/riderPaymentDb.js')
 const manual = await server.ssrLoadModule('/src/lib/manualCollationDb.js')
+
+test('payment upload count uses exact rows rather than stale planner estimates', async () => {
+  reply = (query) => {
+    if (query.select[1]?.count === 'exact') return { data: null, error: null, count: 197392 }
+    if (query.select[1]?.count) return { data: null, error: null, count: 204827 }
+    return { data: [{ id: 1 }], error: null }
+  }
+  assert.equal(await payments.fetchRiderPaymentCount(), 197392)
+  assert.ok(queries.some((query) => query.select[1]?.count === 'exact'))
+  assert.ok(!queries.some((query) => ['estimated', 'planned'].includes(query.select[1]?.count)))
+})
+
+test('payment upload count does not substitute an estimate when the exact count fails', async () => {
+  reply = (query) => query.select[1]?.count === 'exact'
+    ? { error: { code: '57014', message: 'count timed out' } }
+    : { data: [{ id: 1 }], error: null, count: 204827 }
+  await assert.rejects(payments.fetchRiderPaymentCount(), { code: '57014' })
+})
 after(async () => { await server.close(); delete globalThis.__sdLoadingClient })
 beforeEach(() => {
   queries.length = 0
@@ -254,7 +272,7 @@ test('payment: retry resumes saved range checkpoints and never repeats the initi
   const retried = await payments.fetchRiderPaymentsForSdRent({ force: true })
   assert.deepEqual(retried.map((row) => row.id), rows.map((row) => row.id))
   const resumed = queries.slice(previousQueries)
-  assert.ok(resumed.every((query) => query.gte && query.gt), 'only unfinished ranges continue from their saved cursor')
+  assert.ok(resumed.every((query) => query.select[0] === 'id' || (query.gte && query.gt)), 'check the latest ID, then continue only unfinished ranges from their saved cursor')
 })
 
 test('payment: an upload arriving mid-scan is included on refresh, outside the original maximum ID', async () => {
@@ -270,4 +288,19 @@ test('payment: an upload arriving mid-scan is included on refresh, outside the o
   const refreshed = await payments.fetchRiderPaymentsForSdRent({ force: true })
   assert.equal(refreshed.length, 9)
   assert.equal(refreshed.at(-1).rider_id, 'NEW-UPLOAD')
+})
+
+test('payment: retry after an external upload discards the old scan bound and includes every new row', async () => {
+  const rows = Array.from({ length: 22 }, (_, index) => ({ id: index + 1, rider_id: `R-${index}`, sd: 50 }))
+  const dataReply = database(rows, 2)
+  reply = (query) => query.gte && query.gt
+    ? { data: null, error: { code: '42703', message: 'Temporary test failure' } }
+    : dataReply(query)
+  await assert.rejects(payments.fetchRiderPaymentsForSdRent(), { code: '42703' })
+  rows.push({ id: 23, rider_id: 'EXTERNAL-UPLOAD', sd: 100 })
+  reply = dataReply
+  const loaded = await payments.fetchRiderPaymentsForSdRent({ force: true })
+  assert.equal(loaded.length, 23)
+  assert.equal(loaded.at(-1).rider_id, 'EXTERNAL-UPLOAD')
+  assert.equal(new Set(loaded.map((row) => row.id)).size, 23)
 })

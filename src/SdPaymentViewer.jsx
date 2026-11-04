@@ -29,13 +29,13 @@ const loadMappingRows = ({ force } = {}) => {
 
 // Each complete source becomes usable independently. Failed scans never become
 // empty financial datasets, and retries preserve the last successful result.
-function useReportSource(load, label) {
+function useReportSource(load, label, refreshOnVisit = false) {
   const [result, setResult] = useState({ rows: EMPTY_SD_ROWS, loaded: false, loading: true, error: '' })
   const [revision, setRevision] = useState(0)
   useEffect(() => {
     let cancelled = false
     let lastProgressAt = -Infinity
-    load({ force: revision > 0, onProgress: (progress) => {
+    load({ force: refreshOnVisit || revision > 0, onProgress: (progress) => {
       // Several ranges finish pages together; avoid rebuilding the visible
       // table for every network batch while still showing live progress.
       const now = performance.now()
@@ -49,9 +49,18 @@ function useReportSource(load, label) {
         error: error?.message || `Unable to load ${label.toLowerCase()}.` }))
     })
     return () => { cancelled = true }
-  }, [load, label, revision])
+  }, [load, label, revision, refreshOnVisit])
+  useEffect(() => {
+    if (!refreshOnVisit) return
+    const refresh = () => {
+      setResult((previous) => ({ ...previous, loading: true, error: '', progress: undefined }))
+      setRevision((value) => value + 1)
+    }
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [refreshOnVisit])
   const reload = () => {
-    setResult((previous) => ({ ...previous, loading: true, error: '' }))
+    setResult((previous) => ({ ...previous, loading: true, error: '', progress: undefined }))
     setRevision((value) => value + 1)
   }
   return { ...result, label, reload }
@@ -83,7 +92,7 @@ function StatCard({ label, value, icon: Icon, color = 'var(--accent-blue)', icon
 
 export default function SdPaymentViewer() {
   const [activeTab, setActiveTab] = useState('sd')
-  const payments = useReportSource(fetchRiderPaymentsForSdRent, 'Payment history')
+  const payments = useReportSource(fetchRiderPaymentsForSdRent, 'Payment history', true)
   const collation = useReportSource(fetchManualCollationForSdRent, 'Manual collections')
   const overall = useReportSource(loadOverallRows, 'Vehicle history')
   const mapping = useReportSource(loadMappingRows, 'Rider mapping')

@@ -29,16 +29,61 @@ const server = await createServer({
 })
 const api = await server.ssrLoadModule('/src/lib/riderPaymentDb.js')
 const { buildMonthlyRevenueSeries } = await server.ssrLoadModule('/src/lib/paymentHistoryReport.js')
+const { buildClientMonthLineSeries } = await server.ssrLoadModule('/src/lib/paymentHistoryReport.js')
 after(async () => { await server.close(); delete globalThis.__revenueClient })
 beforeEach(() => { calls.length = 0; api.clearRiderPaymentCache() })
 
 function grouped(month, index, gross = 100) {
-  return { id: `${month}|Client|${index}`, month, client_name: 'Client', rider_id: `00${index}`,
+  return { id: `${month}|Client|${index}`, month, client_name: 'Client', city: 'Chennai', rider_id: `00${index}`,
     orders: '10', gross_payout: String(gross), final_net_payout: String(gross - 5) }
 }
+
+test('monthly MF sums revenue times each client rate and respects filters, gaps and BB city overrides', () => {
+  const rows = [
+    { month: 'Apr-2026', client_name: 'Amazon', gross_payout: 1000 },
+    { month: 'Apr-2026', client_name: 'Zepto', gross_payout: 2000 },
+    { month: 'Apr-2026', client_name: 'BB', gross_payout: 1000, city: 'Chennai' },
+    { month: 'Apr-2026', client_name: 'BB', gross_payout: 1000 },
+    { month: 'May-2026', client_name: 'Zomato', gross_payout: 1000 },
+    { month: 'May-2026', client_name: 'Unknown', gross_payout: 1000 },
+    { month: 'Apr-2025', client_name: 'Amazon', gross_payout: 9999 },
+  ]
+  const report = buildClientMonthLineSeries(rows, { financialYear: 'FY 2026-27' })
+  assert.equal(report.series[0].mfAmount, 270)
+  assert.equal(report.series[1].mfAmount, 70)
+  assert.equal(report.series[2].mfAmount, 0)
+  assert.equal(report.totals.mfAmount, 340)
+  assert.equal(buildClientMonthLineSeries(rows, { financialYear: 'FY 2026-27', client: 'BB' }).totals.mfAmount, 110)
+  assert.equal(buildClientMonthLineSeries(rows, { dateFrom: '2026-05-01', dateTo: '2026-05-31' }).totals.mfAmount, 70)
+})
+
+test('client month city filter normalizes aliases and filters all four metrics with the client selection', () => {
+  const rows = [
+    { month: 'Apr-2026', client_name: 'BB', city: 'Chennai', rider_id: 'R1', orders: 10, gross_payout: 1000 },
+    { month: 'Apr-2026', client_name: 'BB', city: 'Bangalore', rider_id: 'R2', orders: 20, gross_payout: 2000 },
+    { month: 'Apr-2026', client_name: 'Amazon', city: 'Bengaluru', rider_id: 'R3', orders: 30, gross_payout: 3000 },
+    { month: 'Apr-2026', client_name: 'Amazon', rider_id: 'R4', orders: 40, gross_payout: 4000 },
+  ]
+  const build = (options) => buildClientMonthLineSeries(rows, { financialYear: 'FY 2026-27', ...options })
+  const all = build({})
+  assert.deepEqual(all.cities, ['Bengaluru', 'Chennai', 'Unknown'])
+  const city = build({ city: 'Bangalore' })
+  assert.equal(city.totals.gross, 5000)
+  assert.equal(city.totals.mfAmount, 360)
+  assert.equal(city.totals.orders, 50)
+  assert.equal(city.totals.riders, 2)
+  const client = build({ city: 'Bengaluru', client: 'BB' })
+  assert.equal(client.totals.gross, 2000)
+  assert.equal(client.totals.mfAmount, 120)
+  assert.equal(client.totals.orders, 20)
+  assert.equal(client.totals.riders, 1)
+  assert.equal(build({ city: 'Unknown' }).totals.gross, 4000)
+  assert.equal(build({ city: 'Hyderabad' }).totals.gross, 0)
+  assert.equal(all.totals.gross, 10000)
+})
 function rpcReply(rows, { cap = 1000, count = true } = {}) {
   return (query) => {
-    assert.equal(query.rpc, 'rider_payment_revenue_overview', 'no raw downloads when the summary works')
+    assert.equal(query.rpc, 'rider_payment_revenue_overview_city', 'no raw downloads when the summary works')
     assert.deepEqual(query.order.map(([key]) => key), ['month', 'client_name', 'rider_id', 'id'])
     const [from, to] = query.range
     return { data: rows.slice(from, Math.min(to + 1, from + cap)), error: null,
@@ -61,6 +106,7 @@ test('overview loads months beyond the capped April response and shares only com
   assert.equal(all, shared)
   assert.equal(all.length, rows.length)
   assert.equal(all[0].rider_id, '000')
+  assert.equal(all[0].city, 'Chennai')
   const chart = buildMonthlyRevenueSeries(all, { financialYear: 'FY 2026-27' })
   assert.deepEqual(chart.series.map((row) => row.monthKey), ['2026-04', '2026-08', '2026-09', '2026-10'])
   assert.equal(chart.totals.gross, 300900)

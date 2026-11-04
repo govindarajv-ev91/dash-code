@@ -31,6 +31,7 @@ export function createSdRentPaymentScan(client, columns) {
   let estimatedRows = null
   let loadedRows = 0
   let complete = false
+  let snapshotMaxId = null
 
   return {
     get complete() { return complete },
@@ -38,6 +39,21 @@ export function createSdRentPaymentScan(client, columns) {
       const controller = new AbortController()
       const report = () => onProgress({ loadedRows, estimatedRows, complete })
       report()
+
+      // A failed scan can outlive an upload in another tab. Its old upper bound
+      // must not be published as the complete current payment history on retry.
+      if (ranges && !complete) {
+        const latest = await readInitialPage(() => client.from(TABLE).select('id')
+          .order('id', { ascending: false }).limit(1), controller.signal)
+        const latestMaxId = latest.data?.length ? rowId(latest.data[0]) : null
+        if (latestMaxId !== snapshotMaxId) {
+          firstRows = null
+          ranges = null
+          estimatedRows = null
+          loadedRows = 0
+          report()
+        }
+      }
 
       if (!ranges) {
         // A maximum ID bounds this scan while new uploads are arriving. Reuse
@@ -62,6 +78,7 @@ export function createSdRentPaymentScan(client, columns) {
           ranges = []
         } else {
           const maxId = rowId(last.data[0])
+          snapshotMaxId = maxId
           firstRows = (first.data || []).filter((row) => rowId(row) <= maxId)
           if (!firstRows.length) throw new Error('Payment history changed during loading. Please retry.')
           const start = rowId(firstRows.at(-1)) + 1n

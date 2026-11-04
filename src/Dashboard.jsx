@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useDeferredValue, useEffect, useCallback, useRef } from 'react'
+import React, { lazy, Suspense, useState, useMemo, useDeferredValue, useEffect, useCallback, useRef } from 'react'
 import { 
   LineChart,
   Line,
@@ -61,9 +61,11 @@ import {
 } from './lib/vehicleKmProductivityReport'
 
 const COLORS = ['#6366f1', '#38bdf8', '#a855f7', '#fb7185', '#4ade80']
+const Ev91ClientPeriodTrendGraph = lazy(() => import('./Ev91ClientPeriodTrend'))
 /** Line chart colors for client month-wise metrics. */
 const CLIENT_LINE_COLORS = {
   revenue: '#38bdf8',
+  mfAmount: '#fbbf24',
   orders: '#4ade80',
   riders: '#c084fc',
 }
@@ -501,7 +503,7 @@ function buildActiveRiderDailySeries(ridersByDate, from, to) {
   }
 }
 
-const Dashboard = ({ riderData, loading, refreshData }) => {
+const Dashboard = ({ riderData, loading, refreshData, onboardingData }) => {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [ev91StatusSummary, setEv91StatusSummary] = useState(null)
@@ -518,6 +520,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
   const paymentRequestRef = useRef(0)
   const [revenueFy, setRevenueFy] = useState(() => currentIndianFinancialYearLabel())
   const [paymentClient, setPaymentClient] = useState('All')
+  const [paymentCity, setPaymentCity] = useState('All')
   const [uploadMonthClient, setUploadMonthClient] = useState('All')
   const [uploadPeriod, setUploadPeriod] = useState('monthly')
   const [uploadMetric, setUploadMetric] = useState('riders')
@@ -849,8 +852,9 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
         dateFrom: filterFrom,
         dateTo: filterTo,
         client: paymentClient,
+        city: paymentCity,
       }),
-    [paymentRows, revenueFy, filterFrom, filterTo, paymentClient]
+    [paymentRows, revenueFy, filterFrom, filterTo, paymentClient, paymentCity]
   )
 
   const uploadClientMonthLine = useMemo(
@@ -1503,10 +1507,13 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
             </h4>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-dim)' }}>
               Line chart · {revenueFy} · Apr → Mar
+              {' · MF = Revenue × client MF rate; BB defaults to 5% when city is unavailable'}
               {!paymentLoading && !paymentError && (
                 <>
                   {' · '}
                   Revenue {formatInr(clientMonthLine.totals.gross)}
+                  {' · '}
+                  Total MF Amount {formatInr(clientMonthLine.totals.mfAmount)}
                   {' · '}
                   Orders {clientMonthLine.totals.orders.toLocaleString('en-IN')}
                   {' · '}
@@ -1515,6 +1522,15 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               )}
             </p>
           </div>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+            City
+            <select aria-label="Client month trend city" value={paymentCity} onChange={(event) => setPaymentCity(event.target.value)} className="fsr-select"
+              style={{ padding: '0.35rem 0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: 8, minWidth: 160 }}>
+              <option value="All">All cities</option>
+              {(clientMonthLine.cities || []).map((city) => <option key={city} value={city}>{city}</option>)}
+            </select>
+          </label>
           <label
             style={{
               display: 'flex',
@@ -1546,6 +1562,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
               ))}
             </select>
           </label>
+          </div>
         </div>
         <div style={{ height: '320px', width: '100%' }}>
           {paymentLoading && !(clientMonthLine.clients || []).length ? (
@@ -1580,7 +1597,7 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                 />
                 <Tooltip
                   formatter={(value, name) => {
-                    if (name === 'Revenue') return [formatInr(value), name]
+                    if (name === 'Revenue' || name === 'Total MF Amount') return [formatInr(value), name]
                     return [Number(value).toLocaleString('en-IN'), name]
                   }}
                   contentStyle={{
@@ -1598,6 +1615,16 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
                   stroke={CLIENT_LINE_COLORS.revenue}
                   strokeWidth={2.5}
                   dot={{ r: 3, fill: CLIENT_LINE_COLORS.revenue }}
+                  activeDot={{ r: 5 }}
+                />
+                <Line
+                  yAxisId="revenue"
+                  type="monotone"
+                  dataKey="mfAmount"
+                  name="Total MF Amount"
+                  stroke={CLIENT_LINE_COLORS.mfAmount}
+                  strokeWidth={2.5}
+                  dot={{ r: 3, fill: CLIENT_LINE_COLORS.mfAmount }}
                   activeDot={{ r: 5 }}
                 />
                 <Line
@@ -1723,6 +1750,10 @@ const Dashboard = ({ riderData, loading, refreshData }) => {
         loading={loading || ev91StatusLoading || ev91OverallLoading}
         error={ev91StatusError || ev91OverallError}
       />
+
+      <Suspense fallback={<p role="status">Loading EV91 period graph…</p>}>
+        <Ev91ClientPeriodTrendGraph chartOnly onboardingData={onboardingData} />
+      </Suspense>
 
       <section className="glass" aria-label="Rider attrition chart" style={{ marginTop: '1.25rem', padding: '1.5rem', minWidth: 0, width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>

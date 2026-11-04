@@ -1,7 +1,7 @@
 import { supabase } from './supabaseClient'
 import { readSupabasePage } from './supabaseFetch'
 
-const RPC = 'rider_payment_revenue_overview'
+const RPC = 'rider_payment_revenue_overview_city'
 const PAGE_SIZE = 1000
 const TIMEOUT_MS = 15000
 

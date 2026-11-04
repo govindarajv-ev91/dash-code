@@ -56,7 +56,8 @@ export function isMissingRiderPaymentTable(error) {
 }
 
 export async function fetchRiderPaymentCount() {
-  return fetchTableCount(RIDER_PAYMENT_TABLE)
+  // Planner statistics can lag uploads and overstate the actual row count.
+  return fetchTableCount(RIDER_PAYMENT_TABLE, { requireExact: true })
 }
 
 /** Columns shown on the upload page preview (avoid select * on wide rows). */
@@ -283,7 +284,7 @@ async function fetchPaymentPeriodRange(columns, { fromDate, toDate }) {
 /** Slim revenue/overview cache for General Overview. */
 let cachedRevenue = null
 let revenueInflight = null
-const REVENUE_CACHE_VERSION = 5
+const REVENUE_CACHE_VERSION = 7
 let cachedRevenueVersion = 0
 let revenueRawScan = null
 let revenueProgress = null
@@ -433,7 +434,7 @@ export function clearRiderPaymentCache() {
 
 /** Slim columns for General Overview payment charts (revenue / riders / orders / client). */
 export const RIDER_PAYMENT_REVENUE_COLUMNS =
-  'id,month,client_name,rider_id,orders,gross_payout,final_net_payout'
+  'id,month,client_name,city,rider_id,orders,gross_payout,final_net_payout'
 
 export async function fetchRiderPaymentsForRevenue({ force = false, onProgress } = {}) {
   if (onProgress) {
@@ -468,6 +469,7 @@ export async function fetchRiderPaymentsForRevenue({ force = false, onProgress }
         id: row.id ?? `${row.month || ''}-${row.client_name || ''}-${row.rider_id || ''}`,
         month: row.month,
         client_name: row.client_name,
+        city: row.city,
         rider_id: row.rider_id,
         orders: Number(row.orders || 0),
         gross_payout: Number(row.gross_payout || 0),
@@ -510,11 +512,13 @@ export async function loadRiderPaymentSummary() {
     }
 
     let count = 0
+    let countIsExact = true
     try {
       count = await fetchRiderPaymentCount()
     } catch (err) {
       if (isMissingRiderPaymentTable(err)) throw err
       count = preview.length
+      countIsExact = false
     }
     if (count === 0 && preview.length > 0) count = preview.length
 
@@ -528,7 +532,7 @@ export async function loadRiderPaymentSummary() {
     months = mergeMonthLists(months, collectMonthsFromRows(preview))
 
     const lastUploadAt = await fetchLastUploadAtSafe(RIDER_PAYMENT_TABLE)
-    return { count, preview, months, lastUploadAt, fromDb: true }
+    return { count, countIsExact, preview, months, lastUploadAt, fromDb: true }
   } catch (err) {
     if (isMissingRiderPaymentTable(err)) {
       return { count: 0, preview: [], months: [], lastUploadAt: null, fromDb: false, missingTable: true }

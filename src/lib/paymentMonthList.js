@@ -51,12 +51,19 @@ export function isStatementTimeout(error) {
  * Prefer estimated count — exact COUNT(*) often hits statement_timeout on large tables.
  * Full id scan is opt-in only (allowFullScan) because it times out on big uploads.
  */
-export async function fetchTableCount(tableName, { maxRetries = 8, allowFullScan = false } = {}) {
+export async function fetchTableCount(tableName, { maxRetries = 8, allowFullScan = false, requireExact = false } = {}) {
   if (!tableName) return 0
 
   const probe = await supabase.from(tableName).select('id').limit(1)
   if (probe.error) throw probe.error
   if (!probe.data?.length) return 0
+
+  if (requireExact) {
+    const exact = await supabase.from(tableName).select('id', { count: 'exact', head: true })
+    if (exact.error) throw exact.error
+    if (!Number.isSafeInteger(exact.count) || exact.count < 0) throw new Error(`Exact count unavailable for ${tableName}`)
+    return exact.count
+  }
 
   const estimated = await supabase.from(tableName).select('id', { count: 'estimated', head: true })
   if (!estimated.error && estimated.count != null && estimated.count > 0) return estimated.count

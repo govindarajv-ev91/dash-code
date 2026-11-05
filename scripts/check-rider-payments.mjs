@@ -3,7 +3,7 @@ import { loadEnv } from 'vite'
 const env = { ...loadEnv('development', process.cwd(), ''), ...process.env }
 const key = env.RIDER_PAYMENT_API_KEY?.trim()
 if (!key) throw new Error('Set RIDER_PAYMENT_API_KEY in .env.local before checking the API.')
-const url = new URL(process.argv[2] || 'https://main.d2y6lleakorn3s.amplifyapp.com/api/rider-payments?ev91_id=CHE-26-R001711')
+const url = new URL(process.argv[2] || 'https://main.d2y6lleakorn3s.amplifyapp.com/api/rider-payments/HYD-26-R000016')
 if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) {
   throw new Error('Use HTTPS or a local development URL.')
 }

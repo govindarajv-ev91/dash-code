@@ -1,5 +1,11 @@
 [
   {
+    "source": "/api/rider-payments/<*>",
+    "target": "https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments/<*>",
+    "status": "200",
+    "condition": null
+  },
+  {
     "source": "/api/rider-payments",
     "target": "https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments",
     "status": "200",

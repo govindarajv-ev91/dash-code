@@ -21,6 +21,10 @@
   },
   "rewrites": [
     {
+      "source": "/api/rider-payments/:ev91_id",
+      "destination": "/api/rider-payments?ev91_id=:ev91_id"
+    },
+    {
       "source": "/feeds/rider-performance-:page.csv",
       "destination": "/api/rider-performance-csv?google=1&page=:page"
     },

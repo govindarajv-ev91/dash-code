@@ -4,6 +4,24 @@ import { createRiderPaymentsHandler } from '../api/rider-payments.js'
 import { fetchRiderPaymentFeed, paymentMonthWindow } from '../api/lib/riderPaymentFeed.js'
 
 const RIDER = 'CHE-26-R001711'
+
+test('path parameters work across local and deployed URLs and override legacy queries', async () => {
+  let calls = 0
+  const handler = createRiderPaymentsHandler({ getApiKey: () => 'path-key', getClient: () => ({}),
+    load: async ({ riderId }) => { calls++; return { success: true, ev91_id: riderId } } })
+  const request = (path) => new Request(`https://example.com${path}`, { headers: { 'x-api-key': 'path-key' } })
+  for (const base of ['/api/rider-payments', '/functions/v1/rider-payments', '/rider-payments']) {
+    const response = await handler(request(`${base}/HYD-26-R000016?ev91_id=OTHER-ID`))
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).ev91_id, 'HYD-26-R000016')
+  }
+  assert.equal((await handler(request('/api/rider-payments/hyd-26-r000016/'))).status, 200)
+  const before = calls
+  for (const invalid of ['/', '/BAD/EXTRA', '/%ZZ', '/BAD%2FEXTRA']) {
+    assert.equal((await handler(request(`/api/rider-payments${invalid}?ev91_id=${RIDER}`))).status, 400)
+  }
+  assert.equal(calls, before)
+})
 const now = new Date('2026-11-04T10:00:00Z')
 function setKey(t, value) {
   const previous = process.env.RIDER_PAYMENT_API_KEY

@@ -20,7 +20,7 @@ test('deployed function authenticates using injected secrets without the local e
     getClient: () => { calls++; return {} },
     load: async ({ riderId }) => ({ success: true, ev91_id: riderId, count: 0, data: [] }),
   })
-  const url = 'https://example.supabase.co/functions/v1/rider-payments?ev91_id=CHE-26-R001711'
+  const url = 'https://example.supabase.co/functions/v1/rider-payments/CHE-26-R001711'
   assert.equal((await handler(new Request(url))).status, 401)
   assert.equal(calls, 0)
   const response = await handler(new Request(url, { headers: { 'x-api-key': 'edge-secret' } }))
@@ -48,6 +48,10 @@ test('Amplify routes payment requests to the function before the HTML fallback',
   assert.ok(index >= 0 && index < rules.findIndex((rule) => rule.target === '/index.html'))
   assert.equal(rules[index].status, '200')
   assert.equal(rules[index].target, 'https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments')
+  const pathIndex = rules.findIndex((rule) => rule.source === '/api/rider-payments/<*>')
+  assert.ok(pathIndex >= 0 && pathIndex < rules.findIndex((rule) => rule.target === '/index.html'))
+  assert.equal(rules[pathIndex].status, '200')
+  assert.equal(rules[pathIndex].target, 'https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments/<*>')
   const config = await readFile(new URL('../supabase/config.toml', import.meta.url), 'utf8')
   assert.match(config, /\[functions\.rider-payments\][\s\S]*?verify_jwt = false/)
 })

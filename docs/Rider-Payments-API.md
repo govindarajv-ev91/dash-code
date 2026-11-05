@@ -1,18 +1,21 @@
 # Rider Payments API
 
-`GET /api/rider-payments?ev91_id=CHE-26-R001711`
+`GET /api/rider-payments/HYD-26-R000016`
 
 Production (AWS Amplify):
 
 ```text
-https://main.d2y6lleakorn3s.amplifyapp.com/api/rider-payments?ev91_id=CHE-26-R001711
+https://main.d2y6lleakorn3s.amplifyapp.com/api/rider-payments/HYD-26-R000016
 ```
+
+The EV91 ID is a path parameter: `/api/rider-payments/:ev91_id`.
+The older query format remains supported for existing callers.
 
 Send the API key in a request header. Opening this URL in a browser address bar
 does not send the required key.
 
 ```sh
-curl 'https://main.d2y6lleakorn3s.amplifyapp.com/api/rider-payments?ev91_id=CHE-26-R001711' \
+curl 'https://main.d2y6lleakorn3s.amplifyapp.com/api/rider-payments/HYD-26-R000016' \
   -H 'x-api-key: YOUR_KEY'
 ```
 
@@ -42,8 +45,8 @@ development. Vercel deployment is not required.
 
    ```json
    {
-     "source": "/api/rider-payments",
-     "target": "https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments",
+     "source": "/api/rider-payments/<*>",
+     "target": "https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments/<*>",
      "status": "200",
      "condition": null
    }
@@ -55,10 +58,10 @@ development. Vercel deployment is not required.
    Without a key, expect JSON HTTP 401 once the backend secret is configured.
    Alternatively run `npm run check:rider-payments`; this reads your local key
    without printing it. To check local development, run
-   `npm run check:rider-payments -- "http://localhost:5173/api/rider-payments?ev91_id=CHE-26-R001711"`.
+   `npm run check:rider-payments -- "http://localhost:5173/api/rider-payments/HYD-26-R000016"`.
 
 For backend troubleshooting, call the function directly with the same header:
-`https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments?ev91_id=CHE-26-R001711`.
+`https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments/HYD-26-R000016`.
 If that works but Amplify returns HTML, check the Amplify rewrite and its order.
 
 ## Local development and response
@@ -72,7 +75,7 @@ secrets for production; never prefix it with `VITE_`. Local Vite dev/preview
 uses the existing Supabase and EV91 MIS environment configuration.
 
 ```sh
-curl 'http://localhost:5173/api/rider-payments?ev91_id=CHE-26-R001711' \
+curl 'http://localhost:5173/api/rider-payments/HYD-26-R000016' \
   -H 'x-api-key: YOUR_KEY'
 ```
 
@@ -90,13 +93,13 @@ read; failures return an error instead of partial payment data.
 ```json
 {
   "success": true,
-  "ev91_id": "CHE-26-R001711",
+  "ev91_id": "HYD-26-R000016",
   "timezone": "Asia/Kolkata",
   "months": ["2026-10", "2026-11"],
   "count": 1,
   "data": [{
     "id": "123",
-    "ev91_id": "CHE-26-R001711",
+    "ev91_id": "HYD-26-R000016",
     "rider_name": "Example Rider",
     "client_id": "00123456",
     "client_name": "Blinkit",

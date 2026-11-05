@@ -23,8 +23,17 @@ export function createRiderPaymentsHandler({ getClient = getSupabase, load = fet
     const header = (name) => req.headers?.get ? req.headers.get(name) : req.headers?.[name]
     const supplied = String(header('x-api-key') || String(header('authorization') || '').replace(/^Bearer\s+/i, '')).trim()
     if (!supplied || !timingSafeEqual(hash(supplied), hash(expected))) return send(401, { success: false, message: 'A valid x-api-key or Bearer token is required.' })
-    const query = req.query || Object.fromEntries(new URL(req.originalUrl || req.url, 'http://localhost').searchParams)
-    const riderId = String(query.ev91_id || query.ev91_rider_id || '').trim().toUpperCase()
+    const url = new URL(req.originalUrl || req.url || '/', 'http://localhost')
+    const query = req.query || Object.fromEntries(url.searchParams)
+    const path = url.pathname.match(/^\/(?:api\/rider-payments|functions\/v1\/rider-payments|rider-payments)\/(.*)$/)
+    let riderId
+    try {
+      // A supplied path always takes precedence; invalid paths cannot fall back
+      // to a different rider supplied in the legacy query format.
+      riderId = String(path ? decodeURIComponent(path[1].replace(/\/$/, '')) : query.ev91_id || query.ev91_rider_id || '').trim().toUpperCase()
+    } catch {
+      return send(400, { success: false, message: 'Provide a valid ev91_id path parameter.' })
+    }
     if (!/^[A-Z0-9][A-Z0-9_-]{2,79}$/.test(riderId)) return send(400, { success: false, message: 'Provide a valid ev91_id.' })
     try {
       return send(200, await load({ riderId, supabase: getClient() }))

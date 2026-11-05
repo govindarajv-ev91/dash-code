@@ -258,6 +258,7 @@ function rentalPendingApiPlugin() {
 function riderPaymentsApiPlugin() {
   const mount = (server) => {
     server.middlewares.use('/api/rider-payments', async (req, res) => {
+      req.originalUrl ||= `/api/rider-payments${req.url || '/'}`
       const env = loadEnv(server.config.mode, process.cwd(), '')
       for (const key of ['RIDER_PAYMENT_API_KEY', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'EV91_MIS_API_KEY']) {
         if (env[key]) process.env[key] = env[key]

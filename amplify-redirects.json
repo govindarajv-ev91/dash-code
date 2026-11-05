@@ -1,5 +1,11 @@
 [
   {
+    "source": "/api/rider-payments",
+    "target": "https://arnxvnkednpzyzyfculx.supabase.co/functions/v1/rider-payments",
+    "status": "200",
+    "condition": null
+  },
+  {
     "source": "/api/ev91-sd-wallet",
     "target": "https://dashboard.ev91riderz.com/api/v1/security-deposit/export/wallet",
     "status": "200",

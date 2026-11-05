@@ -1,6 +1,10 @@
 # Supabase local/CLI config for Edge Functions
 project_id = "arnxvnkednpzyzyfculx"
 
+[functions.rider-payments]
+# The handler verifies RIDER_PAYMENT_API_KEY before querying payment data.
+verify_jwt = false
+
 [functions.rental-pending]
 verify_jwt = false
 

@@ -255,6 +255,27 @@ function rentalPendingApiPlugin() {
   }
 }
 
+function riderPaymentsApiPlugin() {
+  const mount = (server) => {
+    server.middlewares.use('/api/rider-payments', async (req, res) => {
+      const env = loadEnv(server.config.mode, process.cwd(), '')
+      for (const key of ['RIDER_PAYMENT_API_KEY', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'EV91_MIS_API_KEY']) {
+        if (env[key]) process.env[key] = env[key]
+      }
+      try {
+        const { default: handler } = await import('./api/rider-payments.js')
+        await handler(req, res)
+      } catch {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify({ success: false, message: 'Payment API is unavailable.' }))
+      }
+    })
+  }
+  return { name: 'rider-payments-api', configureServer: mount, configurePreviewServer: mount }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   // Keep the running dashboard's optimized dependencies separate from SSR tests.
@@ -267,6 +288,7 @@ export default defineConfig({
     ev91VehiclesApiPlugin(),
     ev91SdWalletApiPlugin(),
     rentalPendingApiPlugin(),
+    riderPaymentsApiPlugin(),
   ],
   server: {
     // Always use 5173. If an old npm run dev is still running, fail instead of

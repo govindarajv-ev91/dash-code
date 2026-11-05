@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/rider-payments.js": {
+      "maxDuration": 60
+    },
     "api/rider-performance-csv.js": {
       "maxDuration": 60
     },

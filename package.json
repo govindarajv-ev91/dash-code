@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "prepare:rider-payments": "node scripts/prepare-rider-payments.mjs",
+    "check:rider-payments": "node scripts/check-rider-payments.mjs",
+    "test:rider-payments": "node --test tests/rider-payments-api.test.mjs tests/rider-payments-deployment.test.mjs",
     "lint": "eslint .",
     "test:auth": "node --test tests/auth.test.mjs tests/dashboard-admin-api.test.mjs tests/admin-service-error.test.mjs tests/dashboard-admin-deployment.test.mjs",
     "test:dashboard-data-access": "node --test tests/dashboard-signed-in-reads.test.mjs",

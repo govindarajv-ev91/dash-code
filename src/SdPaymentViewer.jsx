@@ -50,15 +50,6 @@ function useReportSource(load, label, refreshOnVisit = false) {
     })
     return () => { cancelled = true }
   }, [load, label, revision, refreshOnVisit])
-  useEffect(() => {
-    if (!refreshOnVisit) return
-    const refresh = () => {
-      setResult((previous) => ({ ...previous, loading: true, error: '', progress: undefined }))
-      setRevision((value) => value + 1)
-    }
-    window.addEventListener('focus', refresh)
-    return () => window.removeEventListener('focus', refresh)
-  }, [refreshOnVisit])
   const reload = () => {
     setResult((previous) => ({ ...previous, loading: true, error: '', progress: undefined }))
     setRevision((value) => value + 1)

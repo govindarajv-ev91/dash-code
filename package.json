@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "prepare:client-period-mailer": "node scripts/prepare-client-period-mailer.mjs",
+    "test:client-period-mailer": "node --test tests/client-period-mailer.test.mjs tests/client-period-mail-panel.test.mjs tests/city-mail-settings.test.mjs tests/city-mail-ui.test.mjs",
     "dev": "vite",
     "build": "vite build",
     "prepare:rider-payments": "node scripts/prepare-rider-payments.mjs",

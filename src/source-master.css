@@ -22,3 +22,8 @@
 .source-master-table-wrap .source-master-email { white-space: normal; overflow-wrap: anywhere; min-width: 200px; }
 .source-master-table-wrap { overflow-x: auto; }
 .source-master-page button:disabled { opacity: .5; cursor: not-allowed; }
+
+.client-period-schedule label { display:flex; flex-direction:column; gap:.4rem; font-size:.85rem; }
+.client-period-schedule select { color:#fff; background:#182337; border:1px solid var(--border-color); border-radius:8px; padding:.6rem .75rem; max-width:100%; }
+.client-period-schedule [role=alert] { color:#f87171; }
+.client-period-schedule [role=status] { color:#4ade80; }

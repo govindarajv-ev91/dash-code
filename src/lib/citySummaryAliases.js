@@ -101,6 +101,12 @@ const CITY_CANONICAL_BY_KEY = {
   kerala: 'Kerala',
 }
 
+/** Database filter keys matching the same aliases as the report's city filter. */
+export function summaryCityLookupKeys(value) {
+  const city = normalizeSummaryCity(value)
+  return [...new Set([cityLookupKey(city), ...Object.keys(CITY_CANONICAL_BY_KEY).filter((key) => CITY_CANONICAL_BY_KEY[key] === city)])]
+}
+
 /** Hub suffix codes (e.g. MogappairHub_CHN) → canonical city when city field is missing/wrong. */
 const HUB_SUFFIX_TO_CITY = {
   BLR: 'Bengaluru',

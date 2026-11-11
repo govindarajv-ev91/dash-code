@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Loader, Pencil, Plus, RefreshCw, Search, Trash2, Users } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { deleteSourceMaster, fetchSourceMaster, saveSourceMaster, setSourceMasterActive, sourceMasterError } from './lib/sourceMasterDb'
 import { normalizeSummaryCity } from './lib/citySummaryAliases'
 import './source-master.css'
+const CityMailContacts = lazy(() => import('./components/CityMailContacts'))
 
 const EMPTY_FORM = { city: '', source_name: '', email_id: '', phone_number: '', is_active: true }
 const CITIES = ['Bangalore', 'Chennai', 'Delhi', 'Hyderabad', 'Mumbai', 'Mysore']
 
 export default function SourceMaster({ canManage = false }) {
+  const [showCities, setShowCities] = useState(false)
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -108,6 +110,7 @@ export default function SourceMaster({ canManage = false }) {
       <div><h1><Users size={24} /> Source List</h1>
         <p>Manage city-wise sources shown in Source Wise Data and EV91 Client Period Trend. Export Excel follows the filters below.</p></div>
       <div className="source-master-actions">
+        <button type="button" className="fsr-export-btn" aria-pressed={showCities} onClick={() => setShowCities(!showCities)}>{showCities ? 'Source List' : 'City List'}</button>
         <button type="button" className="fsr-export-btn" disabled={loading || busy || !visible.length} onClick={exportSources}
           title="Export sources matching the current search, city and status filters">
           <Download size={16} /> Export Excel
@@ -117,6 +120,7 @@ export default function SourceMaster({ canManage = false }) {
         </button>
       </div>
     </header>
+    {showCities ? <Suspense fallback={<p role="status">Loading city contacts...</p>}><CityMailContacts canManage={canManage} /></Suspense> : <>
     {error && <div className="glass source-master-message source-master-error" role="alert">{error}</div>}
     {notice && <div className="glass source-master-message" role="status">{notice}</div>}
     {!canManage && <p className="source-master-hint">Sign in with an administrator account to change Active/Inactive status, add, edit or remove sources.</p>}
@@ -184,5 +188,6 @@ export default function SourceMaster({ canManage = false }) {
           </tr>) : <tr><td colSpan={canManage ? 6 : 5}>{rows.length ? 'No sources match these filters.' : 'No sources yet.'}</td></tr>}</tbody>
       </table>
     </div>
+    </>}
   </div>
 }

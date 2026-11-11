@@ -448,7 +448,7 @@ const DashboardContent = React.memo(function DashboardContent({
     ) : activePage === 'ev91-operational' ? (
       <Ev91OperationalStatus />
     ) : activePage === 'ev91-client-period-trend' ? (
-      <Ev91ClientPeriodTrend riderData={riderData} onboardingData={onboardingData} />
+      <Ev91ClientPeriodTrend canManage={!!user && !!isAdmin} riderData={riderData} onboardingData={onboardingData} />
     ) : activePage === 'ev91-sources' ? (
       <SourceMaster canManage={!!user && !!isAdmin} />
     ) : activePage === 'ev91-vehicles' ? (

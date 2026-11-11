@@ -1,17 +1,21 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { normalizeRows, weekHeader, canonicalWeekInfo, comparable, payoutNumber, onboardingPhone, rowMatches, buildRevenueReport, buildRiderReport, periodInfo } from './lib/clientPeriodTrendReports.js'
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { CalendarDays, Download, Loader, RefreshCw, Search, Table2, Users, X } from 'lucide-react'
-import { addDays, endOfMonth, format, getISOWeek, parseISO, startOfMonth, startOfWeek } from 'date-fns'
+import { endOfMonth, format, parseISO, startOfMonth } from 'date-fns'
 import { fetchRiderPaymentsForPeriod } from './lib/riderPaymentDb'
 import { normalizeSummaryCity } from './lib/citySummaryAliases'
 import { buildOnboardingSourceLookupIndex, lookupOnboardingSource } from './lib/onboardingSourceLookup'
 import { riderIdLookupKeys } from './lib/riderPerformanceReport'
-import { buildClientSourceReport, clientPeriodRiderKey } from './lib/ev91ClientSourceReport'
+import { buildClientSourceReport } from './lib/ev91ClientSourceReport'
 import { attachClientPeriodStickyHeader } from './lib/clientPeriodStickyHeader'
 import { attachClientPeriodHorizontalScroll } from './lib/clientPeriodHorizontalScroll'
 import { clientPeriodValueLevels, TREND_VALUE_COLORS } from './lib/clientPeriodValueColors'
 import { useSourceMaster } from './lib/useSourceMaster'
 import { isListedSource } from './lib/sourceMaster'
 import Ev91ClientPeriodChart from './components/Ev91ClientPeriodChart'
+import ClientPeriodMailPanel from './components/ClientPeriodMailPanel'
+
+const ClientPeriodSchedulePanel = lazy(() => import('./components/ClientPeriodSchedulePanel'))
 
 const selectStyle = {
   padding: '0.45rem 0.65rem',
@@ -83,177 +87,8 @@ function defaultFromKey() {
   return '2026-03-30'
 }
 
-function paymentPeriodStart(weekValue, monthValue) {
-  const monthMatch = String(monthValue || '').match(/^([A-Za-z]{3})[-\s]?(\d{2}|\d{4})$/)
-  if (!monthMatch) return ''
-  const monthIndex = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-    .indexOf(monthMatch[1].toLowerCase())
-  let year = Number(monthMatch[2])
-  if (year < 100) year += year >= 70 ? 1900 : 2000
-  const date = new Date(year, monthIndex, 1)
-  const dateWeek = String(weekValue || '').match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
-  if (dateWeek) {
-    const encodedMonth = Number(dateWeek[1])
-    const encodedDay = Number(dateWeek[2])
-    const encodedSuffix = Number(dateWeek[3])
-    if (encodedMonth === 8 && encodedDay === 15 && encodedSuffix === 23) {
-      return '2026-08-17'
-    }
-    const localWeek = Number(dateWeek[2])
-    const periodDate = new Date(year, encodedMonth - 1, 1)
-    periodDate.setDate(periodDate.getDate() + (localWeek - 1) * 7)
-    return format(periodDate, 'yyyy-MM-dd')
-  }
-  const week = Number(weekValue)
-  if (Number.isFinite(week) && week < 10000) {
-    const jan4 = new Date(2000 + (Math.trunc(week) % 100), 0, 4)
-    date.setTime(jan4.getTime())
-    date.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7) + (Math.floor(week / 100) - 1) * 7)
-  } else if (Number.isFinite(week)) {
-    date.setDate(date.getDate() + (Math.trunc(week) % 10000) - 1)
-  } else if (String(weekValue).toLowerCase() === 'advance') {
-    date.setDate(date.getDate() - 1)
-  } else {
-    const offset = Number(String(weekValue || '').split('-')[0])
-    if (Number.isFinite(offset)) date.setDate(date.getDate() + offset - 1)
-  }
-  return format(date, 'yyyy-MM-dd')
-}
-
-function validDateKey(value) {
-  const text = String(value || '').trim()
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : ''
-}
-
-function normalizeRows(rows) {
-  return (rows || [])
-    .filter((row) => row && (row.week || row.period_start) && row.month)
-    .map((row) => {
-      const dateRecord = validDateKey(row.period_start) || paymentPeriodStart(row.week, row.month)
-      const periodLabel = row.period_label || (Number.isFinite(Number(row.week))
-        ? `Week ${Math.floor(Number(row.week) / 100)} (${2000 + (Math.trunc(Number(row.week)) % 100)})`
-        : String(row.week || 'Unknown period'))
-      const riderKey = row.rider_key || `${row.client_name}|${periodLabel}|${row.rider_id || row.rider_name || row.id}`
-      return {
-        ...row,
-        period_start: dateRecord,
-        period_label: periodLabel,
-        rider_key: riderKey,
-        date_record: dateRecord,
-      worker_code: row.rider_id,
-      client: row.client_name,
-      delivered: Number(row.orders) || 0,
-      }
-    })
-}
-
-function weekHeader(weekLabel, startKey) {
-  const weekNumber = String(weekLabel).replace(/^Week\s*/i, '').match(/^\d+/)?.[0] || weekLabel
-  const start = new Date(`${startKey}T00:00:00`)
-  const end = addDays(start, 6)
-  const range = Number.isNaN(start.getTime())
-    ? ''
-    : `${format(start, 'dd-MMM')} to ${format(end, 'dd-MMM')}`
-  return { weekNumber: `Week ${weekNumber}`, range }
-}
-
-function canonicalWeekInfo(row) {
-  const date = parseISO(String(row.period_start || '').slice(0, 10))
-  if (!Number.isNaN(date.getTime())) {
-    const monday = startOfWeek(date, { weekStartsOn: 1 })
-    return {
-      label: `Week ${getISOWeek(date)}`,
-      start: format(monday, 'yyyy-MM-dd'),
-    }
-  }
-  const numericWeek = Number(row.week)
-  const label = Number.isFinite(numericWeek)
-    ? `Week ${numericWeek >= 10000 ? Math.trunc(numericWeek) % 10000 : Math.floor(numericWeek / 100)}`
-    : String(row.period_label || row.week || 'Unknown period')
-  return { label, start: String(row.period_start || '').slice(0, 10) }
-}
-
-function comparable(value) {
-  return String(value || '').trim().toLowerCase()
-}
-
-function payoutNumber(value) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  const parsed = Number(String(value || '').replace(/[₹,\s]/g, ''))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function onboardingPhone(row) {
-  return String(row?.rider_mobile_number || row?.mobile || row?.phone || '').trim()
-}
-
-function periodInfo(row, mode) {
-  if (mode === 'monthly') {
-    const monthText = String(row.month || '').trim()
-    const monthMatch = monthText.match(/^([A-Za-z]{3,9})[-\s/]?(\d{2}|\d{4})$/)
-    if (monthMatch) {
-      const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-      const monthIndex = monthNames.indexOf(monthMatch[1].slice(0, 3).toLowerCase())
-      let year = Number(monthMatch[2])
-      if (year < 100) year += year >= 70 ? 1900 : 2000
-      if (monthIndex >= 0) {
-        const start = `${year}-${String(monthIndex + 1).padStart(2, '0')}-01`
-        const end = format(new Date(year, monthIndex + 1, 0), 'yyyy-MM-dd')
-        return { label: `${monthNames[monthIndex][0].toUpperCase()}${monthNames[monthIndex].slice(1)} ${year}`, start, end }
-      }
-    }
-    const date = parseISO(String(row.period_start || '').slice(0, 10))
-    return {
-      label: Number.isNaN(date.getTime()) ? 'Unknown' : format(date, 'MMM yyyy'),
-      start: Number.isNaN(date.getTime()) ? '' : format(date, 'yyyy-MM-01'),
-      end: Number.isNaN(date.getTime()) ? '' : format(new Date(date.getFullYear(), date.getMonth() + 1, 0), 'yyyy-MM-dd'),
-    }
-  }
-  return canonicalWeekInfo(row)
-}
-
-function rowMatches(row, { city, client, fromDate, toDate }, mode = 'weekly') {
-  const period = periodInfo(row, mode)
-  const startsBeforeEnd = !toDate || period.start <= toDate
-  const endsAfterStart = !fromDate || (mode === 'monthly' ? period.end >= fromDate : period.start >= fromDate)
-  return period.start && startsBeforeEnd && endsAfterStart &&
-    (city === 'All' || normalizeSummaryCity(row.city) === city) &&
-    (client === 'All' || comparable(row.client_name) === comparable(client))
-}
-
-function buildRevenueReport(rows, filters, mode) {
-  const byClient = new Map()
-  const order = new Map()
-  for (const row of rows) {
-    if (!rowMatches(row, filters, mode)) continue
-    const info = periodInfo(row, mode)
-    if (!order.has(info.label)) order.set(info.label, info.start)
-    const name = String(row.client_name || 'Unknown').trim() || 'Unknown'
-    if (!byClient.has(name)) byClient.set(name, {})
-    byClient.get(name)[info.label] = (byClient.get(name)[info.label] || 0) + payoutNumber(row.gross_payout)
-  }
-  const periods = [...order.keys()].sort((a, b) => order.get(a).localeCompare(order.get(b)))
-  const reportRows = [...byClient.entries()].map(([name, values]) => ({ name, values, total: periods.reduce((sum, key) => sum + (values[key] || 0), 0) })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
-  const totals = Object.fromEntries(periods.map((key) => [key, reportRows.reduce((sum, row) => sum + (row.values[key] || 0), 0)]))
-  return { periods, periodStarts: Object.fromEntries(order.entries()), rows: reportRows, totals, grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0) }
-}
-
-function buildRiderReport(rows, filters, mode, periods) {
-  const byClient = new Map()
-  for (const row of rows) {
-    if (!rowMatches(row, filters, mode)) continue
-    const key = periodInfo(row, mode).label
-    const name = String(row.client_name || 'Unknown').trim() || 'Unknown'
-    if (!byClient.has(name)) byClient.set(name, new Map())
-    if (!byClient.get(name).has(key)) byClient.get(name).set(key, new Set())
-    byClient.get(name).get(key).add(clientPeriodRiderKey(row, mode))
-  }
-  const reportRows = [...byClient.entries()].map(([name, values]) => { const counts = Object.fromEntries([...values.entries()].map(([key, set]) => [key, set.size])); return { name, values: counts, total: Object.values(counts).reduce((sum, value) => sum + value, 0) } }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
-  const totals = Object.fromEntries(periods.map((key) => [key, reportRows.reduce((sum, row) => sum + (row.values[key] || 0), 0)]))
-  return { rows: reportRows, totals, grandTotal: Object.values(totals).reduce((sum, value) => sum + value, 0) }
-}
-
-export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS, chartOnly = false }) {
+export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDING_ROWS, chartOnly = false, canManage = false }) {
+  const [showSchedule, setShowSchedule] = useState(false)
   const { sourceIndex, sourcesLoading, sourceError, refreshSources } = useSourceMaster()
   const pageRef = useRef(null)
   const filtersRef = useRef(null)
@@ -522,6 +357,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     <div className="page-container ev91-client-trend-page" ref={pageRef}>
       <div className="header ev91-client-trend-header">
         <div>
+          <button type="button" className="fsr-export-btn" aria-expanded={showSchedule} onClick={() => setShowSchedule(!showSchedule)}>Auto send</button>
           <h1><Table2 size={22} /> EV91 Client Period Trend</h1>
           <p>Rider Payment Data · weekly gross payout revenue and source-wise rider count</p>
           <p>Client payout revenue includes all sources. Rider counts and source tables show active listed sources. Exports include all sources for the selected dates, city and client.</p>
@@ -539,6 +375,7 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
         </div>
       </div>
 
+      {showSchedule && <Suspense fallback={<p role="status">Loading auto send settings...</p>}><ClientPeriodSchedulePanel canManage={canManage} /></Suspense>}
       {sourcesLoading && <p role="status">Loading source list...</p>}
       {sourceError && <p role="alert" style={{ color: '#f87171' }}>{sourceError}</p>}
 
@@ -558,6 +395,8 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
           </label>)}
         </div>
       </div>
+
+      <ClientPeriodMailPanel cities={options.cities} />
 
       <div aria-label="Value color legend" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', margin: '0.75rem 0', fontSize: '0.8rem' }}>
         <span style={{ color: 'var(--text-dim)' }}>Compare period values within each row:</span>

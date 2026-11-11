@@ -323,16 +323,35 @@ test('an initial source failure displays an error and retry without false zeros 
   assert.deepEqual(fixture.walletCalls, [false])
 })
 
-test('payment history refreshes on entry and after an external upload when the window regains focus', async (t) => {
+test('payment history loads on entry and stays loaded when returning from another window or tab', async (t) => {
   const fixture = globalThis.__sdVehicleFixture
   const container = await mountViewer(t)
   assert.ok(fixture.sourceCalls.some((call) => call.source === 'payments' && call.force))
   const previousCalls = fixture.sourceCalls.slice()
+  const previousWalletCalls = fixture.walletCalls.slice()
+  const previousStatus = container.querySelector('[aria-label="Report data status"]').textContent
+  const previousTotals = statValues(container)
+  await act(async () => {
+    window.dispatchEvent(new Event('blur'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+  })
+  assert.deepEqual(fixture.sourceCalls, previousCalls)
+  assert.deepEqual(fixture.walletCalls, previousWalletCalls)
+  assert.equal(container.querySelector('[aria-label="Report data status"]').textContent, previousStatus)
+  assert.deepEqual(statValues(container), previousTotals)
+  assert.equal(buttonIn(container, 'Export Excel').disabled, false)
+
+  // Explicit refresh still fetches updated payment history.
   const pending = deferred()
   fixture.paymentsPending = pending.promise
-  await act(async () => window.dispatchEvent(new Event('focus')))
+  await act(async () => buttonIn(container, 'Refresh report').click())
   assert.equal(buttonIn(container, 'Export Excel').disabled, true)
-  assert.deepEqual(fixture.sourceCalls, [...previousCalls, { source: 'payments', force: true }])
+  assert.deepEqual(fixture.sourceCalls.filter((call) => call.source === 'payments'), [
+    { source: 'payments', force: true }, { source: 'payments', force: true },
+  ])
   await act(async () => pending.resolve([
     ...payments, { ...payments[0], id: 2, sd: 100, ev_rent: 200 },
   ]))
@@ -340,6 +359,13 @@ test('payment history refreshes on entry and after an external upload when the w
   assert.equal(buttonIn(container, 'Export Excel').disabled, false)
   const [exported] = await exportCurrent(container)
   assert.equal(exported['Payment SD Ded. (Total)'], 350)
+
+  // Leaving through the sidebar and reopening mounts a new viewer and reloads.
+  delete fixture.paymentsPending
+  const callsBeforeReentry = fixture.sourceCalls.filter((call) => call.source === 'payments').length
+  await mountViewer(t)
+  assert.equal(fixture.sourceCalls.filter((call) => call.source === 'payments').length, callsBeforeReentry + 1)
+  assert.deepEqual(fixture.sourceCalls.findLast((call) => call.source === 'payments'), { source: 'payments', force: true })
 })
 
 test('report refresh preserves loaded rows, blocks stale export, and retries only its failed source', async (t) => {

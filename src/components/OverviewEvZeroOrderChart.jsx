@@ -1,20 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
 export default function OverviewEvZeroOrderChart({ orderRows, overallRows, currentRows, dateFrom, dateTo, loading, error }) {
-  const [report, setReport] = useState({ series: [], loading: true, error: '' })
+  const [preparedReport, setPreparedReport] = useState({ series: [], loading: true, error: '' })
   const [cityFilter, setCityFilter] = useState('All')
   const [clientFilter, setClientFilter] = useState([])
   const [clientSearch, setClientSearch] = useState('')
   const [options, setOptions] = useState({ cities: [], clients: [] })
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
+  const report = useMemo(() => preparedReport.withFilters
+    ? { ...preparedReport.withFilters(cityFilter, clientFilter), loading: preparedReport.loading, error: preparedReport.error }
+    : preparedReport, [preparedReport, cityFilter, clientFilter])
 
   useEffect(() => {
     let cancelled = false
     if (loading || error) return () => { cancelled = true }
-    setReport({ series: [], loading: true, error: '' })
+    setPreparedReport({ series: [], loading: true, error: '' })
     setExportError('')
     async function load() {
       try {
@@ -28,17 +31,17 @@ export default function OverviewEvZeroOrderChart({ orderRows, overallRows, curre
         }
         if (cancelled) return
         const result = await buildOverviewEvZeroOrderReport({
-          orderRows, overallRows, currentRows, riderDetailsById, dateFrom, dateTo, cityFilter, clientFilter,
+          orderRows, overallRows, currentRows, riderDetailsById, dateFrom, dateTo,
           shouldCancel: () => cancelled,
         })
-        if (!cancelled) setReport({ ...result, loading: false, error: '' })
+        if (!cancelled) setPreparedReport({ ...result, loading: false, error: '' })
       } catch (err) {
-        if (!cancelled) setReport({ series: [], loading: false, error: err?.message || 'Could not load EV zero-order counts.' })
+        if (!cancelled) setPreparedReport({ series: [], loading: false, error: err?.message || 'Could not load EV zero-order counts.' })
       }
     }
     load()
     return () => { cancelled = true }
-  }, [orderRows, overallRows, currentRows, dateFrom, dateTo, loading, error, cityFilter, clientFilter])
+  }, [orderRows, overallRows, currentRows, dateFrom, dateTo, loading, error])
 
   const busy = loading || report.loading
   const message = error || report.error
@@ -108,8 +111,8 @@ export default function OverviewEvZeroOrderChart({ orderRows, overallRows, curre
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
               <XAxis dataKey="date" tickFormatter={(value) => format(parseISO(value), 'dd MMM')} stroke="var(--text-dim)" fontSize={12} />
               <YAxis allowDecimals={false} stroke="var(--text-dim)" fontSize={12} />
-              <Tooltip labelFormatter={(value) => format(parseISO(value), 'dd MMM yyyy')} contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
-              <Line type="monotone" dataKey="count" name="D-1 0 order rider count" stroke="#fb7185" strokeWidth={2} dot={report.series.length === 1 ? { r: 4 } : false} activeDot={{ r: 4 }} />
+              <Tooltip isAnimationActive={false} labelFormatter={(value) => format(parseISO(value), 'dd MMM yyyy')} contentStyle={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
+              <Line isAnimationActive={false} type="monotone" dataKey="count" name="D-1 0 order rider count" stroke="#fb7185" strokeWidth={2} dot={report.series.length === 1 ? { r: 4 } : false} activeDot={{ r: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         )}

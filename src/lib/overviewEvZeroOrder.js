@@ -38,11 +38,11 @@ export async function buildOverviewEvZeroOrderReport({
   const yesterday = format(subDays(asOfDate, 1), 'yyyy-MM-dd')
   const toKey = dateTo && dateTo < yesterday ? dateTo : yesterday
   const fromKey = dateFrom || format(subDays(parseISO(toKey), 29), 'yyyy-MM-dd')
-  if (fromKey > toKey) return { series: [], getDetails: () => [] }
+  const emptyReport = () => ({ series: [], getDetails: () => [], withFilters: emptyReport })
+  if (fromKey > toKey) return emptyReport()
   orderRows = normalizeClientRows(orderRows)
   overallRows = normalizeClientRows(overallRows)
   currentRows = normalizeClientRows(currentRows)
-  clientFilter = (Array.isArray(clientFilter) ? clientFilter : clientFilter && clientFilter !== 'All' ? [clientFilter] : []).map(normalizeOverviewEvClient)
   const days = eachDayOfInterval({ start: parseISO(fromKey), end: parseISO(toKey) })
     .map((day) => ({ dateKey: format(day, 'yyyy-MM-dd') }))
   const indexes = buildEv91OverallIntervalIndexes(trimOverallRowsForMonth(overallRows, fromKey, toKey))
@@ -53,18 +53,24 @@ export async function buildOverviewEvZeroOrderReport({
     orderRows, currentRows, riderDetailsById, asOfDate, shouldCancel,
     flatIntervals,
   })
-  if (shouldCancel()) return { series: [], getDetails: () => [] }
-  const filtered = materializeFullDataReport(base, cityFilter, clientFilter)
-  const series = days.map(({ dateKey }) => ({
-    date: dateKey,
-    count: filtered.byDate[dateKey].d1ZeroOrderRiderCount,
-  }))
-  return {
-    series,
-    getDetails: () => buildFullDataZeroOrderDetailRows(orderRows, overallRows, {
-      days, fromKey, toKey, cityFilter, clientFilter, flatIntervals, currentRows, riderDetailsById, asOfDate,
-    }).filter((row) => row['Included in D-1 count'] === 'Yes'),
+  if (shouldCancel()) return emptyReport()
+  // Eligibility is independent of the selected filters. Reuse the daily city/client
+  // slices instead of scanning orders and deployment history on every selection.
+  function withFilters(cityFilter = 'All', clientFilter = []) {
+    clientFilter = (Array.isArray(clientFilter) ? clientFilter : clientFilter && clientFilter !== 'All' ? [clientFilter] : []).map(normalizeOverviewEvClient)
+    const filtered = materializeFullDataReport(base, cityFilter, clientFilter)
+    return {
+      series: days.map(({ dateKey }) => ({
+        date: dateKey,
+        count: filtered.byDate[dateKey].d1ZeroOrderRiderCount,
+      })),
+      getDetails: () => buildFullDataZeroOrderDetailRows(orderRows, overallRows, {
+        days, fromKey, toKey, cityFilter, clientFilter, flatIntervals, currentRows, riderDetailsById, asOfDate,
+      }).filter((row) => row['Included in D-1 count'] === 'Yes'),
+      withFilters,
+    }
   }
+  return withFilters(cityFilter, clientFilter)
 }
 
 export async function buildOverviewEvZeroOrderSeries(options) {

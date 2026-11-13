@@ -89,3 +89,32 @@ test('client aliases collapse and filtered export details reconcile each daily g
   for (const day of summary) assert.equal(details.filter((row) => row.Date === day.Date).length, day['D-1 0 order rider count'])
   assert.deepEqual(new Set(details.map((row) => row['Worker Code'])), new Set(['R0', 'R1', 'R3', 'R4', 'R5']))
 })
+
+test('prepared counts support repeated synchronous filters and matching exports without rescanning source rows', async () => {
+  let reads = 0
+  const overallRows = [
+    ['TN1', 'R1', 'Chennai', 'BB Now'],
+    ['TN2', 'R2', 'Chennai', 'Amazon'],
+    ['KA1', 'R3', 'Bengaluru', 'Blinkit'],
+  ].map(([vehicleNumber, clientId, city, clientName]) => new Proxy({
+    vehicleNumber, clientId, city, clientName, statusDate: '2026-09-01', vehicleStatus: 'Deployed',
+  }, { get(target, key) { reads++; return target[key] } }))
+  const prepared = await buildOverviewEvZeroOrderReport({ overallRows,
+    dateFrom: '2026-10-01', dateTo: '2026-10-02', asOfDate: new Date(2026, 9, 7),
+  })
+  const sourceReads = reads
+  const chennai = prepared.withFilters('Chennai', ['Bigbasket', 'Amazon'])
+  const bengaluru = prepared.withFilters('Bengaluru', ['Blinket'])
+  const empty = prepared.withFilters('Bengaluru', ['Amazon'])
+  const reset = bengaluru.withFilters()
+  assert.equal(reads, sourceReads, 'filter changes must only read the prepared aggregates')
+  assert.deepEqual(chennai.series.map((point) => point.count), [2, 2])
+  assert.deepEqual(bengaluru.series.map((point) => point.count), [1, 1])
+  assert.deepEqual(empty.series.map((point) => point.count), [0, 0])
+  assert.deepEqual(reset.series.map((point) => point.count), [3, 3])
+  for (const [report, city] of [[chennai, 'Chennai'], [bengaluru, 'Bengaluru']]) {
+    const details = report.getDetails()
+    assert.ok(details.every((row) => row.City === city))
+    for (const point of report.series) assert.equal(details.filter((row) => row.Date === point.date).length, point.count)
+  }
+})

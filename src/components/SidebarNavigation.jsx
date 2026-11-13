@@ -125,19 +125,69 @@ function PageIcon({ icon }) {
 }
 
 const SidebarNavigation = memo(function SidebarNavigation({ activePage, onSelectPage, onIotUpload, isAdmin }) {
+  const [search, setSearch] = useState('')
+  const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const matches = (text) => terms.every((term) => text.toLowerCase().includes(term))
+  const searching = terms.length > 0
+  const showDashboard = matches('Dashboard General Overview')
+  const showAdmin = isAdmin && matches('Sign-in settings')
+  const results = searching ? NAVIGATION_GROUPS.flatMap((group) =>
+    group.pages.filter((page) => matches(`${group.label} ${page.label}`))
+      .map((page) => ({ ...page, groupLabel: group.label }))
+  ) : []
+
   return (
     <nav className="nav-links" aria-label="Main navigation">
-      {isAdmin && <a className="nav-item" href="#admin"><Shield size={20} />Sign-in settings</a>}
-      <button
+      <div className="nav-search">
+        <Search size={17} aria-hidden="true" />
+        <input
+          type="search"
+          aria-label="Search sidebar pages"
+          placeholder="Search pages…"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setSearch('')
+          }}
+        />
+        {search && <button type="button" onClick={() => setSearch('')} aria-label="Clear page search">Clear</button>}
+      </div>
+      {showAdmin && <a className="nav-item" href="#admin" onClick={() => setSearch('')}><Shield size={20} />Sign-in settings</a>}
+      {showDashboard && <button
         type="button"
         className={`nav-item nav-item-green ${activePage === 'dashboard' ? 'active' : ''}`}
         aria-current={activePage === 'dashboard' ? 'page' : undefined}
-        onClick={() => onSelectPage('dashboard')}
+        onClick={() => {
+          setSearch('')
+          onSelectPage('dashboard')
+        }}
       >
         <BarChart3 size={20} />
         Dashboard
-      </button>
-      {NAVIGATION_GROUPS.map((group) => (
+      </button>}
+      {searching ? (
+        <>
+          {results.map(({ id, label, icon, green, groupLabel }) => (
+            <button
+              key={id}
+              type="button"
+              className={`nav-item${green ? ' nav-item-green' : ''}${activePage === id ? ' active' : ''}`}
+              aria-current={activePage === id ? 'page' : undefined}
+              onClick={() => {
+                setSearch('')
+                if (id === 'ev91-iotupload') onIotUpload()
+                else onSelectPage(id)
+              }}
+            >
+              <PageIcon icon={icon} />
+              <span>{label}<small className="nav-search-group">{groupLabel}</small></span>
+            </button>
+          ))}
+          {!showDashboard && !showAdmin && results.length === 0 && (
+            <p className="nav-search-empty" role="status">No pages found.</p>
+          )}
+        </>
+      ) : NAVIGATION_GROUPS.map((group) => (
         <NavigationFolder
           key={group.id}
           group={group}

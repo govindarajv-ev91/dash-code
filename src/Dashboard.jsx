@@ -725,6 +725,9 @@ const Dashboard = ({ riderData, loading, refreshData, onboardingData }) => {
       vehicleLoading = ev91StatusLoading || ev91OverallLoading
     }
 
+    const totalVehicles = Number(ev91StatusSummary?.total) || 0
+    const deployedPercentage = totalVehicles > 0 ? (activeVehicles / totalVehicles) * 100 : 0
+
     let dateStr = 'All Time'
     if (filterFrom && filterTo && filterFrom === filterTo) dateStr = filterFrom
     else if (filterFrom && filterTo) dateStr = `${filterFrom} to ${filterTo}`
@@ -755,6 +758,7 @@ const Dashboard = ({ riderData, loading, refreshData, onboardingData }) => {
       {
         label: 'Deployed Vehicles',
         value: vehicleLoading ? '…' : activeVehicles.toLocaleString(),
+        percentage: vehicleLoading ? null : deployedPercentage,
         icon: Truck,
         change: vehicleChange,
         isPositive: true,
@@ -1119,7 +1123,21 @@ const Dashboard = ({ riderData, loading, refreshData, onboardingData }) => {
             </div>
             <div>
               <div className="label">{stat.label}</div>
-              <div className="value">{stat.value}</div>
+              <div className="value">
+                {stat.value}
+                {stat.percentage != null && (
+                  <span style={{
+                    fontSize: '0.5em',
+                    marginLeft: '0.5em',
+                    whiteSpace: 'nowrap',
+                    color: stat.percentage > 80 ? '#4ade80'
+                      : stat.percentage >= 70 ? '#facc15'
+                        : stat.percentage >= 56 ? '#fb923c' : '#f87171',
+                  }}>
+                    ({stat.percentage.toFixed(1)}%)
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         ))}

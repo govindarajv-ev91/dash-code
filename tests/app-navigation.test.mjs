@@ -98,6 +98,43 @@ test('closed folders render no page buttons and toggling one folder leaves repor
   assert.equal(button(host, 'Order').getAttribute('aria-expanded'), 'false')
 })
 
+test('sidebar search finds closed-folder pages, opens results and restores navigation on clear', async (t) => {
+  const host = await mount(t)
+  await act(async () => button(host, 'Order').click())
+  const input = host.querySelector('input[aria-label="Search sidebar pages"]')
+  async function search(value) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value)
+      input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    })
+  }
+  await search('  CITY summary  ')
+  const result = [...host.querySelectorAll('button')].find((item) => item.textContent.includes('City / Client Summary'))
+  assert.ok(result, 'finds a page inside a closed folder with case-insensitive words')
+  assert.match(result.textContent, /Supply/)
+  assert.equal(host.querySelector('.nav-folder'), null)
+  await act(async () => result.click())
+  await waitFor(() => host.querySelector('h1')?.textContent === 'Ev91DeployReturnSummary')
+  assert.equal(host.querySelector('h1').textContent, 'Ev91DeployReturnSummary')
+  assert.match(host.querySelector('[aria-current="page"]').textContent, /City \/ Client Summary/)
+  assert.ok(host.querySelector('.sidebar-shell').classList.contains('sidebar-dismissed'))
+  assert.equal(document.activeElement, host.querySelector('main'))
+  assert.equal(input.value, '', 'opening a search result resets the search')
+  assert.ok(button(host, 'Order'), 'the full menu is restored')
+  await act(async () => input.focus())
+  assert.equal(host.querySelector('.sidebar-shell').classList.contains('sidebar-dismissed'), false)
+  await search('no-such-page')
+  assert.match(host.querySelector('[role="status"]').textContent, /No pages found/)
+  await search('general overview')
+  assert.ok(button(host, 'Dashboard'))
+  await act(async () => button(host, 'Dashboard').click())
+  assert.equal(input.value, '', 'opening Dashboard also resets the search')
+  await search('payment')
+  await act(async () => button(host, 'Clear').click())
+  assert.equal(input.value, '')
+  assert.ok(button(host, 'Order'))
+})
+
 test('sidebar selection commits before rendering the destination report', async (t) => {
   const host = await mount(t)
   await act(async () => button(host, 'Other').click())

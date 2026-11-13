@@ -113,6 +113,24 @@ function buildAllCitiesMatrixAoA(citySummaries, clientCols) {
 
 const EMPTY_ONBOARDING_ROWS = []
 
+function RtdPercentage({ available, total }) {
+  const percentage = total > 0 ? (available / total) * 100 : 0
+  return (
+    <span
+      title="Available vehicles / total vehicles × 100"
+      style={{
+        fontSize: '0.8em',
+        marginLeft: '0.5em',
+        whiteSpace: 'nowrap',
+        color: percentage < 2 ? '#4ade80'
+          : percentage <= 5 ? '#facc15' : '#f87171',
+      }}
+    >
+      ({percentage.toFixed(1)}%)
+    </span>
+  )
+}
+
 export default function Ev91DeployReturnSummary({ riderData = [], onboardingData = EMPTY_ONBOARDING_ROWS, loading: riderLoading = false }) {
   const initialWeek = dateToWeekKey(new Date()) || ''
   const initialRange = weekKeyToEv91SummaryDateRange(initialWeek)
@@ -759,6 +777,12 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
         </span>
         <span title="Current Available vehicles from EV91 Vehicles inventory; independent of the event date range">
           RTD (Available): <strong>{loading ? '…' : rtdError ? 'Unavailable' : rtdAvailableTotal.toLocaleString()}</strong>
+          {!loading && !rtdError && (
+            <RtdPercentage
+              available={rtdAvailableTotal}
+              total={cityRtdRows.reduce((sum, row) => sum + (selectedCity === 'All' || row.city === selectedCity ? row.total : 0), 0)}
+            />
+          )}
           {selectedCity !== 'All' ? ` · ${selectedCity}` : ' · all cities'}
         </span>
       </div>
@@ -818,6 +842,7 @@ export default function Ev91DeployReturnSummary({ riderData = [], onboardingData
                   (r) => (
                     <span key={r.city} style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
                       {r.city}: <strong style={{ color: '#fff' }}>{r.available}</strong>
+                      <RtdPercentage available={r.available} total={r.total} />
                     </span>
                   )
                 )}

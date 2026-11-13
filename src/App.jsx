@@ -476,6 +476,13 @@ const DashboardContent = React.memo(function DashboardContent({
 
 function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled = false }) {
   const [activePage, setActivePage] = useState(getSavedActivePage)
+  const [sidebarDismissed, setSidebarDismissed] = useState(false)
+  const mainContentRef = useRef(null)
+  const selectSidebarPage = useCallback((page) => {
+    setActivePage(page)
+    setSidebarDismissed(true)
+    mainContentRef.current?.focus({ preventScroll: true })
+  }, [])
   const renderedPage = useDeferredValue(activePage)
   const pagePending = renderedPage !== activePage
   const [iotUploadPasswordOpen, setIotUploadPasswordOpen] = useState(false)
@@ -763,11 +770,11 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled =
   const openEv91IotUpload = useCallback(() => {
     if (user && isAdmin) {
       setIotUploadPasswordOpen(false)
-      setActivePage('ev91-iotupload')
+      selectSidebarPage('ev91-iotupload')
       return
     }
     setIotUploadPasswordOpen(true)
-  }, [user, isAdmin])
+  }, [user, isAdmin, selectSidebarPage])
 
   return (
     <div className="app-layout app-layout-auto-sidebar">
@@ -776,11 +783,15 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled =
           onDismiss={() => setIotUploadPasswordOpen(false)}
           onUnlock={() => {
             setIotUploadPasswordOpen(false)
-            setActivePage('ev91-iotupload')
+            selectSidebarPage('ev91-iotupload')
           }}
         />
       )}
-      <div className="sidebar-shell">
+      <div
+        className={`sidebar-shell${sidebarDismissed ? ' sidebar-dismissed' : ''}`}
+        onPointerEnter={() => setSidebarDismissed(false)}
+        onFocusCapture={() => setSidebarDismissed(false)}
+      >
         <aside className="sidebar">
           <div className="sidebar-logo">
             {logoEnabled
@@ -791,14 +802,14 @@ function App({ user, onSignOut, signingOut, signOutError, isAdmin, logoEnabled =
             : <a className="public-admin-link" href="#admin">Admin sign in</a>}
           <SidebarNavigation
             activePage={activePage}
-            onSelectPage={setActivePage}
+            onSelectPage={selectSidebarPage}
             onIotUpload={openEv91IotUpload}
             isAdmin={isAdmin}
           />
         </aside>
       </div>
 
-      <main aria-busy={pagePending} className={`main-content${renderedPage === 'ev91-client-period-trend' ? ' ev91-client-trend-main' : ''}`}>
+      <main ref={mainContentRef} tabIndex={-1} aria-busy={pagePending} className={`main-content${renderedPage === 'ev91-client-period-trend' ? ' ev91-client-trend-main' : ''}`}>
         {pagePending && <div className="page-navigation-status" role="status">Opening page...</div>}
         <DashboardContent
           activePage={renderedPage}

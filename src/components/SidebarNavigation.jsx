@@ -152,6 +152,7 @@ const SidebarNavigation = memo(function SidebarNavigation({ activePage, onSelect
         />
         {search && <button type="button" onClick={() => setSearch('')} aria-label="Clear page search">Clear</button>}
       </div>
+      <div className="nav-menu">
       {showAdmin && <a className="nav-item" href="#admin" onClick={() => setSearch('')}><Shield size={20} />Sign-in settings</a>}
       {showDashboard && <button
         type="button"
@@ -196,6 +197,7 @@ const SidebarNavigation = memo(function SidebarNavigation({ activePage, onSelect
           onIotUpload={onIotUpload}
         />
       ))}
+      </div>
     </nav>
   )
 })

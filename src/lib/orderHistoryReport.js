@@ -67,6 +67,7 @@ export function filterOrderHistory(
     if (citySet && !citySet.has(row.city)) return false
     if (clientSet && !clientSet.has(row.client)) return false
     if (monthSet && !monthSet.has(row.month)) return false
+    if ((dateFrom || dateTo) && !/^\d{4}-\d{2}-\d{2}$/.test(row.dateKey || '')) return false
     if (dateFrom && row.dateKey && row.dateKey < dateFrom) return false
     if (dateTo && row.dateKey && row.dateKey > dateTo) return false
 

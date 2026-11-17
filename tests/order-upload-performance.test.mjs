@@ -173,6 +173,25 @@ test('complete caches are reused after a patch; single-file patches still requir
   assert.equal((await orders.fetchOrderUploadsForHistory('Oct-2026')).length, 3, 'history must refresh after upload')
 })
 
+test('history uses larger pages, shares concurrent reads and survives lower server caps', async () => {
+  const rows = Array.from({ length: 2501 }, (_, index) => row(index + 1))
+  const read = database(rows)
+  reply = async (query) => {
+    await tick()
+    return { data: read(query).data.slice(0, 400) }
+  }
+  const progress = []
+  const [first, shared] = await Promise.all([
+    orders.fetchOrderUploadsForHistory('Oct-2026', { onProgress: (count, page) => progress.push([count, page.length]) }),
+    orders.fetchOrderUploadsForHistory('Oct-2026', { onPage: () => {} }),
+  ])
+  assert.equal(first, shared)
+  assert.equal(first.length, 2501)
+  assert.equal(queries.length, 8, 'one shared scan continues past short server pages until empty')
+  assert.ok(queries.every(query => query.limit[0] === 1000))
+  assert.deepEqual(progress.at(-1), [2501, 101], 'progress passes only the new page, never cumulative row copies')
+})
+
 test('preview renders while metadata is pending, and successful upload is usable before background refresh', async (t) => {
   const firstCount = deferred(), backgroundCount = deferred()
   let uploaded = false, notified = false

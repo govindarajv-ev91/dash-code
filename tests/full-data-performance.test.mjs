@@ -274,9 +274,9 @@ test('failed IoT and order months never cache partial results', async (t) => {
     reply = (query) => query.gt || query.or ? { data: null, error: timeout } : { data: page(size), error: null }
     await assert.rejects(load(), (error) => error.code === '57014')
     const failedCalls = queries.length
-    reply = () => ({ data: [{ id: 1, run_date: '2026-06-01' }], error: null })
+    reply = (query) => ({ data: query.gt ? [] : [{ id: 1, run_date: '2026-06-01' }], error: null })
     assert.equal((await load()).length, 1)
-    assert.equal(queries.length, failedCalls + 1)
+    assert.equal(queries.length, failedCalls + (size === 500 ? 2 : 1))
   }
 })
 

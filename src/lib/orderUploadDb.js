@@ -515,23 +515,27 @@ export async function fetchAllOrderUploads({ force = false } = {}) {
  * Fast Order History fetch: one month only + slim columns.
  * Keyset pagination with timeout retries (smaller pages). Optional onPage for progressive UI.
  */
-export async function fetchOrderUploadsForHistory(month, { force = false, onPage } = {}) {
+export async function fetchOrderUploadsForHistory(month, { force = false, onPage, onProgress } = {}) {
   const label = (month ?? '').toString().trim()
   if (!label) return []
 
   if (!force && historyMonthCache.has(label)) {
     const cached = historyMonthCache.get(label)
     if (typeof onPage === 'function') onPage(cached)
+    onProgress?.(cached.length, cached.slice(0, 100))
     return cached
   }
-  if (!force && historyMonthInflight.has(label) && typeof onPage !== 'function') {
-    return historyMonthInflight.get(label)
+  if (!force && historyMonthInflight.has(label)) {
+    const rows = await historyMonthInflight.get(label)
+    onPage?.(rows)
+    onProgress?.(rows.length, rows.slice(0, 100))
+    return rows
   }
 
   const generation = ordersFetchGeneration
   const inflight = (async () => {
     // month + id keyset; composite index (month, id) recommended — see SQL file.
-    let pageSize = 500
+    let pageSize = 1000
     const byId = new Map()
     let cursor = null
     let consecutiveTimeouts = 0
@@ -573,7 +577,9 @@ export async function fetchOrderUploadsForHistory(month, { force = false, onPage
       }
       cursor = nextCursor
       if (typeof onPage === 'function') onPage([...byId.values()])
-      if (data.length < pageSize) break
+      // Count/page progress avoids copying the entire growing month for the UI.
+      onProgress?.(byId.size, data)
+      // Continue until empty: server response caps can be smaller than pageSize.
     }
 
     const rows = [...byId.values()]

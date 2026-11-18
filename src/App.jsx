@@ -29,6 +29,7 @@ const DeployedRentalPending = lazy(() => import('./DeployedRentalPending'))
 const OrderUpload = lazy(() => import('./OrderUpload'))
 const OrderHistory = lazy(() => import('./OrderHistory'))
 const PaymentHistory = lazy(() => import('./PaymentHistory'))
+const RiderWhatsappDownload = lazy(() => import('./RiderWhatsappDownload'))
 const SdPaymentViewer = lazy(() => import('./SdPaymentViewer'))
 const IotData = lazy(() => import('./IotData'))
 const EvEnvironmentalImpact = lazy(() => import('./EvEnvironmentalImpact'))
@@ -351,6 +352,8 @@ const DashboardContent = React.memo(function DashboardContent({
       <OrderHistory />
     ) : activePage === 'paymenthistory' ? (
       <PaymentHistory onboardingData={onboardingData} />
+    ) : activePage === 'rider-whatsapp' ? (
+      <RiderWhatsappDownload />
     ) : activePage === 'sdpayment' ? (
       <SdPaymentViewer />
     ) : activePage === 'iotdata' || activePage === 'ev91-iotupload' ? (

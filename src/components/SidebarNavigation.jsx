@@ -34,6 +34,7 @@ const NAVIGATION_GROUPS = [
   },
   {
     id: 'reports', label: 'Reports', pages: [
+      { id: 'rider-whatsapp', label: 'Rider WhatsApp Download', icon: Mail },
       { id: 'ev91-evlookup', label: 'EV / NON-EV Lookup', icon: Search },
       { id: 'iotdata', label: 'IoT Data', icon: Radio, green: true },
       { id: 'sourcewise', label: 'Source Wise Data', icon: Users, green: true },

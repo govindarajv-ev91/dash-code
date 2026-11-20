@@ -156,6 +156,8 @@ test('table radio selection shows the chosen table and preserves each source sea
   t.after(async () => { await act(async () => root.unmount()); container.remove() })
   await act(async () => root.render(createElement(Trend)))
   const choose = async (value) => act(async () => container.querySelector(`input[name="trend-table"][value="${value}"]`).click())
+  const cityExport = () => [...container.querySelectorAll('button')].find((button) => button.textContent.includes('Export selected table by city'))
+  assert.equal(cityExport().disabled, true)
   const headings = () => [...container.querySelectorAll('section h3')].map((node) => node.textContent)
   const search = async (label, value) => act(async () => {
     const input = container.querySelector(`[aria-label="${label}"]`)
@@ -167,6 +169,11 @@ test('table radio selection shows the chosen table and preserves each source sea
     ['source-riders', /source-wise rider count/], ['source-revenue', /source gross payout revenue/]]) {
     await choose(value)
     assert.equal(container.querySelectorAll('.data-table').length, 1)
+    assert.equal(cityExport().disabled, false)
+    await act(async () => cityExport().click())
+    assert.equal(globalThis.__sourceExport.rawRows, undefined)
+    assert.equal(globalThis.__sourceExport.summarySheets.length, 1)
+    assert.equal(globalThis.__sourceExport.summarySheets[0].rows[0].City, 'Chennai')
     assert.match(headings()[0], title)
     assert.equal(document.querySelectorAll('.ev91-client-trend-sticky-header').length, 1)
     assert.equal(document.querySelectorAll('.ev91-client-trend-page-scrollbar').length, 1)

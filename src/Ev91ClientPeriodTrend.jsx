@@ -14,6 +14,7 @@ import { useSourceMaster } from './lib/useSourceMaster'
 import { isListedSource } from './lib/sourceMaster'
 import Ev91ClientPeriodChart from './components/Ev91ClientPeriodChart'
 import ClientPeriodMailPanel from './components/ClientPeriodMailPanel'
+import { buildClientPeriodCityExport } from './lib/clientPeriodCityExport.js'
 
 const ClientPeriodSchedulePanel = lazy(() => import('./components/ClientPeriodSchedulePanel'))
 
@@ -332,6 +333,24 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
     }
   }
 
+  const exportSelectedTableByCity = async () => {
+    if (selectedTable === 'all' || loading || exporting || sourcesLoading || sourceError) return
+    setExporting(true)
+    setExportError('')
+    try {
+      const { downloadClientPeriodExcel } = await import('./lib/clientPeriodExcelExport')
+      const report = buildClientPeriodCityExport({
+        allRows: allOrderRows, listedRows: orderRows, filters, mode: viewMode, selectedTable, sourceForRow,
+        sourceSearch: selectedTable === 'source-riders' ? sourceRiderSearch : sourceRevenueSearch,
+      })
+      await downloadClientPeriodExcel(report, `ev91-${selectedTable}-city-wise-${viewMode}-${todayKey()}.xlsx`)
+    } catch (err) {
+      setExportError(err?.message || 'Failed to export the selected table by city.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const resetFilters = () => {
     setFromDate(defaultFromKey())
     setToDate(todayKey())
@@ -368,6 +387,11 @@ export default function Ev91ClientPeriodTrend({ onboardingData = EMPTY_ONBOARDIN
           </button>
           <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={exportReport} disabled={loading || exporting} title="Export raw data and summaries">
             <Download size={15} /> {exporting ? 'Exporting...' : 'Export'}
+          </button>
+          <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={exportSelectedTableByCity}
+            disabled={selectedTable === 'all' || loading || exporting || sourcesLoading || !!sourceError}
+            title={selectedTable === 'all' ? 'Choose one Show table option to export by city' : 'Export only the selected table, grouped by city on one sheet, using current filters and source search'}>
+            <Download size={15} /> Export selected table by city
           </button>
           <button type="button" className="fsr-export-btn ev91-client-trend-action" onClick={resetFilters} title="Clear filters">
             <RefreshCw size={15} /> Clear Filters

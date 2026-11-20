@@ -2,6 +2,46 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import ExcelJS from 'exceljs'
 import { buildClientPeriodWorkbook } from '../src/lib/clientPeriodExcelExport.js'
+import { buildClientPeriodCityExport } from '../src/lib/clientPeriodCityExport.js'
+import { normalizeRows } from '../src/lib/clientPeriodTrendReports.js'
+
+test('selected city export creates one sheet and preserves city totals, filters, source visibility and monthly identities', async () => {
+  const allRows = normalizeRows([
+    { city: 'Chennai', rider_id: 'A', gross_payout: 100 },
+    { city: 'Chennai', rider_id: 'A', gross_payout: 50, week: '1626', period_start: '2026-04-13' },
+    { city: 'Delhi', rider_id: 'A', gross_payout: 200 },
+    { city: 'Delhi', rider_id: 'B', gross_payout: 500, source_name: 'Unlisted' },
+  ].map((row, id) => ({ id, week: '1526', period_start: '2026-04-06', month: 'Apr-2026', client_name: 'Blinkit', source_name: 'Alpha', ...row })))
+  const listedRows = allRows.filter((row) => row.source_name !== 'Unlisted')
+  const filters = { city: 'All', client: 'All', fromDate: '2026-04-01', toDate: '2026-04-30' }
+  for (const mode of ['weekly', 'monthly']) {
+    for (const selectedTable of ['client-revenue', 'client-riders', 'source-riders', 'source-revenue']) {
+      const options = { allRows, listedRows, filters, mode, selectedTable, sourceForRow: (row) => row.source_name }
+      const report = buildClientPeriodCityExport(options)
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.load(await buildClientPeriodWorkbook(report).xlsx.writeBuffer())
+      assert.equal(workbook.worksheets.length, 1)
+      assert.equal(workbook.worksheets[0].getCell('A2').value, 'Chennai')
+      const sheet = report.summarySheets[0]
+      assert.deepEqual(sheet.rows.filter((row) => (row.Client || row.Source) === 'Total').map((row) => row.City), ['Chennai', 'Delhi'])
+      const delhi = sheet.rows.find((row) => row.City === 'Delhi')
+      assert.equal(delhi[report.periods[0]], selectedTable === 'client-revenue' ? 700 : selectedTable === 'source-revenue' ? 200 : 1)
+      const chennai = sheet.rows[0]
+      if (selectedTable.endsWith('riders')) assert.equal(chennai[report.periods[0]], 1)
+      for (const index of sheet.totalRowIndices) {
+        assert.equal(workbook.worksheets[0].getRow(index + 2).font.bold, true)
+        assert.equal(workbook.worksheets[0].getCell(index + 2, 3).font?.color, undefined)
+      }
+      const cityOnly = buildClientPeriodCityExport({ ...options, filters: { ...filters, city: 'Delhi' } })
+      assert.ok(cityOnly.summarySheets[0].rows.every((row) => row.City === 'Delhi'))
+      if (selectedTable.startsWith('source-')) {
+        const searched = buildClientPeriodCityExport({ ...options, sourceSearch: 'missing' })
+        assert.deepEqual(searched.summarySheets[0].rows, [])
+      }
+    }
+  }
+  assert.throws(() => buildClientPeriodCityExport({ selectedTable: 'all' }), /Select one table/)
+})
 
 for (const mode of ['weekly', 'monthly']) {
   test(`${mode} Excel preserves text colors, neutral totals, numeric values, and raw data after reopening`, async () => {

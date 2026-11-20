@@ -12,12 +12,12 @@ function addRows(workbook, name, rows) {
 
 export function buildClientPeriodWorkbook({ rawRows, periods, summarySheets }) {
   const workbook = new ExcelJS.Workbook()
-  addRows(workbook, 'Raw Data', rawRows)
-  for (const { name, rows, totalRowIndex } of summarySheets) {
+  if (rawRows !== undefined) addRows(workbook, 'Raw Data', rawRows)
+  for (const { name, rows, totalRowIndex, totalRowIndices = [] } of summarySheets) {
     const sheet = addRows(workbook, name, rows)
     rows.forEach((values, index) => {
       const row = sheet.getRow(index + 2)
-      if (index === totalRowIndex) {
+      if (index === totalRowIndex || totalRowIndices.includes(index)) {
         row.font = { bold: true }
         return
       }
